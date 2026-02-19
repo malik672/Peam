@@ -50,6 +50,7 @@ pub fn verify_signature(
 }
 
 // Attribution: aggregate verification flow is adapted from Ream's lean-multisig integration.
+// Aggregate verification requires the pq_multisig feature and lean-multisig types.
 #[cfg(feature = "pq_multisig")]
 pub fn verify_aggregate_signature(
     public_keys: &[Bytes52],

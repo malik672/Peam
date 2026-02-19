@@ -63,10 +63,12 @@ impl PeerManager {
     }
 
     pub async fn successful_response_from_peer(&self, peer_id: &str) -> i64 {
+        // Positive feedback for peers that respond correctly.
         self.score_delta(peer_id, 10).await
     }
 
     pub async fn failed_response_from_peer(&self, peer_id: &str) -> i64 {
+        // Negative feedback for peers that fail or misbehave.
         self.score_delta(peer_id, -20).await
     }
 

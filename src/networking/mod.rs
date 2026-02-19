@@ -34,6 +34,7 @@ pub use validate::{
     validate_gossip, verifier_from_validators,
 };
 
+/// Networking runtime: gossipsub + req/resp + discovery + peer scoring.
 pub struct Networking {
     pub events: EventBus,
     pub peers: PeerManager,
@@ -49,6 +50,7 @@ pub struct Networking {
 }
 
 impl Networking {
+    /// Build and start the networking runtime (gossip + req/resp + discovery + scoring).
     pub fn start_with_config(config: NetworkingConfig) -> Self {
         let events = EventBus::new(256);
         let peers = PeerManager::new(events.clone());
@@ -69,6 +71,7 @@ impl Networking {
         let events_reqresp = events.clone();
         let peers_reqresp = peers.clone();
 
+        // Gossip inbound pipeline with per-peer and per-topic rate limiting.
         let gossip_task = tokio::spawn(async move {
             while let Some(msg) = gossip_rx.recv().await {
                 let peer_key = msg
@@ -105,6 +108,7 @@ impl Networking {
             }
         });
 
+        // Req/resp inbound pipeline with per-peer rate limiting + scoring.
         let reqresp_task = tokio::spawn(async move {
             while let Some(msg) = reqresp_rx.recv().await {
                 match msg {
@@ -173,6 +177,7 @@ impl Networking {
             max_reqresp_bytes: config.max_reqresp_bytes,
         };
         let p2p_service = P2pService::new(p2p_config, events.clone(), p2p_rx);
+        // libp2p service loop.
         let p2p_task = tokio::spawn(async move {
             p2p_service.run().await;
         });
@@ -181,6 +186,7 @@ impl Networking {
         let score_decay_amount = config.score_decay_amount;
         let ban_threshold = config.ban_threshold;
         let peers_decay = peers.clone();
+        // Background peer score decay and ban pruning.
         let score_decay_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(score_decay_interval);
             loop {
@@ -191,6 +197,7 @@ impl Networking {
             }
         });
 
+        // Periodic discovery loop (bootnodes + mDNS).
         let discovery_task = tokio::spawn(async move {
             discovery_runner.run(discovery_peers).await;
         });

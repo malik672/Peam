@@ -183,6 +183,7 @@ impl P2pService {
             RequestResponseConfig::default(),
         );
 
+        // Local discovery for dev/test networks (LAN scope).
         let mdns = Mdns::new(MdnsConfig::default(), peer_id).expect("mdns");
         let mut behaviour = LeanBehaviour { gossipsub, identify, ping, reqresp, mdns };
         let topic = IdentTopic::new(config.gossipsub_topic.clone());
@@ -248,10 +249,12 @@ impl P2pService {
         loop {
             tokio::select! {
                 swarm_event = self.swarm.select_next_some() => {
+                    // Drive libp2p state machine + dispatch events.
                     self.on_swarm_event(swarm_event);
                 }
                 cmd = self.outbound.recv() => {
                     if let Some(cmd) = cmd {
+                        // Outbound commands from higher-level networking.
                         self.on_command(cmd);
                     } else {
                         break;
@@ -264,10 +267,12 @@ impl P2pService {
     fn on_command(&mut self, cmd: P2pCommand) {
         match cmd {
             P2pCommand::Publish { topic, payload } => {
+                // Publish raw payload to the selected topic.
                 let topic = IdentTopic::new(topic.clone());
                 let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, payload);
             }
             P2pCommand::SendRequest { peer, protocol, payload } => {
+                // Send a req/resp request to a specific peer.
                 self.swarm
                     .behaviour_mut()
                     .reqresp
@@ -285,6 +290,7 @@ impl P2pService {
     fn on_swarm_event(&mut self, event: SwarmEvent<LeanBehaviourEvent>) {
         match event {
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                // Track peer connection and send a hello for basic liveness.
                 self.events.emit(NetworkEvent::PeerConnected {
                     peer_id: peer_id.to_string(),
                 });
@@ -296,6 +302,7 @@ impl P2pService {
                     .publish(topic, b"hello".to_vec());
             }
             SwarmEvent::Behaviour(LeanBehaviourEvent::Gossipsub(GossipsubEvent::Message { message, propagation_source, .. })) => {
+                // Validate and score inbound gossipsub messages.
                 if message.data.len() > self.max_gossip_bytes {
                     self.events.emit(NetworkEvent::PeerScored {
                         peer_id: propagation_source.to_string(),
@@ -393,6 +400,7 @@ impl P2pService {
             }
             SwarmEvent::Behaviour(LeanBehaviourEvent::Mdns(MdnsEvent::Discovered(peers))) => {
                 for (_peer_id, addr) in peers {
+                    // Attempt to connect to newly discovered peers.
                     let _ = self.swarm.dial(addr.clone());
                 }
             }
@@ -412,6 +420,7 @@ impl P2pService {
             SwarmEvent::Behaviour(LeanBehaviourEvent::Reqresp(RequestResponseEvent::Message { peer, message })) => {
                 match message {
                     RequestResponseMessage::Request { request, channel, .. } => {
+                        // Inbound req/resp request.
                         let LeanRequest { protocol, payload } = request;
                         if payload.len() > self.max_reqresp_bytes {
                             self.events.emit(NetworkEvent::PeerScored {
@@ -440,6 +449,7 @@ impl P2pService {
                         );
                     }
                     RequestResponseMessage::Response { response, .. } => {
+                        // Inbound req/resp response.
                         let LeanResponse { protocol, payload } = response;
                         if payload.len() > self.max_reqresp_bytes {
                             self.events.emit(NetworkEvent::PeerScored {

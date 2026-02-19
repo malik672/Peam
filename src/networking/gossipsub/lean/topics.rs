@@ -7,6 +7,7 @@ pub const ENCODING_POSTFIX: &str = "ssz_snappy";
 
 pub const LEAN_BLOCK_TOPIC: &str = "block";
 pub const LEAN_ATTESTATION_TOPIC: &str = "attestation";
+// Attestation subnet topics are encoded as: attestation_subnet_{id}
 pub const LEAN_ATTESTATION_SUBNET_PREFIX: &str = "attestation_subnet_";
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

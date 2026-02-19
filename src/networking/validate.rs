@@ -23,13 +23,16 @@ pub enum GossipValidatorKind {
 }
 
 pub trait GossipSignatureVerifier: Send + Sync {
+    /// Verify proposer signature over the proposer attestation.
     fn verify_block_signature(
         &self,
         proposer_index: ValidatorIndex,
         message: &BlockWithAttestation,
         signature: &Bytes3112,
     ) -> bool;
+    /// Verify a single validator's signed attestation.
     fn verify_signed_attestation_signature(&self, attestation: &SignedAttestation) -> bool;
+    /// Verify aggregated attestation signatures for participating validators.
     fn verify_attestation_signature(
         &self,
         attestation: &Attestation,
@@ -174,6 +177,7 @@ pub fn validate_gossip(
     match kind {
         GossipValidatorKind::None => true,
         GossipValidatorKind::Block => {
+            // Full block validation: SSZ decode + proposer + attestation signatures.
             let Ok(block) = GossipBlock::decode_ssz_checked(payload) else {
                 return false;
             };
@@ -219,6 +223,7 @@ pub fn validate_gossip(
         }
         GossipValidatorKind::BlockHeader => GossipBlockHeader::decode_ssz_checked(payload).is_ok(),
         GossipValidatorKind::Attestation => {
+            // Attestation gossip is a signed attestation (single validator).
             let Ok(attestation) = GossipAttestation::decode_ssz_checked(payload) else {
                 return false;
             };

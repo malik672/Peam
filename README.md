@@ -54,6 +54,7 @@ cargo test --test ream_networking_ports -- --ignored
 ## Notes
 - PQ hooks are experimental and for research; not production‑hardened yet.
 - The networking stack is intentionally minimal and evolves with the spec.
+- For production deployments, harden discovery/peer scoring policies.
 
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.

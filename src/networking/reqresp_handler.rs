@@ -53,6 +53,7 @@ impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S>
         match request {
             LeanRequestMessage::Status(_) => Some(LeanResponseMessage::Status(self.build_status())),
             LeanRequestMessage::BlocksByRoot(req) => {
+                // Return up to MAX_BLOCKS_BY_ROOT_RESPONSE blocks found in the store.
                 let store = self.store.read().expect("store lock");
                 let mut blocks = Vec::new();
                 for root in req
