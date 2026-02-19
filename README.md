@@ -38,8 +38,31 @@ max_reqresp_bytes=4000000
 cargo test
 ```
 
+### Networking tests (socket required)
+```bash
+cargo test --test ream_networking_ports -- --ignored
+```
+Set `LEAN_ETH_REQUIRE_MDNS=1` to make the mDNS discovery smoke test fail hard on discovery timeout.
+
+### PQ negative tests
+```bash
+cargo test --test pq_negative
+cargo test --features pq_crypto --test pq_negative
+cargo test --features pq_multisig --test pq_negative
+```
+
+## Validation Rules (Current)
+- Signed block checks enforce:
+  - attestation proof count equals block attestation count
+  - proposer attestation slot equals block slot
+  - proposer attestation has exactly one participant matching proposer index
+- Aggregated proof checks enforce:
+  - proof participants must match attestation aggregation bits
+  - out-of-range participant indices are rejected
+
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.
+Release notes are tracked in `CHANGELOG.md`.
 
 ## License
 Dual-licensed under MIT or Apache-2.0. See `LICENSE` and `LICENSE-APACHE`.
