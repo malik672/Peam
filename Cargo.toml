@@ -1,0 +1,70 @@
+[package]
+name = "lean_eth"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sha2 = "0.10"
+rapidhash = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
+libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux", "quic", "gossipsub", "request-response", "identify", "ping", "mdns"] }
+futures = "0.3"
+async-trait = "0.1"
+libp2p-swarm-derive = "0.35.1"
+lean-multisig = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "e4474138487eeb1ed7c2e1013674fe80ac9f3165", optional = true }
+leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "73bedc26ed961b110df7ac2e234dc11361a4bf25", optional = true }
+ssz = { package = "ethereum_ssz", version = "0.10.1", optional = true }
+alloy-primitives = { version = "0.7", optional = true }
+ream-consensus-lean = { path = "../ream/crates/common/consensus/lean", optional = true }
+tree_hash = { version = "0.12", optional = true }
+
+[features]
+default = []
+ream_bench = ["alloy-primitives", "ream-consensus-lean", "tree_hash"]
+pq_crypto = ["leansig", "ssz"]
+pq_multisig = ["pq_crypto", "lean-multisig"]
+
+[patch."https://github.com/leanEthereum/multilinear-toolkit.git"]
+multilinear-toolkit = { path = "../ream/vendor/multilinear-toolkit" }
+
+[patch."https://github.com/leanEthereum/leanMultisig.git"]
+lean-multisig = { path = "../ream/vendor/leanMultisig" }
+
+[patch."https://github.com/TomWambsgans/whir-p3.git"]
+whir-p3 = { path = "./whir-p3" }
+
+[patch."https://github.com/leanEthereum/fiat-shamir.git"]
+fiat-shamir = { path = "./fiat-shamir" }
+
+[build-dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+criterion = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ssz_types = { path = "/Users/malik/.cargo/git/checkouts/ssz_types-19f835ca387d51e3/5dc2d52" }
+ssz = { package = "ethereum_ssz", version = "0.10.1" }
+
+[[bench]]
+name = "compare_ream"
+harness = false
+
+[[bench]]
+name = "compare_ream_real"
+harness = false
+required-features = ["ream_bench"]
+
+[[bench]]
+name = "bitlist_compare"
+harness = false
+
+[[bench]]
+name = "merkleize_loop"
+harness = false
+
+[[bench]]
+name = "chunkify_fixed"
+harness = false
