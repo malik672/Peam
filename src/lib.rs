@@ -7,5 +7,6 @@ pub mod unsafe_vec;
 pub mod crypto;
 pub mod networking;
 pub mod node;
+pub mod fork_choice;
 
 pub mod slot;

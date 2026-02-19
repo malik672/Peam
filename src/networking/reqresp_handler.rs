@@ -38,12 +38,29 @@ impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
 
     fn build_status(&self) -> Status {
         let state = self.state.read().expect("state lock");
+        let store = self.store.read().expect("store lock");
+        let (head_root, head_slot) = match store.head() {
+            Some(root) => match store.get_block(&root) {
+                Some(block) => (root, Uint64(block.slot.0 .0)),
+                None => (
+                    Bytes32::from(state.latest_block_header.hash_tree_root()),
+                    Uint64(state.slot.0 .0),
+                ),
+            },
+            None => (
+                Bytes32::from(state.latest_block_header.hash_tree_root()),
+                Uint64(state.slot.0 .0),
+            ),
+        };
+        let finalized_root = store
+            .finalized()
+            .unwrap_or(state.latest_finalized.root);
         Status {
             fork_digest: Bytes32::zero(),
-            finalized_root: state.latest_finalized.root,
+            finalized_root,
             finalized_epoch: state.latest_finalized.slot.0,
-            head_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-            head_slot: Uint64(state.slot.0 .0),
+            head_root,
+            head_slot,
         }
     }
 }

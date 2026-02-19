@@ -76,10 +76,14 @@ impl Store for MemoryStore {
         state: &mut State,
     ) -> Result<(), String> {
         state.process_signed_block(&signed)?;
+        // Look at this clone
         let block = signed.message.block.clone();
         self.block_by_slot.insert(block.slot.0 .0, root);
         self.blocks.insert(root, block);
         self.signed_blocks.insert(root, signed);
+        self.head = Some(root);
+        self.justified = Some(state.latest_justified.root);
+        self.finalized = Some(state.latest_finalized.root);
         Ok(())
     }
 

@@ -10,6 +10,7 @@ use crate::unsafe_vec::write_bytes_at;
 pub struct ValidatorIndex(pub Uint64);
 
 impl ValidatorIndex {
+    #[inline]
     pub fn is_proposer_for(self, slot: crate::slot::Slot, num_validators: u64) -> bool {
         if num_validators == 0 {
             return false;

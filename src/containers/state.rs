@@ -1,18 +1,18 @@
-use crate::containers::block::{Attestations, Block, BlockBody, BlockHeader};
 use crate::containers::block::SignedBlockWithAttestation;
-use crate::crypto::pq;
+use crate::containers::block::{Attestations, Block, BlockBody, BlockHeader};
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::config::Config;
 use crate::containers::validator::Validator;
+use crate::crypto::pq;
+use crate::slot::{self, Slot};
 use crate::ssz::hash::merkleize_tree_root_11;
-use crate::unsafe_vec::write_at;
-use crate::unsafe_vec::write_bytes_at;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode};
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
 use crate::types::collections::SszList;
-use crate::slot::Slot;
 use crate::types::uint::Uint64;
+use crate::unsafe_vec::write_at;
+use crate::unsafe_vec::write_bytes_at;
 
 pub const HISTORICAL_ROOTS_LIMIT: usize = 262_144;
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 4_096;
@@ -95,7 +95,7 @@ impl State {
                 let root = self.hash_tree_root();
                 self.latest_block_header.state_root = Bytes32::from(root);
             }
-            self.slot = Slot(Uint64(self.slot.0 .0 + 1));
+            self.slot = Slot(Uint64(self.slot.0.0 + 1));
         }
 
         Ok(())
@@ -105,12 +105,20 @@ impl State {
         if block.slot != self.slot {
             return Err("block slot does not match state slot".to_string());
         }
+        self.process_block_header_assuming_slot(block)
+    }
+
+    #[inline]
+    fn process_block_header_assuming_slot(&mut self, block: BlockHeader) -> Result<(), String> {
         if block.slot <= self.latest_block_header.slot {
             return Err("block slot not greater than latest header slot".to_string());
         }
 
         let num_validators = self.validators.data.len() as u64;
-        if !block.proposer_index.is_proposer_for(self.slot, num_validators) {
+        if !block
+            .proposer_index
+            .is_proposer_for(self.slot, num_validators)
+        {
             return Err("block proposer index does not match expected proposer".to_string());
         }
 
@@ -124,8 +132,8 @@ impl State {
             self.latest_finalized.root = block.parent_root;
         }
 
-        let block_slot = block.slot.0 .0;
-        let latest_slot = self.latest_block_header.slot.0 .0;
+        let block_slot = block.slot.0.0;
+        let latest_slot = self.latest_block_header.slot.0.0;
         let num_empty_slots = block_slot - latest_slot - 1;
 
         self.historical_block_hashes.data.push(block.parent_root);
@@ -140,17 +148,33 @@ impl State {
             }
         }
 
-        self.latest_block_header = block;
+        let mut header = block;
+        // Keep latest_block_header.state_root at zero; post-state root is checked separately.
+        header.state_root = Bytes32::zero();
+        self.latest_block_header = header;
         Ok(())
     }
 
+    #[inline]
     pub fn process_block(&mut self, block: &Block) -> Result<(), String> {
         let header = block.header();
         self.process_block_header(header)?;
         self.process_block_body(&block.body, header.body_root)
     }
 
-    pub fn process_block_body(&mut self, body: &crate::containers::block::BlockBody, expected_root: Bytes32) -> Result<(), String> {
+    #[inline]
+    fn process_block_assuming_slot(&mut self, block: &Block) -> Result<(), String> {
+        let header = block.header();
+        self.process_block_header_assuming_slot(header)?;
+        self.process_block_body(&block.body, header.body_root)
+    }
+
+    #[inline]
+    pub fn process_block_body(
+        &mut self,
+        body: &crate::containers::block::BlockBody,
+        expected_root: Bytes32,
+    ) -> Result<(), String> {
         let body_root = body.hash_tree_root();
         if expected_root != Bytes32::from(body_root) {
             return Err("block body root does not match header".to_string());
@@ -159,18 +183,62 @@ impl State {
         Ok(())
     }
 
+    /// Apply a full state transition for the given block, including state root check.
+    /// Assumes `process_slots` sets `self.slot == block.slot` before block processing.
     pub fn state_transition(&mut self, block: &Block) -> Result<(), String> {
         self.process_slots(block.slot)?;
-        self.process_block(block)
+        self.process_block_assuming_slot(block)?;
+        let computed_root = Bytes32::from(self.hash_tree_root());
+        if computed_root != block.state_root {
+            return Err("post-state root does not match block.state_root".to_string());
+        }
+        Ok(())
     }
 
     pub fn process_attestations(&mut self, attestations: &Attestations) -> Result<(), String> {
+        let total_validators = self.validators.data.len();
+        if total_validators == 0 {
+            return Ok(());
+        }
         for att in attestations.data.iter() {
             if att.data.slot > self.slot {
                 return Err("attestation slot is in the future".to_string());
             }
             if att.data.target.slot < att.data.source.slot {
                 return Err("attestation target slot below source slot".to_string());
+            }
+            if !slot::is_justifiable_after(att.data.target.slot, self.latest_finalized.slot)? {
+                continue;
+            }
+            if !is_slot_justified(
+                &self.justified_slots,
+                self.latest_finalized.slot,
+                att.data.source.slot,
+            ) {
+                continue;
+            }
+            let participants = set_bits(&att.aggregation_bits);
+            if participants.is_empty() {
+                continue;
+            }
+            if 3 * participants.len() < 2 * total_validators {
+                continue;
+            }
+            self.latest_justified = att.data.target.clone();
+            set_justified_slot(
+                &mut self.justified_slots,
+                self.latest_finalized.slot,
+                att.data.target.slot,
+            )?;
+
+            // Minimal finalization rule: finalize the source if it immediately precedes target.
+            if att.data.target.slot.0.0 == att.data.source.slot.0.0 + 1
+                && att.data.source.slot > self.latest_finalized.slot
+            {
+                let old_finalized = self.latest_finalized.slot;
+                self.latest_finalized = att.data.source.clone();
+                let delta = (self.latest_finalized.slot.0.0 - old_finalized.0.0) as usize;
+                shift_justified_window(&mut self.justified_slots, delta);
             }
         }
         Ok(())
@@ -198,26 +266,8 @@ impl State {
         signed: &SignedBlockWithAttestation,
         verifier: &V,
     ) -> Result<(), String> {
+        signed.validate_basic()?;
         let block = &signed.message.block;
-        let sig_count = signed.signature.attestation_signatures.data.len();
-        let att_count = block.body.attestations.data.len();
-        if sig_count != att_count {
-            return Err(format!(
-                "attestation signatures count {} does not match attestations {}",
-                sig_count, att_count
-            ));
-        }
-        let proposer_attestations = &signed.message.proposer_attestation.data;
-        if proposer_attestations.len() != 1 {
-            return Err(format!(
-                "proposer attestation count {} is invalid",
-                proposer_attestations.len()
-            ));
-        }
-        let proposer_attestation = &proposer_attestations[0];
-        if proposer_attestation.data.slot != block.slot {
-            return Err("proposer attestation slot does not match block slot".to_string());
-        }
         verifier.verify_signed_block(signed, self)?;
         self.state_transition(block)
     }
@@ -264,8 +314,21 @@ impl SignatureVerifier for StructuralSignatureVerifier {
                 }
             }
         }
+        for (att, proof) in block
+            .body
+            .attestations
+            .data
+            .iter()
+            .zip(signed.signature.attestation_signatures.data.iter())
+        {
+            if proof.participants != att.aggregation_bits {
+                return Err(
+                    "attestation signature participants do not match aggregation bits".to_string()
+                );
+            }
+        }
 
-        let proposer_attestation = &signed.message.proposer_attestation.data[0];
+        let proposer_attestation = &signed.message.proposer_attestation;
         let proposer_bits = set_bits(&proposer_attestation.aggregation_bits);
         if proposer_bits.len() != 1 {
             return Err("proposer attestation must have exactly one participant".to_string());
@@ -298,6 +361,11 @@ impl SignatureVerifier for PqSignatureVerifier {
             .iter()
             .zip(signed.signature.attestation_signatures.data.iter())
         {
+            if proof.participants != att.aggregation_bits {
+                return Err(
+                    "attestation signature participants do not match aggregation bits".to_string()
+                );
+            }
             let mut public_keys = Vec::new();
             for idx in set_bits(&att.aggregation_bits) {
                 let validator = state
@@ -313,13 +381,13 @@ impl SignatureVerifier for PqSignatureVerifier {
                     &public_keys,
                     &message,
                     proof.proof_data.as_slice(),
-                    att.data.slot.0 .0 as u32,
+                    att.data.slot.0.0 as u32,
                 )?;
             }
         }
 
-        let proposer_attestation = &signed.message.proposer_attestation.data[0];
-        let proposer_idx = block.proposer_index.0 .0 as usize;
+        let proposer_attestation = &signed.message.proposer_attestation;
+        let proposer_idx = block.proposer_index.0.0 as usize;
         let proposer = state
             .validators
             .data
@@ -328,7 +396,7 @@ impl SignatureVerifier for PqSignatureVerifier {
         let proposer_message = proposer_attestation.data.hash_tree_root();
         pq::verify_signature(
             &proposer.pubkey,
-            proposer_attestation.data.slot.0 .0 as u32,
+            proposer_attestation.data.slot.0.0 as u32,
             &proposer_message,
             &signed.signature.proposer_signature,
         )?;
@@ -346,6 +414,75 @@ fn set_bits<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
         }
     }
     out
+}
+
+fn is_slot_justified(justified: &JustifiedSlots, finalized: Slot, slot: Slot) -> bool {
+    if slot <= finalized {
+        return true;
+    }
+    let idx = (slot.0.0 - finalized.0.0 - 1) as usize;
+    if idx >= justified.len() {
+        return false;
+    }
+    let byte = idx / 8;
+    let bit = idx % 8;
+    if byte >= justified.data.len() {
+        return false;
+    }
+    (justified.data[byte] & (1u8 << bit)) != 0
+}
+
+fn set_justified_slot(
+    justified: &mut JustifiedSlots,
+    finalized: Slot,
+    slot: Slot,
+) -> Result<(), String> {
+    if slot <= finalized {
+        return Ok(());
+    }
+    let idx = (slot.0.0 - finalized.0.0 - 1) as usize;
+    if idx >= HISTORICAL_ROOTS_LIMIT {
+        return Err("justified slot exceeds limit".to_string());
+    }
+    let new_len = idx + 1;
+    if new_len > justified.len() {
+        justified.len = new_len;
+    }
+    let byte_len = (justified.len + 7) / 8;
+    if justified.data.len() < byte_len {
+        justified.data.resize(byte_len, 0u8);
+    }
+    let byte = idx / 8;
+    let bit = idx % 8;
+    justified.data[byte] |= 1u8 << bit;
+    Ok(())
+}
+
+fn shift_justified_window(justified: &mut JustifiedSlots, delta: usize) {
+    if delta == 0 || justified.len() == 0 {
+        return;
+    }
+    if delta >= justified.len() {
+        justified.len = 0;
+        justified.data.clear();
+        return;
+    }
+    let new_len = justified.len() - delta;
+    let mut new_data = vec![0u8; (new_len + 7) / 8];
+    for i in 0..new_len {
+        let src = i + delta;
+        let src_byte = src / 8;
+        let src_bit = src % 8;
+        if src_byte < justified.data.len()
+            && (justified.data[src_byte] & (1u8 << src_bit)) != 0
+        {
+            let dst_byte = i / 8;
+            let dst_bit = i % 8;
+            new_data[dst_byte] |= 1u8 << dst_bit;
+        }
+    }
+    justified.len = new_len;
+    justified.data = new_data;
 }
 
 impl SszEncode for State {
@@ -372,16 +509,46 @@ impl SszEncode for State {
         let mut var_pos = 0usize;
 
         unsafe { write_bytes_at(&mut fixed, 0, &self.config.genesis_time.0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut fixed, 8, &self.slot.0 .0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut fixed, 16, &self.latest_block_header.slot.0 .0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut fixed, 24, &self.latest_block_header.proposer_index.0 .0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut fixed, 32, self.latest_block_header.parent_root.as_ref()) };
+        unsafe { write_bytes_at(&mut fixed, 8, &self.slot.0.0.to_le_bytes()) };
+        unsafe {
+            write_bytes_at(
+                &mut fixed,
+                16,
+                &self.latest_block_header.slot.0.0.to_le_bytes(),
+            )
+        };
+        unsafe {
+            write_bytes_at(
+                &mut fixed,
+                24,
+                &self.latest_block_header.proposer_index.0.0.to_le_bytes(),
+            )
+        };
+        unsafe {
+            write_bytes_at(
+                &mut fixed,
+                32,
+                self.latest_block_header.parent_root.as_ref(),
+            )
+        };
         unsafe { write_bytes_at(&mut fixed, 64, self.latest_block_header.state_root.as_ref()) };
         unsafe { write_bytes_at(&mut fixed, 96, self.latest_block_header.body_root.as_ref()) };
         unsafe { write_bytes_at(&mut fixed, 128, self.latest_justified.root.as_ref()) };
-        unsafe { write_bytes_at(&mut fixed, 160, &self.latest_justified.slot.0 .0.to_le_bytes()) };
+        unsafe {
+            write_bytes_at(
+                &mut fixed,
+                160,
+                &self.latest_justified.slot.0.0.to_le_bytes(),
+            )
+        };
         unsafe { write_bytes_at(&mut fixed, 168, self.latest_finalized.root.as_ref()) };
-        unsafe { write_bytes_at(&mut fixed, 200, &self.latest_finalized.slot.0 .0.to_le_bytes()) };
+        unsafe {
+            write_bytes_at(
+                &mut fixed,
+                200,
+                &self.latest_finalized.slot.0.0.to_le_bytes(),
+            )
+        };
 
         let mut offsets = [0u32; 6];
         let mut off_idx = 0usize;

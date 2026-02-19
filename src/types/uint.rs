@@ -2,6 +2,8 @@ use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
 use crate::unsafe_vec::write_bytes_at;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+
+// Wrapper around u64
 pub struct Uint64(pub u64);
 
 impl SszEncode for Uint64 {

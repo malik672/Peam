@@ -14,13 +14,6 @@ cargo test
 - PQ‑ready signature verification hooks.
 - Practical libp2p networking with gossip + req/resp.
 
-## Features
-- SSZ encode/decode + hash tree root for core containers.
-- Merkleization utilities tuned for common layouts.
-- PQ signature verification hooks (LeanSig + aggregate verification).
-- libp2p networking with gossipsub + req/resp.
-- Basic peer scoring, rate limits, and discovery (mDNS).
-
 ## Configuration
 `lean_eth` accepts either SSZ config bytes or a simple text config.
 
@@ -44,17 +37,6 @@ max_reqresp_bytes=4000000
 ```bash
 cargo test
 ```
-
-### Networking tests (socket required)
-Some networking tests bind local sockets and are ignored by default:
-```bash
-cargo test --test ream_networking_ports -- --ignored
-```
-
-## Notes
-- PQ hooks are experimental and for research; not production‑hardened yet.
-- The networking stack is intentionally minimal and evolves with the spec.
-- For production deployments, harden discovery/peer scoring policies.
 
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.

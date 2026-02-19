@@ -41,6 +41,23 @@ async fn wait_for_peer_connected(mut rx: tokio::sync::broadcast::Receiver<Networ
     }
 }
 
+async fn wait_for_peer_connected_with_timeout(
+    mut rx: tokio::sync::broadcast::Receiver<NetworkEvent>,
+    timeout_secs: u64,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event: NetworkEvent = tokio::time::timeout(timeout, rx.recv())
+            .await
+            .expect("timeout waiting for event")
+            .expect("event");
+        if matches!(event, NetworkEvent::PeerConnected { .. }) {
+            return;
+        }
+    }
+}
+
 // Requires network permissions and a local socket bind.
 // Run with: `cargo test --test ream_networking_ports -- --ignored`
 #[tokio::test]
@@ -207,4 +224,54 @@ async fn ream_status_request_response_smoke() {
     handle_2.abort();
     drop(tx_1);
     drop(tx_2);
+}
+
+// Requires network permissions and local multicast socket bind for mDNS.
+// Run with: `cargo test --test ream_networking_ports -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn ream_mdns_discovery_smoke() {
+    let events_1 = NetworkEventBus::new(32);
+    let events_2 = NetworkEventBus::new(32);
+    let (_tx_1, rx_1) = mpsc::channel::<P2pCommand>(32);
+    let (_tx_2, rx_2) = mpsc::channel::<P2pCommand>(32);
+
+    let config_1 = P2pConfig {
+        listen_addr: addr_for(9004),
+        bootnodes: vec![],
+        gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+        allowed_topics: vec![],
+        topic_scores: vec![],
+        topic_validators: vec![],
+        signature_verifier: Arc::new(NoopGossipVerifier),
+        reqresp_handler: Arc::new(NoopReqRespHandler),
+        gossip_context: Arc::new(StateGossipContext::new(empty_state())),
+        max_gossip_bytes: 2_000_000,
+        max_reqresp_bytes: 4_000_000,
+    };
+    let config_2 = P2pConfig {
+        listen_addr: addr_for(9005),
+        bootnodes: vec![],
+        gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+        allowed_topics: vec![],
+        topic_scores: vec![],
+        topic_validators: vec![],
+        signature_verifier: Arc::new(NoopGossipVerifier),
+        reqresp_handler: Arc::new(NoopReqRespHandler),
+        gossip_context: Arc::new(StateGossipContext::new(empty_state())),
+        max_gossip_bytes: 2_000_000,
+        max_reqresp_bytes: 4_000_000,
+    };
+
+    let node_1 = P2pService::new(config_1, events_1.clone(), rx_1);
+    let node_2 = P2pService::new(config_2, events_2.clone(), rx_2);
+
+    let handle_1 = tokio::spawn(async move { node_1.run().await });
+    let handle_2 = tokio::spawn(async move { node_2.run().await });
+
+    wait_for_peer_connected_with_timeout(events_1.subscribe(), 15).await;
+    wait_for_peer_connected_with_timeout(events_2.subscribe(), 15).await;
+
+    handle_1.abort();
+    handle_2.abort();
 }

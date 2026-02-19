@@ -1,7 +1,9 @@
+use lean_eth::containers::attestation::{Attestation, AttestationData};
 use lean_eth::containers::block::{
     AttestationSignatures, Block, BlockBody, BlockSignatures, BlockWithAttestation,
     BlockWithSignatures, SignedBlockWithAttestation,
 };
+use lean_eth::containers::checkpoint::Checkpoint;
 use lean_eth::containers::validator::ValidatorIndex;
 use lean_eth::slot::Slot;
 use lean_eth::ssz::{SszDecode, SszEncode};
@@ -22,10 +24,32 @@ fn dummy_block() -> Block {
     }
 }
 
+fn dummy_proposer_attestation(slot: Slot) -> Attestation {
+    Attestation {
+        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
+            .expect("bits"),
+        data: AttestationData {
+            slot,
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            target: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    }
+}
+
 #[test]
 fn block_with_attestation_roundtrip_checked() {
     let block = dummy_block();
-    let proposer_attestation = SszList::new(vec![]).expect("proposer attestations");
+    let proposer_attestation = dummy_proposer_attestation(block.slot);
     let msg = BlockWithAttestation {
         block,
         proposer_attestation,
@@ -41,7 +65,7 @@ fn block_with_attestation_roundtrip_checked() {
 fn signed_block_with_attestation_roundtrip_checked() {
     let message = BlockWithAttestation {
         block: dummy_block(),
-        proposer_attestation: SszList::new(vec![]).expect("proposer attestations"),
+        proposer_attestation: dummy_proposer_attestation(Slot(Uint64(0))),
     };
     let signature = BlockSignatures {
         attestation_signatures: SszList::new(vec![]).expect("attestation sigs"),
@@ -66,4 +90,3 @@ fn block_with_signatures_roundtrip_checked() {
     let checked = BlockWithSignatures::decode_ssz_checked(&encoded).unwrap();
     assert_eq!(checked, msg);
 }
-

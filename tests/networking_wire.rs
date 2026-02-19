@@ -1,14 +1,21 @@
-use lean_eth::containers::attestation::{AttestationData, SignedAttestation};
+use std::sync::Arc;
+
+use lean_eth::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData, SignedAttestation};
+use lean_eth::containers::block::{Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation};
 use lean_eth::containers::checkpoint::Checkpoint;
+use lean_eth::containers::gossip::GossipBlock;
+use lean_eth::containers::validator::ValidatorIndex;
 use lean_eth::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use lean_eth::networking::gossipsub::lean::topics::{
     LeanGossipTopic, LeanGossipTopicKind, TOPIC_PREFIX, ENCODING_POSTFIX, LEAN_ATTESTATION_TOPIC,
     LEAN_BLOCK_TOPIC, LEAN_ATTESTATION_SUBNET_PREFIX,
 };
-use lean_eth::networking::LeanSupportedProtocol;
+use lean_eth::networking::{validate_gossip, GossipSignatureVerifier, GossipValidatorKind, LeanSupportedProtocol, NoopGossipVerifier};
 use lean_eth::ssz::SszEncode;
 use lean_eth::slot::Slot;
+use lean_eth::types::bytes::{ByteList, Bytes3112};
 use lean_eth::types::bytes::Bytes32;
+use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 use libp2p::gossipsub::TopicHash;
 
@@ -150,4 +157,74 @@ fn reqresp_protocol_roundtrip() {
     }
     assert!(LeanSupportedProtocol::parse_protocol_id("/lean_eth/reqresp/status/2").is_none());
     assert!(LeanSupportedProtocol::parse_protocol_id("/other/reqresp/status/1").is_none());
+}
+
+#[test]
+fn gossip_block_rejects_mismatched_aggregate_participants() {
+    let att = Attestation {
+        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true, false]).expect("bits"),
+        data: AttestationData {
+            slot: Slot(Uint64(0)),
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            target: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    };
+    let block = Block {
+        slot: Slot(Uint64(0)),
+        proposer_index: ValidatorIndex(Uint64(0)),
+        parent_root: Bytes32::zero(),
+        state_root: Bytes32::zero(),
+        body: BlockBody {
+            attestations: SszList::new(vec![att]).expect("atts"),
+        },
+    };
+    let proposer_attestation = Attestation {
+        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
+        data: AttestationData {
+            slot: block.slot,
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            target: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    };
+    let proof = AggregatedSignatureProof {
+        participants: lean_eth::types::bitlist::BitList::new(vec![false, true]).expect("parts"),
+        proof_data: ByteList::new(vec![0x42]).expect("proof"),
+    };
+    let signed = SignedBlockWithAttestation {
+        message: BlockWithAttestation {
+            block,
+            proposer_attestation,
+        },
+        signature: BlockSignatures {
+            attestation_signatures: SszList::new(vec![proof]).expect("sigs"),
+            proposer_signature: Bytes3112::zero(),
+        },
+    };
+    let payload = GossipBlock { block: signed }.encode_ssz();
+    let verifier: Arc<dyn GossipSignatureVerifier> = Arc::new(NoopGossipVerifier);
+    assert!(!validate_gossip(
+        GossipValidatorKind::Block,
+        &payload,
+        &verifier,
+    ));
 }

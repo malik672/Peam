@@ -1,0 +1,162 @@
+use std::sync::{Arc, RwLock};
+
+use lean_eth::containers::attestation::{Attestation, AttestationData, SignedAttestation};
+use lean_eth::containers::block::{
+    Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
+};
+use lean_eth::containers::checkpoint::Checkpoint;
+use lean_eth::containers::gossip::{GossipAttestation, GossipBlock};
+use lean_eth::containers::state::{State, Validators};
+use lean_eth::containers::validator::{Validator, ValidatorIndex};
+use lean_eth::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopicKind};
+use lean_eth::node::handle_gossip_event;
+use lean_eth::slot::Slot;
+use lean_eth::ssz::{HashTreeRoot, SszEncode};
+use lean_eth::storage::MemoryStore;
+use lean_eth::types::bitlist::BitList;
+use lean_eth::types::bytes::{Bytes3112, Bytes32, Bytes52};
+use lean_eth::types::collections::SszList;
+use lean_eth::types::uint::Uint64;
+
+fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, State, Bytes32) {
+    let mut temp = state.clone();
+    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
+    let body = BlockBody {
+        attestations: SszList::new(vec![]).expect("attestations"),
+    };
+    let mut block = Block {
+        slot: Slot(Uint64(slot)),
+        proposer_index: ValidatorIndex(Uint64(0)),
+        parent_root,
+        state_root: Bytes32::zero(),
+        body,
+    };
+    let mut post = state.clone();
+    post.process_slots(block.slot).expect("process slots");
+    let header = block.header();
+    post.process_block_header(header).expect("process header");
+    post.process_block_body(&block.body, header.body_root)
+        .expect("process body");
+    block.state_root = Bytes32::from(post.hash_tree_root());
+
+    let proposer_attestation = Attestation {
+        aggregation_bits: BitList::new(vec![true]).expect("participants"),
+        data: AttestationData {
+            slot: block.slot,
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(slot)),
+            },
+            target: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(slot)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    };
+    let message = BlockWithAttestation {
+        block,
+        proposer_attestation,
+    };
+    let signature = BlockSignatures {
+        attestation_signatures: SszList::new(vec![]).expect("attestation sigs"),
+        proposer_signature: Bytes3112::zero(),
+    };
+    let root = Bytes32::from(message.block.hash_tree_root());
+    (SignedBlockWithAttestation { message, signature }, post, root)
+}
+
+#[test]
+fn gossip_block_updates_fork_choice_head() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = Arc::new(RwLock::new(State::generate_genesis(Uint64(0), validators)));
+    let store = Arc::new(RwLock::new(MemoryStore::new()));
+    let fork_choice = Arc::new(RwLock::new(None));
+
+    let (signed, _post, root) = {
+        let s = state.read().expect("state lock");
+        build_signed_block(&s, 1)
+    };
+    let gossip = GossipBlock { block: signed };
+    let payload = gossip.encode_ssz();
+    let topic = LeanGossipTopic {
+        fork: "devnet2".to_string(),
+        kind: LeanGossipTopicKind::Block,
+    }
+    .to_string();
+
+    handle_gossip_event(&topic, &payload, &state, &store, &fork_choice);
+    let fc = fork_choice.read().expect("fork choice lock");
+    let fc = fc.as_ref().expect("fork choice");
+    assert_eq!(fc.head(), root);
+}
+
+#[test]
+fn gossip_attestation_updates_fork_choice_votes() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = Arc::new(RwLock::new(State::generate_genesis(Uint64(0), validators)));
+    let store = Arc::new(RwLock::new(MemoryStore::new()));
+    let fork_choice = Arc::new(RwLock::new(None));
+
+    let (signed, _post, root) = {
+        let s = state.read().expect("state lock");
+        build_signed_block(&s, 1)
+    };
+    let gossip = GossipBlock { block: signed };
+    let payload = gossip.encode_ssz();
+    let topic = LeanGossipTopic {
+        fork: "devnet2".to_string(),
+        kind: LeanGossipTopicKind::Block,
+    }
+    .to_string();
+
+    handle_gossip_event(&topic, &payload, &state, &store, &fork_choice);
+
+    let signed_att = SignedAttestation {
+        validator_id: Uint64(0),
+        message: AttestationData {
+            slot: Slot(Uint64(1)),
+            head: Checkpoint {
+                root,
+                slot: Slot(Uint64(1)),
+            },
+            target: Checkpoint {
+                root,
+                slot: Slot(Uint64(1)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+        signature: Bytes3112::zero(),
+    };
+    let gossip_att = GossipAttestation {
+        attestation: signed_att,
+    };
+    let att_payload = gossip_att.encode_ssz();
+    let att_topic = LeanGossipTopic {
+        fork: "devnet2".to_string(),
+        kind: LeanGossipTopicKind::Attestation,
+    }
+    .to_string();
+
+    handle_gossip_event(&att_topic, &att_payload, &state, &store, &fork_choice);
+    let fc = fork_choice.read().expect("fork choice lock");
+    let fc = fc.as_ref().expect("fork choice");
+    assert_eq!(fc.head(), root);
+}

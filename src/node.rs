@@ -5,14 +5,21 @@ use tracing::{info, warn};
 
 use crate::app::{build_genesis, load_node_settings, NodeSettings};
 use crate::containers::config::Config;
+use crate::containers::attestation::{Attestation, VALIDATOR_REGISTRY_LIMIT};
 use crate::containers::state::State;
 use crate::networking::{
     Networking, NetworkingConfig, StoreReqRespHandler, StateGossipContext,
     verifier_from_validators,
 };
+use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
+use crate::fork_choice::ForkChoiceStore;
 use crate::storage::MemoryStore;
+use crate::storage::Store;
 use crate::ssz::HashTreeRoot;
+use crate::types::bitlist::BitList;
+use crate::types::bytes::Bytes32;
 use std::sync::{Arc, RwLock};
+use libp2p::gossipsub::TopicHash;
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -24,6 +31,7 @@ pub struct Node {
     config: Config,
     state: Arc<RwLock<State>>,
     store: Arc<RwLock<MemoryStore>>,
+    fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     data_dir: PathBuf,
     networking: Option<Networking>,
     settings: NodeSettings,
@@ -31,16 +39,93 @@ pub struct Node {
     shutdown_rx: oneshot::Receiver<()>,
 }
 
+pub fn handle_gossip_event(
+    topic: &str,
+    payload: &[u8],
+    state: &Arc<RwLock<State>>,
+    store: &Arc<RwLock<MemoryStore>>,
+    fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
+) {
+    let topic_hash = TopicHash::from_raw(topic.to_string());
+    let msg = match LeanGossipsubMessage::decode(&topic_hash, payload) {
+        Ok(msg) => msg,
+        Err(_) => return,
+    };
+    match msg {
+        LeanGossipsubMessage::Block(block) => {
+            let signed = block.block.clone();
+            let root = Bytes32::from(signed.message.block.hash_tree_root());
+            let mut state_guard = state.write().expect("state lock");
+            let mut store_guard = store.write().expect("store lock");
+            if store_guard
+                .put_signed_block(root, signed.clone(), &mut state_guard)
+                .is_ok()
+            {
+                let mut fc = fork_choice.write().expect("fork choice lock");
+                if fc.is_none() {
+                    if let Ok(new_fc) =
+                        ForkChoiceStore::new(signed.clone(), state_guard.clone())
+                    {
+                        *fc = Some(new_fc);
+                    }
+                } else if let Some(fc) = fc.as_mut() {
+                    let _ = fc.on_block(signed.clone(), state_guard.clone());
+                }
+            }
+        }
+        LeanGossipsubMessage::Attestation(att) => {
+            let att = &att.attestation;
+            let idx = att.validator_id.0 as usize;
+            if idx >= VALIDATOR_REGISTRY_LIMIT {
+                return;
+            }
+            let mut bits = vec![false; idx + 1];
+            bits[idx] = true;
+            if let Ok(bitlist) = BitList::new(bits) {
+                let aggregated = Attestation {
+                    aggregation_bits: bitlist,
+                    data: att.message.clone(),
+                };
+                let mut fc = fork_choice.write().expect("fork choice lock");
+                if let Some(fc) = fc.as_mut() {
+                    fc.on_attestation(&aggregated);
+                }
+            }
+        }
+        LeanGossipsubMessage::AttestationSubnet { attestation, .. } => {
+            let att = &attestation.attestation;
+            let idx = att.validator_id.0 as usize;
+            if idx >= VALIDATOR_REGISTRY_LIMIT {
+                return;
+            }
+            let mut bits = vec![false; idx + 1];
+            bits[idx] = true;
+            if let Ok(bitlist) = BitList::new(bits) {
+                let aggregated = Attestation {
+                    aggregation_bits: bitlist,
+                    data: att.message.clone(),
+                };
+                let mut fc = fork_choice.write().expect("fork choice lock");
+                if let Some(fc) = fc.as_mut() {
+                    fc.on_attestation(&aggregated);
+                }
+            }
+        }
+    }
+}
+
 impl Node {
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
         let (config, settings) = load_node_settings(&node_config.config_path)?;
         let state = Arc::new(RwLock::new(build_genesis(config.clone())?));
         let store = Arc::new(RwLock::new(MemoryStore::new()));
+        let fork_choice = Arc::new(RwLock::new(None));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         Ok(Self {
             config,
             state,
             store,
+            fork_choice,
             data_dir: node_config.data_dir,
             networking: None,
             settings,
@@ -92,6 +177,22 @@ impl Node {
             for peer in &net_config.bootnodes {
                 networking.add_seed_peer(peer.clone()).await;
             }
+        }
+
+        if let Some(networking) = &self.networking {
+            let mut rx = networking.events.subscribe();
+            let state = self.state.clone();
+            let store = self.store.clone();
+            let fork_choice = self.fork_choice.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok(event) = rx.recv().await else { continue };
+                    if let crate::networking::NetworkEvent::GossipMessage { topic, payload } = event
+                    {
+                        handle_gossip_event(&topic, &payload, &state, &store, &fork_choice);
+                    }
+                }
+            });
         }
 
         tokio::select! {

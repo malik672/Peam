@@ -84,11 +84,7 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
         message: &BlockWithAttestation,
         signature: &Bytes3112,
     ) -> bool {
-        let proposer_attestations = &message.proposer_attestation.data;
-        if proposer_attestations.len() != 1 {
-            return false;
-        };
-        let proposer_attestation = &proposer_attestations[0];
+        let proposer_attestation = &message.proposer_attestation;
         let idx = proposer_index.0 .0 as usize;
         let Some(pubkey) = self.pubkeys.get(idx) else {
             return false;
@@ -183,11 +179,7 @@ pub fn validate_gossip(
             };
             let message = &block.block.message;
             let block_body = &message.block.body;
-            let proposer_attestations = &message.proposer_attestation.data;
-            if proposer_attestations.len() != 1 {
-                return false;
-            }
-            let proposer_attestation = &proposer_attestations[0];
+            let proposer_attestation = &message.proposer_attestation;
             if proposer_attestation.data.slot != message.block.slot {
                 return false;
             }
@@ -215,6 +207,9 @@ pub fn validate_gossip(
                 .iter()
                 .zip(proofs.data.iter())
             {
+                if proof.participants != attestation.aggregation_bits {
+                    return false;
+                }
                 if !verifier.verify_attestation_signature(attestation, proof) {
                     return false;
                 }

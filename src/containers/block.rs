@@ -1,15 +1,15 @@
-use crate::containers::attestation::{AggregatedAttestation, AggregatedSignatureProof, Attestation};
+use crate::containers::attestation::{AggregatedSignatureProof, Attestation};
 use crate::containers::validator::ValidatorIndex;
 use crate::slot::Slot;
 use crate::ssz::hash::{hash_nodes, merkleize_tree_root};
 use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::types::bytes::{Bytes3112, Bytes32};
+use crate::types::bitlist::BitList;
 use crate::types::collections::SszList;
 use crate::unsafe_vec::write_bytes_at;
 
 pub const ATTESTATIONS_LIMIT: usize = 4_096;
 pub type Attestations = SszList<Attestation, ATTESTATIONS_LIMIT>;
-pub type AggregatedAttestations = SszList<AggregatedAttestation, ATTESTATIONS_LIMIT>;
 pub type AttestationSignatures = SszList<AggregatedSignatureProof, ATTESTATIONS_LIMIT>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -38,7 +38,8 @@ pub struct Block {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockWithAttestation {
     pub block: Block,
-    pub proposer_attestation: AggregatedAttestations,
+    /// Spec defines a single proposer attestation.
+    pub proposer_attestation: Attestation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +62,51 @@ pub struct BlockWithSignatures {
 
 impl SszElement for Block {}
 impl SszElement for SignedBlockWithAttestation {}
+
+impl SignedBlockWithAttestation {
+    /// Basic structural checks for a signed block envelope.
+    pub fn validate_basic(&self) -> Result<(), String> {
+        let block = &self.message.block;
+        let sig_count = self.signature.attestation_signatures.data.len();
+        let att_count = block.body.attestations.data.len();
+        if sig_count != att_count {
+            return Err(format!(
+                "attestation signatures count {} does not match attestations {}",
+                sig_count, att_count
+            ));
+        }
+        let proposer_attestation = &self.message.proposer_attestation;
+        if proposer_attestation.data.slot != block.slot {
+            return Err("proposer attestation slot does not match block slot".to_string());
+        }
+        let proposer_bit = single_set_bit(&proposer_attestation.aggregation_bits)
+            .ok_or_else(|| "proposer attestation must have exactly one participant".to_string())?;
+        if proposer_bit != block.proposer_index.0 .0 as usize {
+            return Err("proposer attestation does not match proposer index".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn single_set_bit(bits: &BitList<{crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT}>) -> Option<usize> {
+    let mut found = None;
+    let len = bits.len();
+    //SIMDDDDDDDDDDDDDDDD
+    for i in 0..len {
+        let byte = i / 8;
+        let bit = i % 8;
+        if byte >= bits.data.len() {
+            break;
+        }
+        if (bits.data[byte] & (1u8 << bit)) != 0 {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(i);
+        }
+    }
+    found
+}
 
 impl SszEncode for BlockHeader {
     fn encode_ssz(&self) -> Vec<u8> {
@@ -301,7 +347,7 @@ impl SszDecode for BlockWithAttestation {
         buf.copy_from_slice(&bytes[4..8]);
         let off_proposer = u32::from_le_bytes(buf) as usize;
         let block = Block::decode_ssz(&bytes[off_block..off_proposer])?;
-        let proposer_attestation = AggregatedAttestations::decode_ssz(&bytes[off_proposer..])?;
+        let proposer_attestation = Attestation::decode_ssz(&bytes[off_proposer..])?;
         Ok(Self {
             block,
             proposer_attestation,
@@ -323,8 +369,7 @@ impl BlockWithAttestation {
             return Err("BlockWithAttestation offsets are invalid".to_string());
         }
         let block = Block::decode_ssz_checked(&bytes[off_block..off_proposer])?;
-        let proposer_attestation =
-            AggregatedAttestations::decode_ssz_checked(&bytes[off_proposer..])?;
+        let proposer_attestation = Attestation::decode_ssz_checked(&bytes[off_proposer..])?;
         Ok(Self {
             block,
             proposer_attestation,

@@ -14,7 +14,6 @@ pub struct Checkpoint {
 impl Container for Checkpoint {}
 
 impl SszEncode for Checkpoint {
-    // check this later, currently hungry
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(40);
         unsafe { out.set_len(40) };

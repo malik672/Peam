@@ -15,54 +15,26 @@ use lean_eth::types::bytes::Bytes32;
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 
-fn dummy_block() -> Block {
-    let body = BlockBody {
-        attestations: SszList::new(vec![]).expect("attestations"),
-    };
-    Block {
-        slot: Slot(Uint64(0)),
-        proposer_index: ValidatorIndex(Uint64(0)),
-        parent_root: Bytes32::zero(),
-        state_root: Bytes32::zero(),
-        body,
+fn compute_state_root_for_block(state: &State, block: &Block) -> Bytes32 {
+    let mut temp = state.clone();
+    if block.slot > temp.slot {
+        temp.process_slots(block.slot).expect("process slots");
     }
+    let header = block.header();
+    temp.process_block_header(header).expect("process header");
+    temp.process_block_body(&block.body, header.body_root)
+        .expect("process body");
+    Bytes32::from(temp.hash_tree_root())
 }
 
 fn dummy_signed_block() -> SignedBlockWithAttestation {
-    let block = dummy_block();
-    let proposer_attestation = {
-        let data = lean_eth::containers::attestation::AttestationData {
-            slot: block.slot,
-            head: lean_eth::containers::checkpoint::Checkpoint {
-                root: Bytes32::zero(),
-                slot: Slot(Uint64(0)),
-            },
-            target: lean_eth::containers::checkpoint::Checkpoint {
-                root: Bytes32::zero(),
-                slot: Slot(Uint64(0)),
-            },
-            source: lean_eth::containers::checkpoint::Checkpoint {
-                root: Bytes32::zero(),
-                slot: Slot(Uint64(0)),
-            },
-        };
-        let att = lean_eth::containers::attestation::Attestation {
-            aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
-                .expect("bits"),
-            data,
-        };
-        SszList::new(vec![att]).expect("proposer attestations")
+    let v = lean_eth::containers::validator::Validator {
+        pubkey: lean_eth::types::bytes::Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
     };
-    let message = BlockWithAttestation {
-        block,
-        proposer_attestation,
-    };
-    let attestation_signatures = SszList::new(vec![]).expect("attestation sigs");
-    let signature = BlockSignatures {
-        attestation_signatures,
-        proposer_signature: lean_eth::types::bytes::Bytes3112::zero(),
-    };
-    SignedBlockWithAttestation { message, signature }
+    let state = State::generate_genesis(Uint64(0), Validators::new(vec![v]).unwrap());
+    signed_block_for_state(&state, 1)
 }
 
 fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestation {
@@ -72,13 +44,14 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
     let body = BlockBody {
         attestations: SszList::new(vec![]).expect("attestations"),
     };
-    let block = Block {
+    let mut block = Block {
         slot: Slot(Uint64(slot)),
         proposer_index: ValidatorIndex(Uint64(0)),
         parent_root,
         state_root: Bytes32::zero(),
         body,
     };
+    block.state_root = compute_state_root_for_block(state, &block);
     let proposer_attestation = {
         let data = lean_eth::containers::attestation::AttestationData {
             slot: block.slot,
@@ -95,12 +68,11 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
                 slot: Slot(Uint64(0)),
             },
         };
-        let att = lean_eth::containers::attestation::Attestation {
+        lean_eth::containers::attestation::Attestation {
             aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
                 .expect("bits"),
             data,
-        };
-        SszList::new(vec![att]).expect("proposer attestations")
+        }
     };
     let message = BlockWithAttestation {
         block,

@@ -1,4 +1,4 @@
-use lean_eth::containers::attestation::{AttestationData, SignedAttestation};
+use lean_eth::containers::attestation::{Attestation, AttestationData, SignedAttestation};
 use lean_eth::containers::block::{
     Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
     SignedBlockWithAttestation,
@@ -27,7 +27,25 @@ fn dummy_block() -> Block {
 
 fn dummy_signed_block() -> SignedBlockWithAttestation {
     let block = dummy_block();
-    let proposer_attestation = SszList::new(vec![]).expect("proposer attestations");
+    let proposer_attestation = Attestation {
+        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
+            .expect("bits"),
+        data: AttestationData {
+            slot: block.slot,
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            target: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    };
     let message = BlockWithAttestation {
         block,
         proposer_attestation,

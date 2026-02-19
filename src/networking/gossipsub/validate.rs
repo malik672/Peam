@@ -39,11 +39,7 @@ pub fn validate_with_context(
 
 fn validate_block_basic(block: &SignedBlockWithAttestation) -> ValidationResult {
     let message = &block.message;
-    let proposer_attestations = &message.proposer_attestation.data;
-    if proposer_attestations.len() != 1 {
-        return ValidationResult::Reject("proposer attestation count invalid".to_string());
-    }
-    let proposer_attestation = &proposer_attestations[0];
+    let proposer_attestation = &message.proposer_attestation;
     if proposer_attestation.data.slot != message.block.slot {
         return ValidationResult::Reject("proposer attestation slot mismatch".to_string());
     }
