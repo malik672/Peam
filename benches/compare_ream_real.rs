@@ -1,4 +1,3 @@
-use alloy_primitives::B256;
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ream_consensus_lean::block::BlockHeader as ReamBlockHeader;
 use ream_consensus_lean::checkpoint::Checkpoint as ReamCheckpoint;
@@ -37,7 +36,7 @@ fn make_lean_checkpoint() -> LeanCheckpoint {
 
 fn make_ream_checkpoint() -> ReamCheckpoint {
     ReamCheckpoint {
-        root: B256::from([0x11u8; 32]),
+        root: [0x11u8; 32].into(),
         slot: 12345,
     }
 }
@@ -56,9 +55,9 @@ fn make_ream_header() -> ReamBlockHeader {
     ReamBlockHeader {
         slot: 100,
         proposer_index: 3,
-        parent_root: B256::from([0x01u8; 32]),
-        state_root: B256::from([0x02u8; 32]),
-        body_root: B256::from([0x03u8; 32]),
+        parent_root: [0x01u8; 32].into(),
+        state_root: [0x02u8; 32].into(),
+        body_root: [0x03u8; 32].into(),
     }
 }
 

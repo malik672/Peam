@@ -25,6 +25,7 @@ topic_scores=lean_eth/gossip:2,lean_eth/blocks:-1
 topic_validators=lean_eth/gossip=block,lean_eth/blocks=attestation
 max_gossip_bytes=12345
 max_reqresp_bytes=67890
+storage_dir=node_store
 "#;
     fs::write(&path, config_text).expect("write config");
 
@@ -65,6 +66,7 @@ max_reqresp_bytes=67890
     );
     assert_eq!(settings.max_gossip_bytes, 12345);
     assert_eq!(settings.max_reqresp_bytes, 67890);
+    assert_eq!(settings.storage_dir, Some("node_store".to_string()));
 
     let _ = fs::remove_file(&path);
 }

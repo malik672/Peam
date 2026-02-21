@@ -282,6 +282,8 @@ impl<T, const LIMIT: usize> SszDecode for SszList<T, LIMIT>
 where
     T: SszDecode + SszElement,
 {
+    /// X1:
+    #[inline]
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         if let Some(elem_len) = T::fixed_len_opt() {
             let len = bytes.len() / elem_len;

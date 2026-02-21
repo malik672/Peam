@@ -13,8 +13,7 @@ use crate::networking::{
 };
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::fork_choice::ForkChoiceStore;
-use crate::storage::MemoryStore;
-use crate::storage::Store;
+use crate::storage::{FileStore, Store};
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
@@ -30,20 +29,21 @@ pub struct NodeConfig {
 pub struct Node {
     config: Config,
     state: Arc<RwLock<State>>,
-    store: Arc<RwLock<MemoryStore>>,
+    store: Arc<RwLock<FileStore>>,
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     data_dir: PathBuf,
+    store_dir: PathBuf,
     networking: Option<Networking>,
     settings: NodeSettings,
     shutdown_tx: Option<oneshot::Sender<()>>,
     shutdown_rx: oneshot::Receiver<()>,
 }
 
-pub fn handle_gossip_event(
+pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
     topic: &str,
     payload: &[u8],
     state: &Arc<RwLock<State>>,
-    store: &Arc<RwLock<MemoryStore>>,
+    store: &Arc<RwLock<S>>,
     fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
 ) {
     let topic_hash = TopicHash::from_raw(topic.to_string());
@@ -118,7 +118,19 @@ impl Node {
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
         let (config, settings) = load_node_settings(&node_config.config_path)?;
         let state = Arc::new(RwLock::new(build_genesis(config.clone())?));
-        let store = Arc::new(RwLock::new(MemoryStore::new()));
+        let store_dir = settings
+            .storage_dir
+            .as_ref()
+            .map(|dir| PathBuf::from(dir))
+            .map(|dir| {
+                if dir.is_absolute() {
+                    dir
+                } else {
+                    node_config.data_dir.join(dir)
+                }
+            })
+            .unwrap_or_else(|| node_config.data_dir.join("store"));
+        let store = Arc::new(RwLock::new(FileStore::open(&store_dir)?));
         let fork_choice = Arc::new(RwLock::new(None));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         Ok(Self {
@@ -127,6 +139,7 @@ impl Node {
             store,
             fork_choice,
             data_dir: node_config.data_dir,
+            store_dir,
             networking: None,
             settings,
             shutdown_tx: Some(shutdown_tx),
@@ -137,6 +150,7 @@ impl Node {
     pub async fn run(mut self) -> Result<(), String> {
         info!("node starting");
         info!("data_dir={}", self.data_dir_display());
+        info!("store_dir={}", self.store_dir_display());
         info!("genesis_time={}", self.config.genesis_time.0);
         let state_root = self
             .state
@@ -219,5 +233,9 @@ impl Node {
 
     fn data_dir_display(&self) -> String {
         self.data_dir.display().to_string()
+    }
+
+    fn store_dir_display(&self) -> String {
+        self.store_dir.display().to_string()
     }
 }
