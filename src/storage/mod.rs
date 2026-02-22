@@ -11,9 +11,6 @@ use crate::types::bytes::Bytes32;
 
 mod storage_utils;
 use self::storage_utils::*;
-mod mmr;
-pub use self::mmr::{MmrInclusionProof, verify_mmr_inclusion_proof};
-pub use self::mmr::FinalizedMmr;
 
 const BLOCKS_DIR: &str = "blocks";
 const SIGNED_BLOCKS_DIR: &str = "signed_blocks";
@@ -21,7 +18,6 @@ const STATES_DIR: &str = "states";
 const META_FILE: &str = "meta.txt";
 const STATE_INDEX_FILE: &str = "state_index.txt";
 const BLOCK_INDEX_FILE: &str = "block_index.txt";
-const FINALIZED_MMR_FILE: &str = "finalized_mmr.bin";
 const SCHEMA_FILE: &str = "schema_version";
 const SCHEMA_VERSION: &str = "1";
 const BLOB_MAGIC: &[u8; 8] = b"LEANSTRG";
@@ -29,8 +25,6 @@ const BLOB_VERSION: u8 = 1;
 const BLOB_KIND_STATE: u8 = 1;
 const BLOB_KIND_BLOCK: u8 = 2;
 const BLOB_KIND_SIGNED_BLOCK: u8 = 3;
-// Maximum-performance mode: keep local-trust indexes only, skip MMR maintenance.
-const ENABLE_FINALIZED_MMR: bool = false;
 // Maximum-performance local-trust mode: trust on-disk slot indexes without
 // checking every referenced blob at startup.
 //
@@ -283,7 +277,6 @@ pub struct FileStore {
     head: Option<Bytes32>,
     finalized: Option<Bytes32>,
     justified: Option<Bytes32>,
-    finalized_mmr: FinalizedMmr,
     recovery: RecoveryReport,
 }
 
@@ -305,7 +298,6 @@ impl FileStore {
             head: None,
             finalized: None,
             justified: None,
-            finalized_mmr: FinalizedMmr::default(),
             recovery: RecoveryReport::default(),
         };
         store.load_from_disk()?;
@@ -319,34 +311,6 @@ impl FileStore {
     #[inline]
     pub fn recovery_report(&self) -> RecoveryReport {
         self.recovery.clone()
-    }
-
-    pub fn finalized_mmr_root(&self) -> Bytes32 {
-        if !ENABLE_FINALIZED_MMR {
-            return Bytes32::zero();
-        }
-        self.finalized_mmr.root()
-    }
-
-    pub fn finalized_mmr_size(&self) -> usize {
-        if !ENABLE_FINALIZED_MMR {
-            return 0;
-        }
-        self.finalized_mmr.size()
-    }
-
-    pub fn finalized_mmr_proof_by_index(&self, index: usize) -> Option<MmrInclusionProof> {
-        if !ENABLE_FINALIZED_MMR {
-            return None;
-        }
-        self.finalized_mmr.proof_by_index(index)
-    }
-
-    pub fn finalized_mmr_proof_by_root(&self, root: Bytes32) -> Option<MmrInclusionProof> {
-        if !ENABLE_FINALIZED_MMR {
-            return None;
-        }
-        self.finalized_mmr.proof_by_root(root)
     }
 
     /// Prunes data older than `finalized_slot - keep_recent_slots`.
@@ -454,51 +418,8 @@ impl FileStore {
         self.load_state_index()?;
         self.load_block_index()?;
         self.load_signed_block_handles()?;
-        if ENABLE_FINALIZED_MMR {
-            self.load_finalized_mmr()?;
-        }
         self.load_meta()?;
         Ok(())
-    }
-
-    fn load_finalized_mmr(&mut self) -> Result<(), String> {
-        let path = self.root.join(FINALIZED_MMR_FILE);
-        if !path.exists() {
-            self.finalized_mmr = FinalizedMmr::default();
-            return Ok(());
-        }
-        let raw = fs::read(path).map_err(|err| err.to_string())?;
-        if raw.len() % 32 != 0 {
-            self.recovery.skipped_corrupt += 1;
-        }
-        let mut leaves = Vec::with_capacity(raw.len() / 32);
-        let whole = raw.len() / 32;
-        for idx in 0..whole {
-            let start = idx * 32;
-            let mut out = [0u8; 32];
-            out.copy_from_slice(&raw[start..start + 32]);
-            leaves.push(Bytes32::from(out));
-        }
-        self.finalized_mmr = FinalizedMmr::from_leaves(leaves);
-        Ok(())
-    }
-
-    fn maybe_append_finalized_root(&mut self, root: Bytes32) -> Result<(), String> {
-        if !ENABLE_FINALIZED_MMR {
-            return Ok(());
-        }
-        if root == Bytes32::zero() {
-            return Ok(());
-        }
-        if self.finalized_mmr.last() == Some(root) {
-            return Ok(());
-        }
-        self.finalized_mmr.append(root);
-        let mut payload = Vec::with_capacity(self.finalized_mmr.size() * 32);
-        for root in self.finalized_mmr.leaves() {
-            payload.extend_from_slice(&root.as_array());
-        }
-        atomic_write(self.root.join(FINALIZED_MMR_FILE), &payload)
     }
 
     /// Returns roots that must never be pruned.
@@ -931,7 +852,6 @@ impl Store for FileStore {
         self.head = Some(root);
         self.justified = Some(state.latest_justified.root);
         self.finalized = Some(state.latest_finalized.root);
-        self.maybe_append_finalized_root(state.latest_finalized.root)?;
 
         self.persist_block(root, &block)?;
         self.persist_signed_block(root, &signed)?;
@@ -965,7 +885,6 @@ impl Store for FileStore {
 
     fn set_finalized(&mut self, root: Bytes32) {
         self.finalized = Some(root);
-        let _ = self.maybe_append_finalized_root(root);
         let _ = self.persist_meta();
     }
 

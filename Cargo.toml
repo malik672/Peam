@@ -84,7 +84,3 @@ harness = false
 [[bench]]
 name = "index_text_strategy"
 harness = false
-
-[[bench]]
-name = "finalized_mmr"
-harness = false

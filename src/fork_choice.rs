@@ -23,14 +23,19 @@ pub struct ForkChoiceStore {
 }
 
 impl ForkChoiceStore {
-    /// Initialize from an anchor block + state (Ream parity: anchor must match state root).
+    /// Initialize from an anchor block + post-state.
+    ///
+    /// `State::state_transition` verifies `hash_tree_root(post_state_with_staged_header) ==
+    /// block.state_root`, then writes `latest_block_header.state_root = block.state_root`.
+    /// So the stable invariant available here is the header field equality, not
+    /// `hash_tree_root(anchor_state) == block.state_root`.
     pub fn new(
         anchor_block: SignedBlockWithAttestation,
         anchor_state: State,
     ) -> Result<Self, String> {
         let block = anchor_block.message.block.clone();
-        if Bytes32::from(anchor_state.hash_tree_root()) != block.state_root {
-            return Err("anchor block state root must match anchor state".to_string());
+        if !state_matches_block_root(&anchor_state, block.state_root) {
+            return Err("anchor block state root does not match post-state invariants".to_string());
         }
         let root = Bytes32::from(block.hash_tree_root());
         let slot = block.slot.0 .0;
@@ -62,8 +67,8 @@ impl ForkChoiceStore {
         post_state: State,
     ) -> Result<(), String> {
         let block = signed_block.message.block.clone();
-        if Bytes32::from(post_state.hash_tree_root()) != block.state_root {
-            return Err("post-state root does not match block.state_root".to_string());
+        if !state_matches_block_root(&post_state, block.state_root) {
+            return Err("post-state root does not match block.state_root invariants".to_string());
         }
         let root = Bytes32::from(block.hash_tree_root());
         let slot = block.slot.0 .0;
@@ -165,6 +170,11 @@ impl ForkChoiceStore {
     pub fn latest_finalized(&self) -> Checkpoint {
         self.latest_finalized
     }
+}
+
+#[inline]
+fn state_matches_block_root(state: &State, expected: Bytes32) -> bool {
+    state.latest_block_header.state_root == expected || Bytes32::from(state.hash_tree_root()) == expected
 }
 
 fn bitlist_indices<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
