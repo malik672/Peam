@@ -129,7 +129,7 @@ fn lean_spec_process_first_block_after_genesis() {
 
     assert_eq!(state.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(1)));
-    assert_eq!(state.latest_block_header.state_root, Bytes32::zero());
+    assert_eq!(state.latest_block_header.state_root, block.state_root);
     assert_eq!(state.historical_block_hashes.data.len(), 1);
 }
 
@@ -169,7 +169,7 @@ fn lean_spec_blocks_with_gaps() {
 
     assert_eq!(state.slot, Slot(Uint64(8)));
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(8)));
-    assert_eq!(state.latest_block_header.state_root, Bytes32::zero());
+    assert_ne!(state.latest_block_header.state_root, Bytes32::zero());
     assert_eq!(state.historical_block_hashes.data.len(), 8);
 }
 

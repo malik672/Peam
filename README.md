@@ -59,6 +59,9 @@ cargo test --features pq_multisig --test pq_negative
 - Aggregated proof checks enforce:
   - proof participants must match attestation aggregation bits
   - out-of-range participant indices are rejected
+- State transition checks enforce:
+  - post-state root is recomputed and must equal `block.state_root`
+  - `latest_block_header.state_root` is set immediately to the verified post-state root
 
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.

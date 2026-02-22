@@ -34,6 +34,15 @@ pub struct State {
     pub latest_block_header: BlockHeader,
     pub latest_justified: Checkpoint,
     pub latest_finalized: Checkpoint,
+    /// Slot-progress history used to keep a deterministic "timeline" length.
+    ///
+    /// Invariant: after processing a header at slot `N`, this vector length is `N`.
+    ///
+    /// Update rule in `process_block_header_assuming_slot`:
+    /// - append exactly one `block.parent_root` entry
+    /// - append `num_empty_slots` zero roots for skipped slots
+    ///
+    /// So each header import contributes `1 + num_empty_slots` entries.
     pub historical_block_hashes: HistoricalBlockHashes,
     pub justified_slots: JustifiedSlots,
     pub validators: Validators,
@@ -136,8 +145,11 @@ impl State {
         let latest_slot = self.latest_block_header.slot.0.0;
         let num_empty_slots = block_slot - latest_slot - 1;
 
+        // Always record one parent linkage for the imported header.
         self.historical_block_hashes.data.push(block.parent_root);
         if num_empty_slots > 0 {
+            // For skipped slots between `latest_slot` and `block_slot`, append
+            // zero placeholders so history length still tracks slot progress.
             let add = num_empty_slots as usize;
             let data = &mut self.historical_block_hashes.data;
             let start = data.len();
@@ -149,7 +161,8 @@ impl State {
         }
 
         let mut header = block;
-        // Keep latest_block_header.state_root at zero; post-state root is checked separately.
+        // Stage header with zero state_root while block processing is still in-flight.
+        // `state_transition` sets it to the verified post-state root after root check passes.
         header.state_root = Bytes32::zero();
         self.latest_block_header = header;
         Ok(())
@@ -192,6 +205,8 @@ impl State {
         if computed_root != block.state_root {
             return Err("post-state root does not match block.state_root".to_string());
         }
+        // Promote the staged header root immediately after successful verification.
+        self.latest_block_header.state_root = computed_root;
         Ok(())
     }
 
