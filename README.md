@@ -31,7 +31,16 @@ topic_scores=leanconsensus/devnet2/block/ssz_snappy:2,leanconsensus/devnet2/atte
 topic_validators=leanconsensus/devnet2/block/ssz_snappy=block,leanconsensus/devnet2/attestation/ssz_snappy=attestation
 max_gossip_bytes=2000000
 max_reqresp_bytes=4000000
+storage_dir=store
 ```
+
+## Storage
+- `MemoryStore`: in-memory store for tests and local dev.
+- `FileStore`: simple persistent store that writes states/blocks/signed blocks to disk and restores head/finalized/justified metadata on restart.
+- Node runtime uses `FileStore` by default at `<data-dir>/store` unless `storage_dir` is set in config.
+- `FileStore` writes via atomic rename and persists a `schema_version` file for compatibility checks.
+- Persisted blobs include a versioned envelope and SHA-256 checksum; legacy raw SSZ blobs are still accepted on load.
+- On startup, corrupt `.ssz` blobs are skipped and counted in a recovery report.
 
 ## Tests
 ```bash

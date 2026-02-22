@@ -19,6 +19,7 @@ pub struct NodeSettings {
     pub topic_validators: Vec<(String, crate::networking::GossipValidatorKind)>,
     pub max_gossip_bytes: usize,
     pub max_reqresp_bytes: usize,
+    pub storage_dir: Option<String>,
 }
 
 pub fn load_config(path: &Path) -> Result<Config, String> {
@@ -92,6 +93,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             ],
             max_gossip_bytes: 2_000_000,
             max_reqresp_bytes: 4_000_000,
+            storage_dir: None,
         };
         return Ok((config, settings));
     }
@@ -110,6 +112,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut topic_validators: Vec<(String, crate::networking::GossipValidatorKind)> = Vec::new();
     let mut max_gossip_bytes: Option<usize> = None;
     let mut max_reqresp_bytes: Option<usize> = None;
+    let mut storage_dir: Option<String> = None;
 
     for line in text.lines() {
         let line = line.trim();
@@ -208,6 +211,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     .parse::<usize>()
                     .map_err(|err| format!("Invalid max_reqresp_bytes {value}: {err}"))?,
             );
+        } else if key == "storage_dir" {
+            if !value.is_empty() {
+                storage_dir = Some(value.to_string());
+            }
         }
     }
 
@@ -244,6 +251,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             ],
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            storage_dir,
         }
     } else {
         NodeSettings {
@@ -258,6 +266,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             topic_validators,
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            storage_dir,
         }
     };
     Ok((config, settings))

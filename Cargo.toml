@@ -68,3 +68,23 @@ harness = false
 [[bench]]
 name = "chunkify_fixed"
 harness = false
+
+[[bench]]
+name = "storage_open"
+harness = false
+
+[[bench]]
+name = "storage_lookup"
+harness = false
+
+[[bench]]
+name = "index_rebuild_strategy"
+harness = false
+
+[[bench]]
+name = "index_text_strategy"
+harness = false
+
+[[bench]]
+name = "finalized_mmr"
+harness = false
