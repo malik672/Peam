@@ -1,7 +1,9 @@
+#![allow(clippy::manual_is_multiple_of)]
+
 use std::path::PathBuf;
 
-use lean_eth::containers::block::BlockHeader;
 use lean_eth::containers::block::BlockBody;
+use lean_eth::containers::block::BlockHeader;
 use lean_eth::containers::checkpoint::Checkpoint;
 use lean_eth::containers::config::Config;
 use lean_eth::containers::req_resp::BlocksByRootRequest;
@@ -14,8 +16,7 @@ use lean_eth::types::uint::Uint64;
 use serde_json::Value;
 
 fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ssz/devnet/consensus_containers")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ssz/devnet/consensus_containers")
 }
 
 fn networking_fixtures_root() -> PathBuf {
@@ -141,7 +142,9 @@ fn lean_spec_block_header_zero_fixture() {
     assert_eq!(encoded, bytes);
 
     let slot = entry["value"]["slot"].as_u64().expect("slot");
-    let proposer = entry["value"]["proposerIndex"].as_u64().expect("proposerIndex");
+    let proposer = entry["value"]["proposerIndex"]
+        .as_u64()
+        .expect("proposerIndex");
     let parent_root = entry["value"]["parentRoot"].as_str().expect("parentRoot");
     let state_root = entry["value"]["stateRoot"].as_str().expect("stateRoot");
     let body_root = entry["value"]["bodyRoot"].as_str().expect("bodyRoot");
@@ -167,7 +170,9 @@ fn lean_spec_block_header_typical_fixture() {
     assert_eq!(encoded, bytes);
 
     let slot = entry["value"]["slot"].as_u64().expect("slot");
-    let proposer = entry["value"]["proposerIndex"].as_u64().expect("proposerIndex");
+    let proposer = entry["value"]["proposerIndex"]
+        .as_u64()
+        .expect("proposerIndex");
     let parent_root = entry["value"]["parentRoot"].as_str().expect("parentRoot");
     let state_root = entry["value"]["stateRoot"].as_str().expect("stateRoot");
     let body_root = entry["value"]["bodyRoot"].as_str().expect("bodyRoot");

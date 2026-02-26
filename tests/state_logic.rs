@@ -1,19 +1,19 @@
+use lean_eth::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
 use lean_eth::containers::block::{
     AttestationSignatures, Attestations, Block, BlockBody, BlockHeader, BlockSignatures,
     BlockWithAttestation, SignedBlockWithAttestation,
 };
-use lean_eth::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
 use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::state::{State, Validators, SignatureVerifier};
+use lean_eth::containers::state::{SignatureVerifier, State, Validators};
 use lean_eth::containers::validator::{Validator, ValidatorIndex};
 use lean_eth::slot::Slot;
 use lean_eth::ssz::HashTreeRoot;
-use lean_eth::types::bytes::{Bytes32, Bytes52};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
 use lean_eth::types::bitlist::BitList;
 use lean_eth::types::bytes::ByteList;
 use lean_eth::types::bytes::Bytes3112;
+use lean_eth::types::bytes::{Bytes32, Bytes52};
+use lean_eth::types::collections::SszList;
+use lean_eth::types::uint::Uint64;
 
 #[test]
 fn process_slots_advances_state_and_sets_root() {
@@ -56,7 +56,8 @@ fn process_block_header_updates_latest_header() {
 
 fn build_block_for_slot(state: &State, slot: u64, proposer: u64) -> Block {
     let mut temp = state.clone();
-    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    temp.process_slots(Slot(Uint64(slot)))
+        .expect("process slots");
     let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
     let body = BlockBody {
         attestations: Attestations::new(vec![]).expect("attestations"),
@@ -88,7 +89,8 @@ fn build_block_with_attestations_for_slot(
     attestations: Vec<Attestation>,
 ) -> Block {
     let mut temp = state.clone();
-    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    temp.process_slots(Slot(Uint64(slot)))
+        .expect("process slots");
     let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
     let body = BlockBody {
         attestations: Attestations::new(attestations).expect("attestations"),
@@ -606,7 +608,9 @@ fn attestations_update_latest_justified() {
         },
     };
     let attestations = Attestations::new(vec![att]).expect("attestations");
-    state.process_attestations(&attestations).expect("process attestations");
+    state
+        .process_attestations(&attestations)
+        .expect("process attestations");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
     assert!(state.justified_slots.len() >= 1);
@@ -642,7 +646,9 @@ fn attestations_with_zero_validators_do_not_justify() {
         },
     };
     let attestations = Attestations::new(vec![att]).expect("attestations");
-    state.process_attestations(&attestations).expect("process attestations");
+    state
+        .process_attestations(&attestations)
+        .expect("process attestations");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));

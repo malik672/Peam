@@ -1,8 +1,8 @@
 use lean_eth::ssz::hash::{merkleize_with_limit, mix_in_length};
 use lean_eth::ssz::{HashTreeRoot, SszEncode};
+use lean_eth::types::bitlist::BitList;
 use lean_eth::types::bytes::Bytes32;
 use lean_eth::types::collections::{SszList, SszVector};
-use lean_eth::types::bitlist::BitList;
 use lean_eth::types::uint::Uint64;
 
 fn chunk_from_u64s(values: &[u64]) -> Bytes32 {
@@ -111,8 +111,7 @@ fn ssz_list_variable_offsets_empty_and_uneven() {
     let a = BitList::<8>::new(vec![]).expect("bitlist a");
     let b = BitList::<8>::new(vec![true, false, true, true, false, true]).expect("bitlist b");
     let c = BitList::<8>::new(vec![true]).expect("bitlist c");
-    let list = SszList::<BitList<8>, 4>::new(vec![a.clone(), b.clone(), c.clone()])
-        .expect("list");
+    let list = SszList::<BitList<8>, 4>::new(vec![a.clone(), b.clone(), c.clone()]).expect("list");
 
     let encoded = list.encode_ssz();
     let a_enc = a.encode_ssz();

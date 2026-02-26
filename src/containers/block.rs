@@ -3,8 +3,8 @@ use crate::containers::validator::ValidatorIndex;
 use crate::slot::Slot;
 use crate::ssz::hash::{hash_nodes, merkleize_tree_root};
 use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
-use crate::types::bytes::{Bytes3112, Bytes32};
 use crate::types::bitlist::BitList;
+use crate::types::bytes::{Bytes32, Bytes3112};
 use crate::types::collections::SszList;
 use crate::unsafe_vec::write_bytes_at;
 
@@ -81,14 +81,16 @@ impl SignedBlockWithAttestation {
         }
         let proposer_bit = single_set_bit(&proposer_attestation.aggregation_bits)
             .ok_or_else(|| "proposer attestation must have exactly one participant".to_string())?;
-        if proposer_bit != block.proposer_index.0 .0 as usize {
+        if proposer_bit != block.proposer_index.0.0 as usize {
             return Err("proposer attestation does not match proposer index".to_string());
         }
         Ok(())
     }
 }
 
-fn single_set_bit(bits: &BitList<{crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT}>) -> Option<usize> {
+fn single_set_bit(
+    bits: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
+) -> Option<usize> {
     let mut found = None;
     let len = bits.len();
     //SIMDDDDDDDDDDDDDDDD
@@ -112,8 +114,8 @@ impl SszEncode for BlockHeader {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(112);
         unsafe { out.set_len(112) };
-        unsafe { write_bytes_at(&mut out, 0, &self.slot.0 .0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut out, 8, &self.proposer_index.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 0, &self.slot.0.0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 8, &self.proposer_index.0.0.to_le_bytes()) };
         unsafe { write_bytes_at(&mut out, 16, self.parent_root.as_ref()) };
         unsafe { write_bytes_at(&mut out, 48, self.state_root.as_ref()) };
         unsafe { write_bytes_at(&mut out, 80, self.body_root.as_ref()) };
@@ -234,8 +236,8 @@ impl SszEncode for Block {
         let mut variable = Vec::with_capacity(body.len());
 
         unsafe { fixed.set_len(fixed_len) };
-        unsafe { write_bytes_at(&mut fixed, 0, &self.slot.0 .0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut fixed, 8, &self.proposer_index.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut fixed, 0, &self.slot.0.0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut fixed, 8, &self.proposer_index.0.0.to_le_bytes()) };
         unsafe { write_bytes_at(&mut fixed, 16, self.parent_root.as_ref()) };
         unsafe { write_bytes_at(&mut fixed, 48, self.state_root.as_ref()) };
 

@@ -1,10 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 
 use lean_eth::containers::state::State as LeanEthState;
+use lean_eth::containers::state::Validators as LeanEthValidators;
 use lean_eth::containers::validator::Validator as LeanEthValidator;
 use lean_eth::containers::validator::ValidatorIndex as LeanEthValidatorIndex;
-use lean_eth::containers::state::Validators as LeanEthValidators;
 use lean_eth::slot::Slot as LeanEthSlot;
+use lean_eth::ssz::hash::{chunkify_fixed, merkleize};
 use lean_eth::ssz::{
     HashTreeRoot as LeanEthHashTreeRoot, SszDecode as LeanEthSszDecode,
     SszFixedLen as LeanEthSszFixedLen,
@@ -13,7 +14,6 @@ use lean_eth::types::bytes::Bytes32 as LeanEthBytes32;
 use lean_eth::types::bytes::Bytes52 as LeanEthBytes52;
 use lean_eth::types::collections::SszList as LeanEthSszList;
 use lean_eth::types::uint::Uint64 as LeanEthUint64;
-use lean_eth::ssz::hash::{chunkify_fixed, merkleize, hash_nodes};
 
 fn make_lean_eth_state(num_validators: u64) -> LeanEthState {
     let mut vals = Vec::with_capacity(num_validators as usize);
@@ -28,6 +28,7 @@ fn make_lean_eth_state(num_validators: u64) -> LeanEthState {
     LeanEthState::generate_genesis(LeanEthUint64(0), validators)
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 struct ReamLikeHeader {
     slot: u64,
@@ -37,6 +38,7 @@ struct ReamLikeHeader {
     body_root: [u8; 32],
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 struct ReamLikeState {
     slot: u64,
@@ -198,5 +200,10 @@ fn bench_decode_list(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_hash_tree_root, bench_process_slots, bench_decode_list);
+criterion_group!(
+    benches,
+    bench_hash_tree_root,
+    bench_process_slots,
+    bench_decode_list
+);
 criterion_main!(benches);

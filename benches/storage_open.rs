@@ -41,7 +41,8 @@ fn dummy_block(slot: u64) -> Block {
 }
 
 fn dummy_state(slot: u64) -> State {
-    let mut state = State::generate_genesis(Uint64(0), Validators::new(vec![]).expect("validators"));
+    let mut state =
+        State::generate_genesis(Uint64(0), Validators::new(vec![]).expect("validators"));
     state.slot = Slot(Uint64(slot));
     state
 }

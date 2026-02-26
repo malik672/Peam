@@ -38,7 +38,7 @@ impl ForkChoiceStore {
             return Err("anchor block state root does not match post-state invariants".to_string());
         }
         let root = Bytes32::from(block.hash_tree_root());
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         let mut blocks = RapidHashMap::default();
         let mut states = RapidHashMap::default();
         let mut parents = RapidHashMap::default();
@@ -71,17 +71,20 @@ impl ForkChoiceStore {
             return Err("post-state root does not match block.state_root invariants".to_string());
         }
         let root = Bytes32::from(block.hash_tree_root());
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         self.blocks.insert(root, signed_block);
         self.states.insert(root, post_state.clone());
         self.parents.insert(root, block.parent_root);
-        self.children.entry(block.parent_root).or_default().push(root);
+        self.children
+            .entry(block.parent_root)
+            .or_default()
+            .push(root);
         self.latest_justified = post_state.latest_justified;
         self.latest_finalized = post_state.latest_finalized;
         let head = self.find_head();
         if let Some(head_block) = self.blocks.get(&head) {
             self.head = head;
-            self.head_slot = head_block.message.block.slot.0 .0;
+            self.head_slot = head_block.message.block.slot.0.0;
         } else if slot > self.head_slot {
             self.head = root;
             self.head_slot = slot;
@@ -101,7 +104,7 @@ impl ForkChoiceStore {
         let head = self.find_head();
         if let Some(head_block) = self.blocks.get(&head) {
             self.head = head;
-            self.head_slot = head_block.message.block.slot.0 .0;
+            self.head_slot = head_block.message.block.slot.0.0;
         }
     }
 
@@ -174,7 +177,8 @@ impl ForkChoiceStore {
 
 #[inline]
 fn state_matches_block_root(state: &State, expected: Bytes32) -> bool {
-    state.latest_block_header.state_root == expected || Bytes32::from(state.hash_tree_root()) == expected
+    state.latest_block_header.state_root == expected
+        || Bytes32::from(state.hash_tree_root()) == expected
 }
 
 fn bitlist_indices<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {

@@ -32,7 +32,7 @@ impl SszEncode for ValidatorIndex {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8);
         unsafe { out.set_len(8) };
-        unsafe { write_bytes_at(&mut out, 0, &self.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 0, &self.0.0.to_le_bytes()) };
         out
     }
 }
@@ -73,7 +73,7 @@ impl SszEncode for Validator {
         let mut out = Vec::with_capacity(52 + 8 + 8);
         unsafe { out.set_len(52 + 8 + 8) };
         unsafe { write_bytes_at(&mut out, 0, self.pubkey.as_ref()) };
-        unsafe { write_bytes_at(&mut out, 52, &self.index.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 52, &self.index.0.0.to_le_bytes()) };
         unsafe { write_bytes_at(&mut out, 60, &self.balance.0.to_le_bytes()) };
         out
     }

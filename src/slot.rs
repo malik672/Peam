@@ -15,7 +15,7 @@ impl SszEncode for Slot {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8);
         unsafe { out.set_len(8) };
-        unsafe { write_bytes_at(&mut out, 0, &self.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 0, &self.0.0.to_le_bytes()) };
         out
     }
 }
@@ -55,14 +55,14 @@ pub fn justified_index_after(candidate_slot: Slot, finalized_slot: Slot) -> Opti
     if candidate_slot <= finalized_slot {
         return None;
     }
-    Some(candidate_slot.0 .0 - finalized_slot.0 .0 - 1)
+    Some(candidate_slot.0.0 - finalized_slot.0.0 - 1)
 }
 
 pub fn is_justifiable_after(candidate_slot: Slot, finalized_slot: Slot) -> Result<bool, String> {
     if candidate_slot < finalized_slot {
         return Err("candidate slot must be >= finalized slot".to_string());
     }
-    let delta = candidate_slot.0 .0 - finalized_slot.0 .0;
+    let delta = candidate_slot.0.0 - finalized_slot.0.0;
     if delta <= 5 {
         return Ok(true);
     }

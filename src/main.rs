@@ -93,7 +93,10 @@ async fn main() {
             print_usage();
             std::process::exit(2);
         });
-        let node = match Node::load(NodeConfig { config_path, data_dir }) {
+        let node = match Node::load(NodeConfig {
+            config_path,
+            data_dir,
+        }) {
             Ok(node) => node,
             Err(err) => {
                 eprintln!("{err}");

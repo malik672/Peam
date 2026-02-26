@@ -3,8 +3,10 @@ use lean_eth::containers::block::{
     Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
     SignedBlockWithAttestation,
 };
-use lean_eth::containers::gossip::{GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit};
 use lean_eth::containers::checkpoint::Checkpoint;
+use lean_eth::containers::gossip::{
+    GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
+};
 use lean_eth::containers::validator::ValidatorIndex;
 use lean_eth::slot::Slot;
 use lean_eth::ssz::{HashTreeRoot, SszDecode, SszEncode};
@@ -28,8 +30,7 @@ fn dummy_block() -> Block {
 fn dummy_signed_block() -> SignedBlockWithAttestation {
     let block = dummy_block();
     let proposer_attestation = Attestation {
-        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
-            .expect("bits"),
+        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
         data: AttestationData {
             slot: block.slot,
             head: Checkpoint {

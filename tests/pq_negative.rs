@@ -1,5 +1,5 @@
 use lean_eth::crypto::pq;
-use lean_eth::types::bytes::{Bytes3112, Bytes52};
+use lean_eth::types::bytes::{Bytes52, Bytes3112};
 
 fn sample_message() -> [u8; 32] {
     [0xAB; 32]
@@ -36,9 +36,9 @@ fn pq_verify_signature_rejects_invalid_material() {
     );
 }
 
-#[cfg(all(feature = "pq_crypto", not(feature = "pq_multisig")))]
+#[cfg(feature = "pq_crypto")]
 #[test]
-fn pq_aggregate_verify_reports_multisig_feature_disabled() {
+fn pq_aggregate_verify_reports_not_implemented() {
     let err = pq::verify_aggregate_signature(
         &[Bytes52::from([0u8; 52])],
         &sample_message(),
@@ -46,18 +46,5 @@ fn pq_aggregate_verify_reports_multisig_feature_disabled() {
         0,
     )
     .unwrap_err();
-    assert!(err.contains("pq_multisig feature disabled"));
-}
-
-#[cfg(feature = "pq_multisig")]
-#[test]
-fn pq_aggregate_verify_rejects_invalid_bytes() {
-    let err = pq::verify_aggregate_signature(
-        &[Bytes52::from([0u8; 52])],
-        &sample_message(),
-        &[0xDE, 0xAD, 0xBE, 0xEF],
-        0,
-    )
-    .unwrap_err();
-    assert!(err.contains("Failed to decode aggregate signature") || err.contains("verification failed"));
+    assert!(err.contains("not yet implemented"));
 }

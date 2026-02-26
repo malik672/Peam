@@ -14,13 +14,14 @@ use lean_eth::slot::Slot;
 use lean_eth::ssz::{HashTreeRoot, SszEncode};
 use lean_eth::storage::MemoryStore;
 use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::{Bytes3112, Bytes32, Bytes52};
+use lean_eth::types::bytes::{Bytes32, Bytes52, Bytes3112};
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 
 fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, State, Bytes32) {
     let mut temp = state.clone();
-    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    temp.process_slots(Slot(Uint64(slot)))
+        .expect("process slots");
     let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
     let body = BlockBody {
         attestations: SszList::new(vec![]).expect("attestations"),
@@ -67,7 +68,11 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
         proposer_signature: Bytes3112::zero(),
     };
     let root = Bytes32::from(message.block.hash_tree_root());
-    (SignedBlockWithAttestation { message, signature }, post, root)
+    (
+        SignedBlockWithAttestation { message, signature },
+        post,
+        root,
+    )
 }
 
 #[test]

@@ -1,0 +1,7 @@
+[book]
+title = "lean_eth"
+authors = ["lean_eth contributors"]
+language = "en"
+
+[output.html]
+no-section-label = false

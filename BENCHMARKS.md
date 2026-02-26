@@ -9,16 +9,12 @@ This document defines how to run and interpret storage benchmarks in `lean_eth`.
 
 ## Benchmark Files
 
-- `/Users/malik/Desktop/mc2/lean_eth/lean_eth/benches/storage_open.rs`
-- `/Users/malik/Desktop/mc2/lean_eth/lean_eth/benches/storage_lookup.rs`
+- `benches/storage_open.rs`
+- `benches/storage_lookup.rs`
 
 ## Prerequisites
 
-Run from:
-
-```bash
-cd /Users/malik/Desktop/mc2/lean_eth/lean_eth
-```
+Run from the repository root.
 
 Optional (faster plots): install `gnuplot`.
 
@@ -45,35 +41,36 @@ cargo bench --bench storage_open -- --sample-size 20
 cargo bench --bench storage_lookup -- --sample-size 20
 ```
 
-## Current Snapshot (2026-02-20)
+## Current Snapshot (2026-02-26)
 
 `storage_open`:
 
-- `file_store_open_1k_states_1k_blocks`: `47.467 ms .. 58.541 ms`
-- `file_store_cold_read_state_by_root`: `47.327 ms .. 57.640 ms`
-- `file_store_cold_read_block_by_root`: `54.599 ms .. 79.654 ms`
-- `file_store_cold_read_state_by_slot`: `53.117 ms .. 64.324 ms`
-- `file_store_cold_read_block_by_slot`: `50.252 ms .. 53.353 ms`
+- `file_store_open_1k_states_1k_blocks`: `16.886 ms .. 17.328 ms`
+- `file_store_cold_read_state_by_root`: `17.029 ms .. 17.611 ms`
+- `file_store_cold_read_block_by_root`: `17.791 ms .. 18.806 ms`
+- `file_store_cold_read_state_by_slot`: `18.201 ms .. 18.848 ms`
+- `file_store_cold_read_block_by_slot`: `18.546 ms .. 19.268 ms`
 
 `storage_lookup`:
 
-- `memory_get_state_by_root`: `18.962 ns .. 39.445 ns`
-- `memory_get_state_by_slot`: `106.43 ns .. 166.76 ns`
-- `file_get_state_by_root`: `13.441 ns .. 18.250 ns`
-- `file_get_state_by_slot`: `6.2137 ns .. 6.3521 ns`
-- `memory_random_slot_mix`: `2.3901 us .. 2.6726 us`
-- `file_random_slot_mix`: `2.3439 us .. 2.6060 us`
+- `memory_get_state_by_root`: `35.430 ns .. 37.563 ns`
+- `memory_get_state_by_slot`: `37.842 ns .. 39.520 ns`
+- `file_get_state_by_root`: `1.0821 us .. 1.1446 us`
+- `file_get_state_by_slot`: `1.0949 us .. 1.1824 us`
+- `memory_random_slot_mix`: `3.9287 us .. 4.1318 us`
+- `file_random_slot_mix`: `212.71 us .. 217.43 us`
 
 Notes:
 
-- `storage_lookup` is a hot in-memory benchmark after store construction/open.
+- `storage_lookup` now measures decode-on-demand DB blob reads for `FileStore`
+  (no in-memory decoded-object map in the storage layer).
 - `storage_open` cold-read benches include `FileStore::open(...)` on every iteration, so they include startup load cost.
 
 ## Result Output
 
 Criterion writes reports to:
 
-- `/Users/malik/Desktop/mc2/lean_eth/lean_eth/target/criterion/`
+- `target/criterion/`
 
 For trend tracking, compare the median range (`time: [low mid high]`) across runs on the same machine and power profile.
 
@@ -82,3 +79,4 @@ For trend tracking, compare the median range (`time: [low mid high]`) across run
 - Do not compare runs across different machines for regression decisions.
 - Re-run with the same sample-size/time settings before claiming a regression.
 - Ignore Criterion "change" percentages when benchmark structure was modified.
+

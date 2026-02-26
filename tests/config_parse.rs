@@ -26,6 +26,9 @@ topic_validators=lean_eth/gossip=block,lean_eth/blocks=attestation
 max_gossip_bytes=12345
 max_reqresp_bytes=67890
 storage_dir=node_store
+metrics=true
+metrics_address=0.0.0.0
+metrics_port=18080
 "#;
     fs::write(&path, config_text).expect("write config");
 
@@ -61,12 +64,18 @@ storage_dir=node_store
         settings.topic_validators,
         vec![
             ("lean_eth/gossip".to_string(), GossipValidatorKind::Block),
-            ("lean_eth/blocks".to_string(), GossipValidatorKind::Attestation),
+            (
+                "lean_eth/blocks".to_string(),
+                GossipValidatorKind::Attestation
+            ),
         ]
     );
     assert_eq!(settings.max_gossip_bytes, 12345);
     assert_eq!(settings.max_reqresp_bytes, 67890);
     assert_eq!(settings.storage_dir, Some("node_store".to_string()));
+    assert!(settings.metrics);
+    assert_eq!(settings.metrics_address, "0.0.0.0".to_string());
+    assert_eq!(settings.metrics_port, 18080);
 
     let _ = fs::remove_file(&path);
 }

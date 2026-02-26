@@ -9,7 +9,7 @@ use lean_eth::fork_choice::ForkChoiceStore;
 use lean_eth::slot::Slot;
 use lean_eth::ssz::HashTreeRoot;
 use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::{Bytes3112, Bytes32, Bytes52};
+use lean_eth::types::bytes::{Bytes32, Bytes52, Bytes3112};
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 
@@ -19,7 +19,8 @@ fn build_signed_block(
     include_attestation: bool,
 ) -> (SignedBlockWithAttestation, State, Bytes32) {
     let mut temp = base_state.clone();
-    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    temp.process_slots(Slot(Uint64(slot)))
+        .expect("process slots");
     let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
     let attestations = if include_attestation {
         let att = Attestation {
@@ -87,7 +88,11 @@ fn build_signed_block(
         proposer_signature: Bytes3112::zero(),
     };
     let root = Bytes32::from(message.block.hash_tree_root());
-    (SignedBlockWithAttestation { message, signature }, post, root)
+    (
+        SignedBlockWithAttestation { message, signature },
+        post,
+        root,
+    )
 }
 
 #[test]

@@ -1,22 +1,51 @@
+//! Lean-Ethereum gossipsub topic definitions.
+//!
+//! Topics follow the format:
+//! ```text
+//! /{TOPIC_PREFIX}/{fork}/{kind}/{ENCODING_POSTFIX}
+//! ```
+//! e.g. `/leanconsensus/devnet2/block/ssz_snappy`.
+//!
+//! [`LeanGossipTopic`] represents a parsed topic and converts to/from libp2p
+//! [`TopicHash`] and [`IdentTopic`].
+
 use libp2p::gossipsub::{IdentTopic as Topic, TopicHash};
 
 use crate::networking::gossipsub::error::GossipsubError;
 
+/// Common prefix for all lean-Ethereum gossipsub topics.
 pub const TOPIC_PREFIX: &str = "leanconsensus";
+/// Encoding suffix appended to every topic string.
 pub const ENCODING_POSTFIX: &str = "ssz_snappy";
 
+/// Topic name segment for full signed blocks.
 pub const LEAN_BLOCK_TOPIC: &str = "block";
+/// Topic name segment for global attestations.
 pub const LEAN_ATTESTATION_TOPIC: &str = "attestation";
 // Attestation subnet topics are encoded as: attestation_subnet_{id}
+/// Prefix for per-subnet attestation topics.
 pub const LEAN_ATTESTATION_SUBNET_PREFIX: &str = "attestation_subnet_";
 
+/// A parsed lean-Ethereum gossipsub topic.
+///
+/// Carries the fork string (e.g. `"devnet2"`) and the message [`LeanGossipTopicKind`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct LeanGossipTopic {
+    /// Fork identifier, e.g. `"devnet2"`.
     pub fork: String,
+    /// Message kind encoded in the topic.
     pub kind: LeanGossipTopicKind,
 }
 
 impl LeanGossipTopic {
+    /// Parses a libp2p [`TopicHash`] into a [`LeanGossipTopic`].
+    ///
+    /// Expected format: `/{TOPIC_PREFIX}/{fork}/{kind}/{ENCODING_POSTFIX}`
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GossipsubError::InvalidTopic`] if the format is wrong or the
+    /// kind segment is unrecognised.
     pub fn from_topic_hash(topic: &TopicHash) -> Result<Self, GossipsubError> {
         let topic_parts: Vec<&str> = topic.as_str().trim_start_matches('/').split('/').collect();
 
@@ -37,11 +66,11 @@ impl LeanGossipTopic {
             LEAN_ATTESTATION_TOPIC => LeanGossipTopicKind::Attestation,
             other if other.starts_with(LEAN_ATTESTATION_SUBNET_PREFIX) => {
                 let subnet_str = other.trim_start_matches(LEAN_ATTESTATION_SUBNET_PREFIX);
-                let subnet_id = subnet_str
-                    .parse::<u64>()
-                    .map_err(|err| GossipsubError::InvalidTopic(format!(
+                let subnet_id = subnet_str.parse::<u64>().map_err(|err| {
+                    GossipsubError::InvalidTopic(format!(
                         "Invalid attestation subnet id: {subnet_str:?}, error: {err}"
-                    )))?;
+                    ))
+                })?;
                 LeanGossipTopicKind::AttestationSubnet(subnet_id)
             }
             other => {
@@ -55,6 +84,7 @@ impl LeanGossipTopic {
     }
 }
 
+/// Renders the full topic string, e.g. `/leanconsensus/devnet2/block/ssz_snappy`.
 impl std::fmt::Display for LeanGossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let topic_name = match &self.kind {
@@ -73,18 +103,21 @@ impl std::fmt::Display for LeanGossipTopic {
     }
 }
 
+/// Converts a [`LeanGossipTopic`] into a libp2p [`IdentTopic`].
 impl From<LeanGossipTopic> for Topic {
     fn from(topic: LeanGossipTopic) -> Topic {
         Topic::new(topic)
     }
 }
 
+/// Converts a [`LeanGossipTopic`] to its string representation.
 impl From<LeanGossipTopic> for String {
     fn from(topic: LeanGossipTopic) -> Self {
         topic.to_string()
     }
 }
 
+/// Converts a [`LeanGossipTopic`] into a raw [`TopicHash`].
 impl From<LeanGossipTopic> for TopicHash {
     fn from(val: LeanGossipTopic) -> Self {
         let kind_str = match &val.kind {
@@ -102,13 +135,18 @@ impl From<LeanGossipTopic> for TopicHash {
     }
 }
 
+/// The category of message carried by a lean-Ethereum gossipsub topic.
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum LeanGossipTopicKind {
+    /// A full signed block.
     Block,
+    /// A global (non-subnet) attestation.
     Attestation,
+    /// A subnet-specific attestation; carries the subnet ID.
     AttestationSubnet(u64),
 }
 
+/// Renders the kind as its topic name segment.
 impl std::fmt::Display for LeanGossipTopicKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

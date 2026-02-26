@@ -1,24 +1,25 @@
 use std::path::PathBuf;
 
+use tokio::task::JoinHandle;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::app::{build_genesis, load_node_settings, NodeSettings};
-use crate::containers::config::Config;
+use crate::app::{NodeSettings, build_genesis, load_node_settings};
 use crate::containers::attestation::{Attestation, VALIDATOR_REGISTRY_LIMIT};
+use crate::containers::config::Config;
 use crate::containers::state::State;
-use crate::networking::{
-    Networking, NetworkingConfig, StoreReqRespHandler, StateGossipContext,
-    verifier_from_validators,
-};
-use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::fork_choice::ForkChoiceStore;
-use crate::storage::{FileStore, Store};
+use crate::metrics::spawn_metrics_server;
+use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
+use crate::networking::{
+    Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
+};
 use crate::ssz::HashTreeRoot;
+use crate::storage::{FileStore, Store};
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
-use std::sync::{Arc, RwLock};
 use libp2p::gossipsub::TopicHash;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -37,6 +38,7 @@ pub struct Node {
     settings: NodeSettings,
     shutdown_tx: Option<oneshot::Sender<()>>,
     shutdown_rx: oneshot::Receiver<()>,
+    metrics_task: Option<JoinHandle<()>>,
 }
 
 pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
@@ -63,9 +65,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
             {
                 let mut fc = fork_choice.write().expect("fork choice lock");
                 if fc.is_none() {
-                    if let Ok(new_fc) =
-                        ForkChoiceStore::new(signed.clone(), state_guard.clone())
-                    {
+                    if let Ok(new_fc) = ForkChoiceStore::new(signed.clone(), state_guard.clone()) {
                         *fc = Some(new_fc);
                     }
                 } else if let Some(fc) = fc.as_mut() {
@@ -144,6 +144,7 @@ impl Node {
             settings,
             shutdown_tx: Some(shutdown_tx),
             shutdown_rx,
+            metrics_task: None,
         })
     }
 
@@ -152,11 +153,7 @@ impl Node {
         info!("data_dir={}", self.data_dir_display());
         info!("store_dir={}", self.store_dir_display());
         info!("genesis_time={}", self.config.genesis_time.0);
-        let state_root = self
-            .state
-            .read()
-            .expect("state lock")
-            .hash_tree_root();
+        let state_root = self.state.read().expect("state lock").hash_tree_root();
         info!("state_root={:?}", state_root);
 
         let signature_verifier = {
@@ -209,6 +206,18 @@ impl Node {
             });
         }
 
+        if self.settings.metrics {
+            let bind = format!(
+                "{}:{}",
+                self.settings.metrics_address, self.settings.metrics_port
+            );
+            self.metrics_task = Some(spawn_metrics_server(
+                self.state.clone(),
+                self.store.clone(),
+                bind,
+            ));
+        }
+
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 warn!("ctrl-c received");
@@ -220,6 +229,9 @@ impl Node {
 
         if let Some(networking) = self.networking.take() {
             networking.shutdown().await;
+        }
+        if let Some(task) = self.metrics_task.take() {
+            task.abort();
         }
         info!("node stopped");
         Ok(())

@@ -1,4 +1,4 @@
-use crate::ssz::hash::{chunkify_fixed, merkleize_with_limit, mix_in_length, BYTES_PER_CHUNK};
+use crate::ssz::hash::{BYTES_PER_CHUNK, chunkify_fixed, merkleize_with_limit, mix_in_length};
 use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode};
 use crate::types::bytes::Bytes32;
 
@@ -56,7 +56,8 @@ impl<const LIMIT: usize> BitList<LIMIT> {
             None
         }
 
-        let bit_len = highest_set_bit(bytes).ok_or_else(|| "bitlist missing length marker".to_string())?;
+        let bit_len =
+            highest_set_bit(bytes).ok_or_else(|| "bitlist missing length marker".to_string())?;
         let byte_len = (bit_len + 7) / 8;
         let mut data: Vec<u8> = Vec::with_capacity(byte_len);
         unsafe { data.set_len(byte_len) };
@@ -144,8 +145,7 @@ impl<const LENGTH: usize> HashTreeRoot for BitVector<LENGTH> {
         let packed = self.pack_bits();
         let chunks = chunkify_fixed(&packed);
         let limit_chunks = (LENGTH + (BYTES_PER_CHUNK * 8) - 1) / (BYTES_PER_CHUNK * 8);
-        let root = merkleize_with_limit(&chunks, limit_chunks)
-            .unwrap_or_else(|_| Bytes32::zero());
+        let root = merkleize_with_limit(&chunks, limit_chunks).unwrap_or_else(|_| Bytes32::zero());
         *root.as_ref()
     }
 }
@@ -174,8 +174,7 @@ impl<const LIMIT: usize> HashTreeRoot for BitList<LIMIT> {
         let packed = self.data.clone();
         let chunks = chunkify_fixed(&packed);
         let limit_chunks = (LIMIT + (BYTES_PER_CHUNK * 8) - 1) / (BYTES_PER_CHUNK * 8);
-        let root = merkleize_with_limit(&chunks, limit_chunks)
-            .unwrap_or_else(|_| Bytes32::zero());
+        let root = merkleize_with_limit(&chunks, limit_chunks).unwrap_or_else(|_| Bytes32::zero());
         let mixed = mix_in_length(&root, self.len);
         *mixed.as_ref()
     }

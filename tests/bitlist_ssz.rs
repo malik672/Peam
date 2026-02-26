@@ -1,5 +1,5 @@
+use lean_eth::ssz::hash::{BYTES_PER_CHUNK, chunkify_fixed, merkleize_with_limit, mix_in_length};
 use lean_eth::ssz::{HashTreeRoot, SszEncode};
-use lean_eth::ssz::hash::{chunkify_fixed, merkleize_with_limit, mix_in_length, BYTES_PER_CHUNK};
 use lean_eth::types::bitlist::{BitList, BitVector};
 use lean_eth::types::bytes::Bytes32;
 
@@ -32,7 +32,7 @@ fn bitlist_hash_tree_root_matches_manual_packed_bits() {
     let list = BitList::<16>::new(vec![true, false, true, true, false]).expect("list");
     let packed = list.data.clone();
     let chunks = chunkify_fixed(&packed);
-    let limit_chunks = (16 + (BYTES_PER_CHUNK * 8) - 1) / (BYTES_PER_CHUNK * 8);
+    let limit_chunks = 16_usize.div_ceil(BYTES_PER_CHUNK * 8);
     let root = merkleize_with_limit(&chunks, limit_chunks).expect("merkleize");
     let expected = mix_in_length(&root, list.len());
 

@@ -1,13 +1,26 @@
+//! Typed req/resp protocol messages and their SSZ codecs.
+//!
+//! [`LeanSupportedProtocol`] enumerates all supported protocol IDs and
+//! handles protocol-ID string parsing and construction.
+//!
+//! [`LeanRequestMessage`] and [`LeanResponseMessage`] are the typed envelopes
+//! used above the raw byte layer; both implement SSZ encode/decode dispatched
+//! by protocol variant.
+
 use crate::containers::req_resp::{BlocksByRootRequest, BlocksByRootResponse, Status};
 use crate::ssz::SszEncode;
 
+/// All req/resp protocols supported by the lean-Ethereum node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeanSupportedProtocol {
+    /// `/lean_eth/reqresp/blocks_by_root/1`
     BlocksByRootV1,
+    /// `/lean_eth/reqresp/status/1`
     StatusV1,
 }
 
 impl LeanSupportedProtocol {
+    /// Returns the human-readable message name component of the protocol ID.
     pub fn message_name(&self) -> &'static str {
         match self {
             LeanSupportedProtocol::BlocksByRootV1 => "blocks_by_root",
@@ -15,10 +28,13 @@ impl LeanSupportedProtocol {
         }
     }
 
+    /// Returns the schema version string (`"1"` for all current protocols).
     pub fn schema_version(&self) -> &'static str {
         "1"
     }
 
+    /// Constructs the full libp2p protocol ID string,
+    /// e.g. `/lean_eth/reqresp/blocks_by_root/1`.
     pub fn protocol_id(&self) -> String {
         format!(
             "/lean_eth/reqresp/{}/{}",
@@ -27,6 +43,10 @@ impl LeanSupportedProtocol {
         )
     }
 
+    /// Parses a libp2p protocol ID string into a [`LeanSupportedProtocol`].
+    ///
+    /// Returns `None` if the string does not match the expected format or
+    /// refers to an unknown protocol / unsupported version.
     pub fn parse_protocol_id(protocol: &str) -> Option<Self> {
         let parts: Vec<&str> = protocol.trim_start_matches('/').split('/').collect();
         if parts.len() != 4 || parts[0] != "lean_eth" || parts[1] != "reqresp" {
@@ -45,13 +65,17 @@ impl LeanSupportedProtocol {
     }
 }
 
+/// A typed inbound or outbound req/resp request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeanRequestMessage {
+    /// Peer status handshake.
     Status(Status),
+    /// Request for blocks by their root hashes.
     BlocksByRoot(BlocksByRootRequest),
 }
 
 impl LeanRequestMessage {
+    /// Returns the list of protocol ID strings this message can be sent over.
     pub fn supported_protocols(&self) -> Vec<String> {
         match self {
             LeanRequestMessage::Status(_) => {
@@ -63,6 +87,9 @@ impl LeanRequestMessage {
         }
     }
 
+    /// Returns the maximum number of response chunks expected for this request.
+    ///
+    /// `Status` expects exactly 1 chunk; `BlocksByRoot` expects one per root.
     pub fn max_response_chunks(&self) -> u64 {
         match self {
             LeanRequestMessage::Status(_) => 1,
@@ -70,6 +97,7 @@ impl LeanRequestMessage {
         }
     }
 
+    /// SSZ-encodes the inner message.
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanRequestMessage::Status(status) => status.encode_ssz(),
@@ -77,6 +105,11 @@ impl LeanRequestMessage {
         }
     }
 
+    /// SSZ-decodes bytes into the variant corresponding to `protocol`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if decoding fails for the selected protocol.
     pub fn decode_ssz(protocol: LeanSupportedProtocol, data: &[u8]) -> Result<Self, String> {
         match protocol {
             LeanSupportedProtocol::StatusV1 => Ok(LeanRequestMessage::Status(
@@ -89,13 +122,17 @@ impl LeanRequestMessage {
     }
 }
 
+/// A typed inbound or outbound req/resp response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeanResponseMessage {
+    /// Response to a status request.
     Status(Status),
+    /// Response to a blocks-by-root request.
     BlocksByRoot(BlocksByRootResponse),
 }
 
 impl LeanResponseMessage {
+    /// SSZ-encodes the inner message.
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanResponseMessage::Status(status) => status.encode_ssz(),
@@ -103,6 +140,11 @@ impl LeanResponseMessage {
         }
     }
 
+    /// SSZ-decodes bytes into the variant corresponding to `protocol`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if decoding fails for the selected protocol.
     pub fn decode_ssz(protocol: LeanSupportedProtocol, data: &[u8]) -> Result<Self, String> {
         match protocol {
             LeanSupportedProtocol::StatusV1 => Ok(LeanResponseMessage::Status(

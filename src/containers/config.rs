@@ -1,5 +1,5 @@
-use crate::types::uint::Uint64;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
+use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

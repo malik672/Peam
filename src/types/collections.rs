@@ -360,8 +360,8 @@ where
             let bytes = self.encode_ssz();
             let chunks = chunkify_fixed(&bytes);
             let limit_chunks = ((LENGTH * elem_len) + BYTES_PER_CHUNK - 1) / BYTES_PER_CHUNK;
-            let root = merkleize_with_limit(&chunks, limit_chunks)
-                .unwrap_or_else(|_| Bytes32::zero());
+            let root =
+                merkleize_with_limit(&chunks, limit_chunks).unwrap_or_else(|_| Bytes32::zero());
             return *root.as_ref();
         }
 
@@ -386,8 +386,8 @@ where
             let bytes = self.encode_ssz();
             let chunks = chunkify_fixed(&bytes);
             let limit_chunks = ((LIMIT * elem_len) + BYTES_PER_CHUNK - 1) / BYTES_PER_CHUNK;
-            let root = merkleize_with_limit(&chunks, limit_chunks)
-                .unwrap_or_else(|_| Bytes32::zero());
+            let root =
+                merkleize_with_limit(&chunks, limit_chunks).unwrap_or_else(|_| Bytes32::zero());
             let mixed = mix_in_length(&root, self.data.len());
             return *mixed.as_ref();
         }

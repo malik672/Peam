@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lean_eth::ssz::hash::chunkify_fixed;
 
 fn bench_chunkify_fixed(c: &mut Criterion) {

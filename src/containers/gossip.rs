@@ -116,7 +116,7 @@ impl SszEncode for VoluntaryExit {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(16);
         unsafe { out.set_len(16) };
-        unsafe { write_bytes_at(&mut out, 0, &self.validator_index.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 0, &self.validator_index.0.0.to_le_bytes()) };
         unsafe { write_bytes_at(&mut out, 8, &self.epoch.0.to_le_bytes()) };
         out
     }
@@ -146,7 +146,7 @@ impl VoluntaryExit {
 
 impl HashTreeRoot for VoluntaryExit {
     fn hash_tree_root(&self) -> [u8; 32] {
-    let left = Bytes32::from(self.validator_index.hash_tree_root());
+        let left = Bytes32::from(self.validator_index.hash_tree_root());
         let right = Bytes32::from(self.epoch.hash_tree_root());
         let root = hash_nodes(&left, &right);
         *root.as_ref()

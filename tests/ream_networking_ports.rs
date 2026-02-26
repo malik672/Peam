@@ -7,9 +7,8 @@ use lean_eth::containers::req_resp::Status;
 use lean_eth::containers::state::{State, Validators};
 use lean_eth::networking::gossipsub::context::StateGossipContext;
 use lean_eth::networking::{
-    LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent,
-    NetworkEventBus, NoopGossipVerifier, NoopReqRespHandler, P2pCommand, P2pConfig, P2pService,
-    StoreReqRespHandler,
+    LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent, NetworkEventBus,
+    NoopGossipVerifier, NoopReqRespHandler, P2pCommand, P2pConfig, P2pService, StoreReqRespHandler,
 };
 use lean_eth::storage::MemoryStore;
 use lean_eth::types::bytes::Bytes32;
@@ -22,9 +21,7 @@ fn addr_for(port: u16) -> Multiaddr {
 
 fn empty_state() -> Arc<RwLock<State>> {
     let validators = Validators::new(vec![]).expect("validators");
-    Arc::new(RwLock::new(
-        State::generate_genesis(Uint64(0), validators),
-    ))
+    Arc::new(RwLock::new(State::generate_genesis(Uint64(0), validators)))
 }
 
 async fn wait_for_peer_connected(mut rx: tokio::sync::broadcast::Receiver<NetworkEvent>) {
@@ -194,14 +191,13 @@ async fn ream_status_request_response_smoke() {
         head_slot: Uint64(0),
     });
     let payload = status.encode_ssz();
-    tx_1
-        .send(P2pCommand::SendRequest {
-            peer: peer_2_id,
-            protocol: LeanSupportedProtocol::StatusV1.protocol_id(),
-            payload,
-        })
-        .await
-        .expect("send request");
+    tx_1.send(P2pCommand::SendRequest {
+        peer: peer_2_id,
+        protocol: LeanSupportedProtocol::StatusV1.protocol_id(),
+        payload,
+    })
+    .await
+    .expect("send request");
 
     let mut rx_events = events_1.subscribe();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -211,13 +207,13 @@ async fn ream_status_request_response_smoke() {
             .await
             .expect("timeout")
             .expect("event");
-        if let NetworkEvent::ReqRespResponse { protocol, payload, .. } = event {
+        if let NetworkEvent::ReqRespResponse {
+            protocol, payload, ..
+        } = event
+        {
             assert_eq!(protocol, LeanSupportedProtocol::StatusV1.protocol_id());
-            let msg = LeanResponseMessage::decode_ssz(
-                LeanSupportedProtocol::StatusV1,
-                &payload,
-            )
-            .expect("decode");
+            let msg = LeanResponseMessage::decode_ssz(LeanSupportedProtocol::StatusV1, &payload)
+                .expect("decode");
             match msg {
                 LeanResponseMessage::Status(status) => {
                     assert_eq!(status.fork_digest, lean_eth::types::bytes::Bytes32::zero());

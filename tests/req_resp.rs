@@ -1,18 +1,18 @@
-use lean_eth::containers::req_resp::{
-    BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse, Ping,
-    Pong, Status, MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST,
-};
 use lean_eth::containers::block::{
     Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
 };
+use lean_eth::containers::req_resp::{
+    BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse,
+    MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Ping, Pong, Status,
+};
+use lean_eth::containers::state::{State, Validators};
 use lean_eth::containers::validator::ValidatorIndex;
 use lean_eth::slot::Slot;
 use lean_eth::ssz::{HashTreeRoot, SszDecode, SszEncode};
 use lean_eth::storage::{MemoryStore, Store};
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::types::uint::Uint64 as U64;
 use lean_eth::types::bytes::Bytes32;
 use lean_eth::types::collections::SszList;
+use lean_eth::types::uint::Uint64 as U64;
 use lean_eth::types::uint::Uint64;
 
 fn compute_state_root_for_block(state: &State, block: &Block) -> Bytes32 {
@@ -39,7 +39,8 @@ fn dummy_signed_block() -> SignedBlockWithAttestation {
 
 fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestation {
     let mut temp = state.clone();
-    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    temp.process_slots(Slot(Uint64(slot)))
+        .expect("process slots");
     let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
     let body = BlockBody {
         attestations: SszList::new(vec![]).expect("attestations"),
@@ -69,8 +70,7 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
             },
         };
         lean_eth::containers::attestation::Attestation {
-            aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
-                .expect("bits"),
+            aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
             data,
         }
     };
@@ -109,7 +109,7 @@ fn blocks_by_root_processes_signed_blocks() {
             .expect("process signed block");
     }
 
-    assert_eq!(store.get_block_by_slot(1).is_some(), true);
+    assert!(store.get_block_by_slot(1).is_some());
 }
 
 #[test]
@@ -129,8 +129,12 @@ fn status_roundtrip() {
 
 #[test]
 fn ping_pong_roundtrip() {
-    let ping = Ping { seq_number: Uint64(7) };
-    let pong = Pong { seq_number: Uint64(7) };
+    let ping = Ping {
+        seq_number: Uint64(7),
+    };
+    let pong = Pong {
+        seq_number: Uint64(7),
+    };
     assert_eq!(Ping::decode_ssz(&ping.encode_ssz()).unwrap(), ping);
     assert_eq!(Pong::decode_ssz(&pong.encode_ssz()).unwrap(), pong);
 }
@@ -146,11 +150,10 @@ fn blocks_by_range_roundtrip() {
     let decoded = BlocksByRangeRequest::decode_ssz(&encoded).unwrap();
     assert_eq!(decoded, req);
 
-    let blocks =
-        SszList::<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>::new(vec![
-            dummy_signed_block(),
-        ])
-        .expect("blocks");
+    let blocks = SszList::<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>::new(vec![
+        dummy_signed_block(),
+    ])
+    .expect("blocks");
     let resp = BlocksByRangeResponse { blocks };
     let encoded = resp.encode_ssz();
     let decoded = BlocksByRangeResponse::decode_ssz(&encoded).unwrap();
@@ -159,18 +162,17 @@ fn blocks_by_range_roundtrip() {
 
 #[test]
 fn blocks_by_root_roundtrip() {
-    let roots = SszList::<Bytes32, MAX_BLOCKS_PER_ROOT_REQUEST>::new(vec![Bytes32::zero()])
-        .expect("roots");
+    let roots =
+        SszList::<Bytes32, MAX_BLOCKS_PER_ROOT_REQUEST>::new(vec![Bytes32::zero()]).expect("roots");
     let req = BlocksByRootRequest { roots };
     let encoded = req.encode_ssz();
     let decoded = BlocksByRootRequest::decode_ssz(&encoded).unwrap();
     assert_eq!(decoded, req);
 
-    let blocks =
-        SszList::<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>::new(vec![
-            dummy_signed_block(),
-        ])
-        .expect("blocks");
+    let blocks = SszList::<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>::new(vec![
+        dummy_signed_block(),
+    ])
+    .expect("blocks");
     let resp = BlocksByRootResponse { blocks };
     let encoded = resp.encode_ssz();
     let decoded = BlocksByRootResponse::decode_ssz(&encoded).unwrap();

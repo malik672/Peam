@@ -1,20 +1,27 @@
 use std::sync::Arc;
 
-use lean_eth::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData, SignedAttestation};
-use lean_eth::containers::block::{Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation};
+use lean_eth::containers::attestation::{
+    AggregatedSignatureProof, Attestation, AttestationData, SignedAttestation,
+};
+use lean_eth::containers::block::{
+    Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
+};
 use lean_eth::containers::checkpoint::Checkpoint;
 use lean_eth::containers::gossip::GossipBlock;
 use lean_eth::containers::validator::ValidatorIndex;
 use lean_eth::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use lean_eth::networking::gossipsub::lean::topics::{
-    LeanGossipTopic, LeanGossipTopicKind, TOPIC_PREFIX, ENCODING_POSTFIX, LEAN_ATTESTATION_TOPIC,
-    LEAN_BLOCK_TOPIC, LEAN_ATTESTATION_SUBNET_PREFIX,
+    ENCODING_POSTFIX, LEAN_ATTESTATION_SUBNET_PREFIX, LEAN_ATTESTATION_TOPIC, LEAN_BLOCK_TOPIC,
+    LeanGossipTopic, LeanGossipTopicKind, TOPIC_PREFIX,
 };
-use lean_eth::networking::{validate_gossip, GossipSignatureVerifier, GossipValidatorKind, LeanSupportedProtocol, NoopGossipVerifier};
-use lean_eth::ssz::SszEncode;
+use lean_eth::networking::{
+    GossipSignatureVerifier, GossipValidatorKind, LeanSupportedProtocol, NoopGossipVerifier,
+    validate_gossip,
+};
 use lean_eth::slot::Slot;
-use lean_eth::types::bytes::{ByteList, Bytes3112};
+use lean_eth::ssz::SszEncode;
 use lean_eth::types::bytes::Bytes32;
+use lean_eth::types::bytes::{ByteList, Bytes3112};
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 use libp2p::gossipsub::TopicHash;
@@ -30,9 +37,7 @@ fn gossip_topic_roundtrip_block() {
     assert_eq!(parsed, topic);
     assert_eq!(
         hash.as_str(),
-        format!(
-            "/{TOPIC_PREFIX}/devnet2/{LEAN_BLOCK_TOPIC}/{ENCODING_POSTFIX}"
-        )
+        format!("/{TOPIC_PREFIX}/devnet2/{LEAN_BLOCK_TOPIC}/{ENCODING_POSTFIX}")
     );
 }
 
@@ -47,9 +52,7 @@ fn gossip_topic_roundtrip_attestation() {
     assert_eq!(parsed, topic);
     assert_eq!(
         hash.as_str(),
-        format!(
-            "/{TOPIC_PREFIX}/devnet2/{LEAN_ATTESTATION_TOPIC}/{ENCODING_POSTFIX}"
-        )
+        format!("/{TOPIC_PREFIX}/devnet2/{LEAN_ATTESTATION_TOPIC}/{ENCODING_POSTFIX}")
     );
 }
 
@@ -64,9 +67,7 @@ fn gossip_topic_roundtrip_attestation_subnet() {
     assert_eq!(parsed, topic);
     assert_eq!(
         hash.as_str(),
-        format!(
-            "/{TOPIC_PREFIX}/devnet2/{LEAN_ATTESTATION_SUBNET_PREFIX}12/{ENCODING_POSTFIX}"
-        )
+        format!("/{TOPIC_PREFIX}/devnet2/{LEAN_ATTESTATION_SUBNET_PREFIX}12/{ENCODING_POSTFIX}")
     );
 }
 
@@ -137,7 +138,10 @@ fn gossip_attestation_subnet_message_decode_signed() {
     let topic_hash: TopicHash = topic.into();
     let decoded = LeanGossipsubMessage::decode(&topic_hash, &payload).expect("decode");
     match decoded {
-        LeanGossipsubMessage::AttestationSubnet { subnet_id, attestation } => {
+        LeanGossipsubMessage::AttestationSubnet {
+            subnet_id,
+            attestation,
+        } => {
             assert_eq!(subnet_id, 3);
             assert_eq!(attestation.attestation, signed);
         }

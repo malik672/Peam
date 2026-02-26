@@ -1,9 +1,9 @@
 use crate::containers::checkpoint::Checkpoint;
 use crate::slot::Slot;
 use crate::ssz::hash::{hash_nodes, merkleize_tree_root_3};
-use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszElement, SszFixedLen};
+use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::types::bitlist::BitList;
-use crate::types::bytes::{ByteList, Bytes3112, Bytes32};
+use crate::types::bytes::{ByteList, Bytes32, Bytes3112};
 use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
 
@@ -48,7 +48,7 @@ impl SszEncode for AttestationData {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 40 * 3);
         unsafe { out.set_len(8 + 40 * 3) };
-        unsafe { write_bytes_at(&mut out, 0, &self.slot.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 0, &self.slot.0.0.to_le_bytes()) };
         unsafe { write_bytes_at(&mut out, 8, &self.head.encode_ssz()) };
         unsafe { write_bytes_at(&mut out, 48, &self.target.encode_ssz()) };
         unsafe { write_bytes_at(&mut out, 88, &self.source.encode_ssz()) };
@@ -204,7 +204,6 @@ impl SszFixedLen for SignedAttestation {
         8 + 128 + SIGNATURE_BYTES
     }
 }
-
 
 impl SszEncode for AggregatedSignatureProof {
     fn encode_ssz(&self) -> Vec<u8> {

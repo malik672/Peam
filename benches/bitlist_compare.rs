@@ -1,12 +1,15 @@
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+#![allow(clippy::uninit_vec)]
+#![allow(clippy::redundant_closure)]
+
+use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 
 use lean_eth::ssz::{SszDecode as LeanSszDecode, SszEncode as LeanSszEncode};
 use lean_eth::types::bitlist::BitList as LeanBitList;
 
 use ssz::Decode as ReamDecode;
 use ssz::Encode as ReamEncode;
-use ssz_types::typenum::U4096;
 use ssz_types::BitList as ReamBitList;
+use ssz_types::typenum::U4096;
 
 const BIT_LEN: usize = 4096;
 
@@ -64,16 +67,16 @@ fn bench_bitlist_decode(c: &mut Criterion) {
 
     group.bench_function("lean_eth_decode", |b| {
         b.iter(|| {
-            let decoded = <LeanBitList<BIT_LEN> as LeanSszDecode>::decode_ssz(black_box(&bytes))
-                .unwrap();
+            let decoded =
+                <LeanBitList<BIT_LEN> as LeanSszDecode>::decode_ssz(black_box(&bytes)).unwrap();
             black_box(decoded)
         })
     });
 
     group.bench_function("ream_decode", |b| {
         b.iter(|| {
-            let decoded = <ReamBitList<U4096> as ReamDecode>::from_ssz_bytes(black_box(&bytes))
-                .unwrap();
+            let decoded =
+                <ReamBitList<U4096> as ReamDecode>::from_ssz_bytes(black_box(&bytes)).unwrap();
             black_box(decoded)
         })
     });

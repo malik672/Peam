@@ -1,5 +1,5 @@
 use crate::ssz::hash::{chunkify_fixed, hash_nodes, mix_in_length};
-use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszElement, SszFixedLen};
+use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::unsafe_vec::write_bytes_at;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -49,7 +49,11 @@ impl Bytes52 {
 impl<const LIMIT: usize> ByteList<LIMIT> {
     pub fn new(data: Vec<u8>) -> Result<Self, String> {
         if data.len() > LIMIT {
-            return Err(format!("ByteList length {} exceeds limit {}", data.len(), LIMIT));
+            return Err(format!(
+                "ByteList length {} exceeds limit {}",
+                data.len(),
+                LIMIT
+            ));
         }
         Ok(Self { data })
     }
@@ -127,14 +131,20 @@ impl<const LIMIT: usize> SszEncode for ByteList<LIMIT> {
 
 impl<const LIMIT: usize> SszDecode for ByteList<LIMIT> {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
-        Ok(Self { data: bytes.to_vec() })
+        Ok(Self {
+            data: bytes.to_vec(),
+        })
     }
 }
 
 impl<const LIMIT: usize> ByteList<LIMIT> {
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > LIMIT {
-            return Err(format!("ByteList length {} exceeds limit {}", bytes.len(), LIMIT));
+            return Err(format!(
+                "ByteList length {} exceeds limit {}",
+                bytes.len(),
+                LIMIT
+            ));
         }
         Self::decode_ssz(bytes)
     }

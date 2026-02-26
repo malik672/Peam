@@ -2,12 +2,15 @@ use std::fs;
 use std::path::Path;
 
 use crate::containers::config::Config;
-use crate::containers::state::{State, Validators};
+use crate::containers::state::State;
 use crate::ssz::SszFixedLen;
 use crate::types::uint::Uint64;
 
 #[derive(Clone, Debug)]
 pub struct NodeSettings {
+    pub metrics: bool,
+    pub metrics_address: String,
+    pub metrics_port: u16,
     pub discovery_interval_secs: u64,
     pub score_decay_interval_secs: u64,
     pub score_decay_amount: i64,
@@ -23,15 +26,15 @@ pub struct NodeSettings {
 }
 
 pub fn load_config(path: &Path) -> Result<Config, String> {
-    let bytes = fs::read(path)
-        .map_err(|err| format!("Failed to read config {}: {err}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|err| format!("Failed to read config {}: {err}", path.display()))?;
 
     if bytes.len() == Config::fixed_len() {
         return Config::decode_ssz_checked(&bytes);
     }
 
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|err| format!("Config is not valid UTF-8: {err}"))?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|err| format!("Config is not valid UTF-8: {err}"))?;
     let mut genesis_time: Option<u64> = None;
 
     for line in text.lines() {
@@ -53,20 +56,22 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
         }
     }
 
-    let genesis_time =
-        genesis_time.ok_or_else(|| "Config missing genesis_time".to_string())?;
+    let genesis_time = genesis_time.ok_or_else(|| "Config missing genesis_time".to_string())?;
     Ok(Config {
         genesis_time: Uint64(genesis_time),
     })
 }
 
 pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String> {
-    let bytes = fs::read(path)
-        .map_err(|err| format!("Failed to read config {}: {err}", path.display()))?;
+    let bytes =
+        fs::read(path).map_err(|err| format!("Failed to read config {}: {err}", path.display()))?;
 
     if bytes.len() == Config::fixed_len() {
         let config = Config::decode_ssz_checked(&bytes)?;
         let settings = NodeSettings {
+            metrics: false,
+            metrics_address: "127.0.0.1".to_string(),
+            metrics_port: 8080,
             discovery_interval_secs: 5,
             score_decay_interval_secs: 30,
             score_decay_amount: 1,
@@ -79,7 +84,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             ],
             topic_scores: vec![
                 ("leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
-                ("leanconsensus/devnet2/attestation/ssz_snappy".to_string(), 1),
+                (
+                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    1,
+                ),
             ],
             topic_validators: vec![
                 (
@@ -98,10 +106,13 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
         return Ok((config, settings));
     }
 
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|err| format!("Config is not valid UTF-8: {err}"))?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|err| format!("Config is not valid UTF-8: {err}"))?;
     let mut genesis_time: Option<u64> = None;
     let mut discovery_interval_secs: Option<u64> = None;
+    let mut metrics: Option<bool> = None;
+    let mut metrics_address: Option<String> = None;
+    let mut metrics_port: Option<u16> = None;
     let mut score_decay_interval_secs: Option<u64> = None;
     let mut score_decay_amount: Option<i64> = None;
     let mut ban_threshold: Option<i64> = None;
@@ -129,6 +140,22 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                 value
                     .parse::<u64>()
                     .map_err(|err| format!("Invalid genesis_time {value}: {err}"))?,
+            );
+        } else if key == "metrics" {
+            metrics = Some(match value {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => return Err(format!("Invalid metrics {value}: expected true/false")),
+            });
+        } else if key == "metrics_address" {
+            if !value.is_empty() {
+                metrics_address = Some(value.to_string());
+            }
+        } else if key == "metrics_port" {
+            metrics_port = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|err| format!("Invalid metrics_port {value}: {err}"))?,
             );
         } else if key == "discovery_interval_secs" {
             discovery_interval_secs = Some(
@@ -218,13 +245,15 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
         }
     }
 
-    let genesis_time =
-        genesis_time.ok_or_else(|| "Config missing genesis_time".to_string())?;
+    let genesis_time = genesis_time.ok_or_else(|| "Config missing genesis_time".to_string())?;
     let config = Config {
         genesis_time: Uint64(genesis_time),
     };
     let settings = if allowed_topics.is_empty() {
         NodeSettings {
+            metrics: metrics.unwrap_or(false),
+            metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
+            metrics_port: metrics_port.unwrap_or(8080),
             discovery_interval_secs: discovery_interval_secs.unwrap_or(5),
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
@@ -237,7 +266,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             ],
             topic_scores: vec![
                 ("leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
-                ("leanconsensus/devnet2/attestation/ssz_snappy".to_string(), 1),
+                (
+                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    1,
+                ),
             ],
             topic_validators: vec![
                 (
@@ -255,6 +287,9 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
         }
     } else {
         NodeSettings {
+            metrics: metrics.unwrap_or(false),
+            metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
+            metrics_port: metrics_port.unwrap_or(8080),
             discovery_interval_secs: discovery_interval_secs.unwrap_or(5),
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
@@ -272,7 +307,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     Ok((config, settings))
 }
 
+#[inline]
 pub fn build_genesis(config: Config) -> Result<State, String> {
-    let validators = Validators::new(vec![])?;
-    Ok(State::generate_genesis(config.genesis_time, validators))
+    Ok(State::generate_genesis_empty(config.genesis_time))
 }

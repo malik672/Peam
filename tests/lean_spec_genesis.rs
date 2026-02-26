@@ -1,3 +1,5 @@
+#![allow(clippy::uninit_vec)]
+
 use lean_eth::containers::block::{Attestations, BlockBody};
 use lean_eth::containers::state::{State, Validators};
 use lean_eth::containers::validator::{Validator, ValidatorIndex};

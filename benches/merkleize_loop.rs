@@ -1,4 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+#![allow(clippy::uninit_vec)]
+#![allow(clippy::manual_div_ceil)]
+
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lean_eth::ssz::hash::{hash_nodes, merkleize_unsafe};
 use lean_eth::types::bytes::Bytes32;
 

@@ -1,3 +1,18 @@
+//! Networking stack: gossipsub, req/resp, peer scoring, and discovery.
+//!
+//! The top-level entry point is [`Networking::start_with_config`], which
+//! constructs and spawns all background tasks:
+//!
+//! | Task              | Description |
+//! |-------------------|-------------|
+//! | `gossip_task`     | Inbound gossip pipeline with per-peer and per-topic rate limiting |
+//! | `reqresp_task`    | Inbound req/resp pipeline with per-peer rate limiting and scoring |
+//! | `p2p_task`        | libp2p swarm event loop |
+//! | `score_decay_task`| Periodic peer score decay and ban pruning |
+//! | `discovery_task`  | Periodic seed dialing |
+//!
+//! Re-exports the public surface of all sub-modules for convenience.
+
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
@@ -5,41 +20,47 @@ use tracing::info;
 
 use crate::networking::events::EventBus;
 
+mod discovery;
 mod events;
 mod gossip;
 pub mod gossipsub;
-mod peer_manager;
-mod reqresp;
-mod reqresp_messages;
-mod reqresp_handler;
-mod discovery;
-mod rate_limiter;
 mod p2p;
+mod peer_manager;
+mod rate_limiter;
+mod reqresp;
+mod reqresp_handler;
+mod reqresp_messages;
 mod validate;
 
+pub use discovery::Discovery;
 pub use events::{EventBus as NetworkEventBus, NetworkEvent};
 pub use gossip::{Gossip, GossipMessage};
-pub use peer_manager::PeerManager;
-pub use reqresp::{ReqResp, ReqRespMessage};
-pub use reqresp_messages::{
-    LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol,
-};
-pub use reqresp_handler::{NoopReqRespHandler, ReqRespHandler, StoreReqRespHandler};
 pub use gossipsub::context::{GossipContext, NoopGossipContext, StateGossipContext};
-pub use discovery::Discovery;
+pub use p2p::{P2pCommand, P2pConfig, P2pService};
+pub use peer_manager::PeerManager;
 pub use rate_limiter::RateLimiter;
-pub use p2p::{P2pService, P2pConfig, P2pCommand};
+pub use reqresp::{ReqResp, ReqRespMessage};
+pub use reqresp_handler::{NoopReqRespHandler, ReqRespHandler, StoreReqRespHandler};
+pub use reqresp_messages::{LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol};
 pub use validate::{
     GossipSignatureVerifier, GossipValidatorKind, NoopGossipVerifier, SimpleGossipVerifier,
     validate_gossip, verifier_from_validators,
 };
 
-/// Networking runtime: gossipsub + req/resp + discovery + peer scoring.
+/// The fully-assembled networking runtime.
+///
+/// Owns all networking sub-systems and the [`JoinHandle`]s of the background
+/// tasks that drive them. Call [`shutdown`] to abort all tasks.
 pub struct Networking {
+    /// Broadcast event bus — subscribe to observe all network events.
     pub events: EventBus,
+    /// Peer registry and scorer.
     pub peers: PeerManager,
+    /// Outbound gossip publisher.
     pub gossip: Gossip,
+    /// Outbound req/resp handle.
     pub reqresp: ReqResp,
+    /// Peer discovery (seed dialing).
     pub discovery: Discovery,
     p2p_tx: tokio::sync::mpsc::Sender<P2pCommand>,
     gossip_task: JoinHandle<()>,
@@ -50,14 +71,18 @@ pub struct Networking {
 }
 
 impl Networking {
-    /// Build and start the networking runtime (gossip + req/resp + discovery + scoring).
+    /// Constructs and starts the full networking runtime from `config`.
+    ///
+    /// Spawns five background tasks (see module-level table) and returns
+    /// a [`Networking`] handle with access to all sub-systems.
     pub fn start_with_config(config: NetworkingConfig) -> Self {
         let events = EventBus::new(256);
         let peers = PeerManager::new(events.clone());
         let (gossip, mut gossip_rx) = Gossip::new(events.clone(), 128);
         let (reqresp, mut reqresp_rx) = ReqResp::new(events.clone(), 128);
-        let discovery =
-            Discovery::new(std::time::Duration::from_secs(config.discovery_interval_secs));
+        let discovery = Discovery::new(std::time::Duration::from_secs(
+            config.discovery_interval_secs,
+        ));
         let discovery_peers = peers.clone();
         let discovery_runner = discovery.clone();
         let inbound_gossip_limiter = RateLimiter::new(std::time::Duration::from_secs(1), 256);
@@ -112,7 +137,11 @@ impl Networking {
         let reqresp_task = tokio::spawn(async move {
             while let Some(msg) = reqresp_rx.recv().await {
                 match msg {
-                    ReqRespMessage::Request { peer_id, protocol, payload } => {
+                    ReqRespMessage::Request {
+                        peer_id,
+                        protocol,
+                        payload,
+                    } => {
                         let key = format!("reqresp_in:{peer_id}:{protocol}");
                         if !inbound_reqresp_limiter_task.allow(&key).await {
                             events_reqresp.emit(NetworkEvent::RateLimited {
@@ -122,10 +151,17 @@ impl Networking {
                             let _ = peers_reqresp.failed_response_from_peer(&peer_id).await;
                             continue;
                         }
-                        info!("reqresp_in request peer={peer_id} protocol={protocol} bytes={}", payload.len());
+                        info!(
+                            "reqresp_in request peer={peer_id} protocol={protocol} bytes={}",
+                            payload.len()
+                        );
                         let _ = peers_reqresp.successful_response_from_peer(&peer_id).await;
                     }
-                    ReqRespMessage::Response { peer_id, protocol, payload } => {
+                    ReqRespMessage::Response {
+                        peer_id,
+                        protocol,
+                        payload,
+                    } => {
                         let key = format!("reqresp_in:{peer_id}:{protocol}");
                         if !inbound_reqresp_limiter_task.allow(&key).await {
                             events_reqresp.emit(NetworkEvent::RateLimited {
@@ -135,7 +171,10 @@ impl Networking {
                             let _ = peers_reqresp.failed_response_from_peer(&peer_id).await;
                             continue;
                         }
-                        info!("reqresp_in response peer={peer_id} protocol={protocol} bytes={}", payload.len());
+                        info!(
+                            "reqresp_in response peer={peer_id} protocol={protocol} bytes={}",
+                            payload.len()
+                        );
                         let _ = peers_reqresp.successful_response_from_peer(&peer_id).await;
                     }
                 }
@@ -217,10 +256,12 @@ impl Networking {
         }
     }
 
+    /// Starts networking with the default [`NetworkingConfig`].
     pub fn start() -> Self {
         Self::start_with_config(NetworkingConfig::default())
     }
 
+    /// Aborts all background tasks and releases networking resources.
     pub async fn shutdown(self) {
         self.gossip_task.abort();
         self.reqresp_task.abort();
@@ -229,10 +270,12 @@ impl Networking {
         self.score_decay_task.abort();
     }
 
+    /// Adds `peer_id` to the discovery seed queue for future dialing.
     pub async fn add_seed_peer(&self, peer_id: String) {
         self.discovery.add_seed(peer_id).await;
     }
 
+    /// Publishes `payload` to `topic` via the libp2p gossipsub swarm.
     pub async fn p2p_publish(&self, topic: String, payload: Vec<u8>) {
         let _ = self
             .p2p_tx
@@ -240,33 +283,60 @@ impl Networking {
             .await;
     }
 
-    pub async fn p2p_send_request(&self, peer_id: libp2p::PeerId, protocol: String, payload: Vec<u8>) {
+    /// Sends a req/resp request `payload` to `peer_id` using `protocol`.
+    pub async fn p2p_send_request(
+        &self,
+        peer_id: libp2p::PeerId,
+        protocol: String,
+        payload: Vec<u8>,
+    ) {
         let _ = self
             .p2p_tx
-            .send(P2pCommand::SendRequest { peer: peer_id, protocol, payload })
+            .send(P2pCommand::SendRequest {
+                peer: peer_id,
+                protocol,
+                payload,
+            })
             .await;
     }
 }
 
+/// Configuration for [`Networking::start_with_config`].
 #[derive(Clone)]
 pub struct NetworkingConfig {
+    /// Seconds between discovery dial attempts.
     pub discovery_interval_secs: u64,
+    /// Seconds between peer score decay passes.
     pub score_decay_interval_secs: u64,
+    /// Amount by which peer scores move toward zero on each decay pass.
     pub score_decay_amount: i64,
+    /// Score threshold below which a peer is banned.
     pub ban_threshold: i64,
+    /// Multiaddr strings to dial on startup.
     pub bootnodes: Vec<String>,
+    /// Multiaddr strings treated as trusted; added to the bootnode dial list.
     pub trusted_peers: Vec<String>,
+    /// Multiaddr string the node listens on.
     pub listen_addr: String,
+    /// Gossipsub topic strings the node subscribes to and validates.
     pub allowed_topics: Vec<String>,
+    /// Score increment per topic awarded on valid message receipt.
     pub topic_scores: Vec<(String, i64)>,
+    /// Validator kind to use for each topic.
     pub topic_validators: Vec<(String, GossipValidatorKind)>,
+    /// Gossip signature verifier (shared across tasks).
     pub signature_verifier: Arc<dyn GossipSignatureVerifier>,
+    /// Req/resp request handler (shared across tasks).
     pub reqresp_handler: Arc<dyn ReqRespHandler>,
+    /// Gossip context for slot-range validation (shared across tasks).
     pub gossip_context: Arc<dyn GossipContext>,
+    /// Maximum gossip message payload size in bytes.
     pub max_gossip_bytes: usize,
+    /// Maximum req/resp message payload size in bytes.
     pub max_reqresp_bytes: usize,
 }
 
+/// Sensible defaults for a devnet-2 configuration.
 impl Default for NetworkingConfig {
     fn default() -> Self {
         Self {
@@ -283,10 +353,16 @@ impl Default for NetworkingConfig {
             ],
             topic_scores: vec![
                 ("leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
-                ("leanconsensus/devnet2/attestation/ssz_snappy".to_string(), 1),
+                (
+                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    1,
+                ),
             ],
             topic_validators: vec![
-                ("leanconsensus/devnet2/block/ssz_snappy".to_string(), GossipValidatorKind::Block),
+                (
+                    "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                    GossipValidatorKind::Block,
+                ),
                 (
                     "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     GossipValidatorKind::Attestation,

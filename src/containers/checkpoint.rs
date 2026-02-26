@@ -18,7 +18,7 @@ impl SszEncode for Checkpoint {
         let mut out = Vec::with_capacity(40);
         unsafe { out.set_len(40) };
         unsafe { write_bytes_at(&mut out, 0, self.root.as_ref()) };
-        unsafe { write_bytes_at(&mut out, 32, &self.slot.0 .0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 32, &self.slot.0.0.to_le_bytes()) };
         out
     }
 }

@@ -2,7 +2,8 @@
 
 use lean_eth::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
 use lean_eth::containers::block::{
-    Attestations, Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
+    Attestations, Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
+    SignedBlockWithAttestation,
 };
 use lean_eth::containers::checkpoint::Checkpoint;
 use lean_eth::containers::state::{State, Validators};
@@ -10,7 +11,7 @@ use lean_eth::containers::validator::{Validator, ValidatorIndex};
 use lean_eth::slot::Slot;
 use lean_eth::ssz::HashTreeRoot;
 use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::{ByteList, Bytes3112, Bytes32, Bytes52};
+use lean_eth::types::bytes::{ByteList, Bytes32, Bytes52, Bytes3112};
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 
@@ -19,10 +20,7 @@ fn aggregate_by_data(
 ) -> Vec<Attestation> {
     let mut groups: Vec<(AttestationData, Vec<usize>)> = Vec::new();
     for att in attestations {
-        if let Some((_, participants)) = groups
-            .iter_mut()
-            .find(|(data, _)| *data == att.message)
-        {
+        if let Some((_, participants)) = groups.iter_mut().find(|(data, _)| *data == att.message) {
             participants.push(att.validator_id.0 as usize);
         } else {
             groups.push((att.message.clone(), vec![att.validator_id.0 as usize]));
@@ -44,9 +42,15 @@ fn aggregate_by_data(
     aggregated
 }
 
-fn build_block_for_slot(state: &State, slot: u64, proposer: u64, attestations: Vec<Attestation>) -> Block {
+fn build_block_for_slot(
+    state: &State,
+    slot: u64,
+    proposer: u64,
+    attestations: Vec<Attestation>,
+) -> Block {
     let mut temp = state.clone();
-    temp.process_slots(Slot(Uint64(slot))).expect("process slots");
+    temp.process_slots(Slot(Uint64(slot)))
+        .expect("process slots");
     let parent_root = Bytes32::from(temp.latest_block_header.hash_tree_root());
     let body = BlockBody {
         attestations: Attestations::new(attestations).expect("attestations"),
@@ -123,8 +127,14 @@ fn lean_spec_attestation_aggregation() {
     let aggregated = aggregate_by_data(&attestations);
 
     assert_eq!(aggregated.len(), 2);
-    let a = aggregated.iter().find(|att| att.data == data_a).expect("group a");
-    let b = aggregated.iter().find(|att| att.data == data_b).expect("group b");
+    let a = aggregated
+        .iter()
+        .find(|att| att.data == data_a)
+        .expect("group a");
+    let b = aggregated
+        .iter()
+        .find(|att| att.data == data_b)
+        .expect("group b");
     assert_eq!(a.aggregation_bits.len(), 4);
     assert_eq!(b.aggregation_bits.len(), 6);
     assert!(a.aggregation_bits.data[0] & (1u8 << 1) != 0);
@@ -224,7 +234,9 @@ fn lean_spec_state_aggregation() {
             proposer_signature: Bytes3112::zero(),
         },
     };
-    state.process_signed_block(&signed_good).expect("process block");
+    state
+        .process_signed_block(&signed_good)
+        .expect("process block");
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
 }
 
@@ -262,7 +274,9 @@ fn lean_spec_state_justified_slots() {
         state_root: Bytes32::zero(),
         body_root: Bytes32::from(body.hash_tree_root()),
     };
-    state.process_block_header(header_1).expect("process header");
+    state
+        .process_block_header(header_1)
+        .expect("process header");
     let att_1 = Attestation {
         aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
         data: AttestationData {
@@ -297,7 +311,9 @@ fn lean_spec_state_justified_slots() {
         state_root: Bytes32::zero(),
         body_root: Bytes32::from(body.hash_tree_root()),
     };
-    state.process_block_header(header_2).expect("process header");
+    state
+        .process_block_header(header_2)
+        .expect("process header");
     let att_2 = Attestation {
         aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
         data: AttestationData {

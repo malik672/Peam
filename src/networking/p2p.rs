@@ -1,46 +1,80 @@
+//! libp2p swarm integration: transport, behaviours, and event dispatch.
+//!
+//! [`P2pService`] owns the libp2p [`Swarm`] and drives it in a `select!` loop
+//! that interleaves swarm events with outbound [`P2pCommand`]s.
+//!
+//! # Transport stack
+//!
+//! TCP → Noise (authentication) → Yamux (multiplexing)
+//!
+//! # Behaviours
+//!
+//! | Behaviour    | Purpose |
+//! |--------------|---------|
+//! | `gossipsub`  | Pub/sub block and attestation propagation |
+//! | `identify`   | Peer protocol/address advertisement |
+//! | `ping`       | Liveness probing |
+//! | `reqresp`    | Typed request/response (status, blocks-by-root) |
+//! | `mdns`       | Local-network peer discovery |
+
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+use futures::StreamExt;
 use libp2p::core::upgrade;
-use libp2p::gossipsub::{self, Behaviour as Gossipsub, Event as GossipsubEvent, MessageAuthenticity, IdentTopic};
+use libp2p::gossipsub::{
+    self, Behaviour as Gossipsub, Event as GossipsubEvent, IdentTopic, MessageAuthenticity,
+};
 use libp2p::identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent};
 use libp2p::identity::Keypair;
-use libp2p::mdns::{tokio::Behaviour as Mdns, Config as MdnsConfig, Event as MdnsEvent};
+use libp2p::mdns::{Config as MdnsConfig, Event as MdnsEvent, tokio::Behaviour as Mdns};
 use libp2p::noise;
 use libp2p::ping::{Behaviour as Ping, Config as PingConfig, Event as PingEvent};
 use libp2p::request_response::{
-    ProtocolSupport, Behaviour as RequestResponse, Codec as RequestResponseCodec, Config as RequestResponseConfig,
-    Event as RequestResponseEvent, Message as RequestResponseMessage,
+    Behaviour as RequestResponse, Codec as RequestResponseCodec, Config as RequestResponseConfig,
+    Event as RequestResponseEvent, Message as RequestResponseMessage, ProtocolSupport,
 };
 use libp2p::swarm::{Swarm, SwarmEvent};
-use libp2p_swarm_derive::NetworkBehaviour;
 use libp2p::{Multiaddr, PeerId, Transport};
 use libp2p::{tcp, yamux};
+use libp2p_swarm_derive::NetworkBehaviour;
 use tokio::sync::mpsc;
 use tracing::info;
-use async_trait::async_trait;
-use futures::StreamExt;
 
 use super::events::{EventBus, NetworkEvent};
-use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
+use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
 
+/// Configuration for constructing a [`P2pService`].
 #[derive(Clone)]
 pub struct P2pConfig {
+    /// Multiaddr the swarm will listen on.
     pub listen_addr: Multiaddr,
+    /// Boot-node addresses to dial immediately on startup.
     pub bootnodes: Vec<Multiaddr>,
+    /// Primary gossipsub topic to subscribe to.
     pub gossipsub_topic: String,
+    /// Full list of topic strings the node will accept messages from.
     pub allowed_topics: Vec<String>,
+    /// Per-topic score increments awarded on valid message receipt.
     pub topic_scores: Vec<(String, i64)>,
+    /// Per-topic validator kind used to verify inbound gossip payloads.
     pub topic_validators: Vec<(String, super::GossipValidatorKind)>,
+    /// Cryptographic signature verifier for gossip messages.
     pub signature_verifier: Arc<dyn super::GossipSignatureVerifier>,
+    /// Application-level req/resp request handler.
     pub reqresp_handler: Arc<dyn crate::networking::ReqRespHandler>,
+    /// Gossip context for slot-range validation.
     pub gossip_context: Arc<dyn crate::networking::GossipContext>,
+    /// Maximum acceptable payload size for gossip messages (bytes).
     pub max_gossip_bytes: usize,
+    /// Maximum acceptable payload size for req/resp messages (bytes).
     pub max_reqresp_bytes: usize,
 }
 
+/// The running libp2p service: owns the swarm and dispatches all events.
 pub struct P2pService {
     swarm: Swarm<LeanBehaviour>,
     events: EventBus,
@@ -58,11 +92,19 @@ pub struct P2pService {
     max_reqresp_bytes: usize,
 }
 
+/// Commands sent from higher-level networking code down to the swarm loop.
 pub enum P2pCommand {
+    /// Publish `payload` to the given gossipsub `topic`.
     Publish { topic: String, payload: Vec<u8> },
-    SendRequest { peer: PeerId, protocol: String, payload: Vec<u8> },
+    /// Send a req/resp `payload` to `peer` using `protocol`.
+    SendRequest {
+        peer: PeerId,
+        protocol: String,
+        payload: Vec<u8>,
+    },
 }
 
+/// The composed libp2p [`NetworkBehaviour`] for lean-Ethereum.
 #[derive(NetworkBehaviour)]
 pub struct LeanBehaviour {
     gossipsub: Gossipsub,
@@ -72,30 +114,45 @@ pub struct LeanBehaviour {
     mdns: Mdns,
 }
 
+/// Codec for the lean-Ethereum req/resp protocol.
+///
+/// Reads raw bytes into [`LeanRequest`] / [`LeanResponse`] and writes them
+/// back verbatim — framing and protocol selection are handled by libp2p.
 #[derive(Clone, Default)]
 pub struct LeanReqRespCodec;
 
+/// A req/resp protocol identifier wrapping the protocol ID string.
 #[derive(Clone)]
 pub struct LeanReqRespProtocol(pub String);
 
+/// Allows the protocol to be used as a string reference in libp2p internals.
 impl AsRef<str> for LeanReqRespProtocol {
     fn as_ref(&self) -> &str {
         &self.0
     }
 }
 
+/// A raw inbound or outbound req/resp request.
 #[derive(Debug, Clone)]
 pub struct LeanRequest {
+    /// Protocol ID string.
     pub protocol: String,
+    /// Raw SSZ-encoded request payload.
     pub payload: Vec<u8>,
 }
 
+/// A raw inbound or outbound req/resp response.
 #[derive(Debug, Clone)]
 pub struct LeanResponse {
+    /// Protocol ID string.
     pub protocol: String,
+    /// Raw SSZ-encoded response payload.
     pub payload: Vec<u8>,
 }
 
+/// [`RequestResponseCodec`] impl for [`LeanReqRespCodec`].
+///
+/// All four methods read/write the full payload as a flat byte buffer.
 #[async_trait]
 impl RequestResponseCodec for LeanReqRespCodec {
     type Protocol = LeanReqRespProtocol;
@@ -164,13 +221,24 @@ impl RequestResponseCodec for LeanReqRespCodec {
 }
 
 impl P2pService {
+    /// Constructs and starts the libp2p swarm.
+    ///
+    /// Generates a fresh ephemeral Ed25519 keypair, subscribes to the
+    /// configured gossipsub topic, dials all bootnodes, and listens on
+    /// `config.listen_addr`.
     pub fn new(config: P2pConfig, events: EventBus, outbound: mpsc::Receiver<P2pCommand>) -> Self {
         let keypair = Keypair::generate_ed25519();
         let peer_id = PeerId::from(keypair.public());
 
-        let gossipsub = Gossipsub::new(MessageAuthenticity::Signed(keypair.clone()), gossipsub::Config::default())
-            .expect("gossipsub");
-        let identify = Identify::new(IdentifyConfig::new("/lean_eth/1.0.0".to_string(), keypair.public()));
+        let gossipsub = Gossipsub::new(
+            MessageAuthenticity::Signed(keypair.clone()),
+            gossipsub::Config::default(),
+        )
+        .expect("gossipsub");
+        let identify = Identify::new(IdentifyConfig::new(
+            "/lean_eth/1.0.0".to_string(),
+            keypair.public(),
+        ));
         let ping = Ping::new(PingConfig::new().with_interval(Duration::from_secs(10)));
         let reqresp_protocols = [
             LeanSupportedProtocol::StatusV1.protocol_id(),
@@ -178,14 +246,17 @@ impl P2pService {
         ]
         .into_iter()
         .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
-        let reqresp = RequestResponse::new(
-            reqresp_protocols,
-            RequestResponseConfig::default(),
-        );
+        let reqresp = RequestResponse::new(reqresp_protocols, RequestResponseConfig::default());
 
         // Local discovery for dev/test networks (LAN scope).
         let mdns = Mdns::new(MdnsConfig::default(), peer_id).expect("mdns");
-        let mut behaviour = LeanBehaviour { gossipsub, identify, ping, reqresp, mdns };
+        let mut behaviour = LeanBehaviour {
+            gossipsub,
+            identify,
+            ping,
+            reqresp,
+            mdns,
+        };
         let topic = IdentTopic::new(config.gossipsub_topic.clone());
         let _ = behaviour.gossipsub.subscribe(&topic);
 
@@ -201,9 +272,7 @@ impl P2pService {
             peer_id,
             libp2p::swarm::Config::with_tokio_executor(),
         );
-        swarm
-            .listen_on(config.listen_addr.clone())
-            .expect("listen");
+        swarm.listen_on(config.listen_addr.clone()).expect("listen");
 
         for addr in config.bootnodes {
             let _ = swarm.dial(addr);
@@ -237,14 +306,20 @@ impl P2pService {
         }
     }
 
+    /// Returns the local node's libp2p [`PeerId`].
     pub fn local_peer_id(&self) -> PeerId {
         self.local_peer_id
     }
 
+    /// Returns the address the swarm is listening on.
     pub fn listen_addr(&self) -> &Multiaddr {
         &self.listen_addr
     }
 
+    /// Runs the swarm event loop until the outbound command channel is closed.
+    ///
+    /// Interleaves swarm events (gossip, identify, ping, req/resp, mDNS) with
+    /// outbound [`P2pCommand`]s from the higher-level networking layer.
     pub async fn run(mut self) {
         loop {
             tokio::select! {
@@ -264,6 +339,7 @@ impl P2pService {
         }
     }
 
+    /// Executes an outbound [`P2pCommand`].
     fn on_command(&mut self, cmd: P2pCommand) {
         match cmd {
             P2pCommand::Publish { topic, payload } => {
@@ -271,22 +347,32 @@ impl P2pService {
                 let topic = IdentTopic::new(topic.clone());
                 let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, payload);
             }
-            P2pCommand::SendRequest { peer, protocol, payload } => {
+            P2pCommand::SendRequest {
+                peer,
+                protocol,
+                payload,
+            } => {
                 // Send a req/resp request to a specific peer.
                 self.swarm
                     .behaviour_mut()
                     .reqresp
-                    .send_request(
-                        &peer,
-                        LeanRequest {
-                            protocol,
-                            payload,
-                        },
-                    );
+                    .send_request(&peer, LeanRequest { protocol, payload });
             }
         }
     }
 
+    /// Dispatches a single swarm event to the appropriate handler.
+    ///
+    /// Scoring rules applied per event:
+    /// - Oversized gossip payload: −25
+    /// - Unknown / invalid topic: −5
+    /// - Invalid payload signature: −10
+    /// - Ignore result from basic/context validation: −1
+    /// - Reject result from basic/context validation: −25
+    /// - Valid gossip: topic-score increment (default +1)
+    /// - Successful req/resp response: +1
+    /// - Oversized req/resp payload: −25
+    /// - Ping failure: emit `PeerDisconnected`
     fn on_swarm_event(&mut self, event: SwarmEvent<LeanBehaviourEvent>) {
         match event {
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -301,7 +387,11 @@ impl P2pService {
                     .gossipsub
                     .publish(topic, b"hello".to_vec());
             }
-            SwarmEvent::Behaviour(LeanBehaviourEvent::Gossipsub(GossipsubEvent::Message { message, propagation_source, .. })) => {
+            SwarmEvent::Behaviour(LeanBehaviourEvent::Gossipsub(GossipsubEvent::Message {
+                message,
+                propagation_source,
+                ..
+            })) => {
                 // Validate and score inbound gossipsub messages.
                 if message.data.len() > self.max_gossip_bytes {
                     self.events.emit(NetworkEvent::PeerScored {
@@ -405,7 +495,10 @@ impl P2pService {
                 }
             }
             SwarmEvent::Behaviour(LeanBehaviourEvent::Mdns(MdnsEvent::Expired(_))) => {}
-            SwarmEvent::Behaviour(LeanBehaviourEvent::Identify(IdentifyEvent::Received { peer_id, .. })) => {
+            SwarmEvent::Behaviour(LeanBehaviourEvent::Identify(IdentifyEvent::Received {
+                peer_id,
+                ..
+            })) => {
                 self.events.emit(NetworkEvent::PeerConnected {
                     peer_id: peer_id.to_string(),
                 });
@@ -417,9 +510,14 @@ impl P2pService {
                     });
                 }
             }
-            SwarmEvent::Behaviour(LeanBehaviourEvent::Reqresp(RequestResponseEvent::Message { peer, message })) => {
+            SwarmEvent::Behaviour(LeanBehaviourEvent::Reqresp(RequestResponseEvent::Message {
+                peer,
+                message,
+            })) => {
                 match message {
-                    RequestResponseMessage::Request { request, channel, .. } => {
+                    RequestResponseMessage::Request {
+                        request, channel, ..
+                    } => {
                         // Inbound req/resp request.
                         let LeanRequest { protocol, payload } = request;
                         if payload.len() > self.max_reqresp_bytes {

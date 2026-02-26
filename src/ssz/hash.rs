@@ -17,7 +17,6 @@ pub fn hash_nodes(left: &Bytes32, right: &Bytes32) -> Bytes32 {
     Bytes32::from_slice(&out)
 }
 
-
 pub fn chunkify_fixed(data: &[u8]) -> Vec<Bytes32> {
     if data.is_empty() {
         return vec![Bytes32::zero()];

@@ -1,9 +1,17 @@
+//! Outbound req/resp messaging with egress rate limiting.
+//!
+//! [`ReqResp`] is a cloneable handle for sending request/response messages to
+//! specific peers. Both send paths are guarded by a shared egress
+//! [`RateLimiter`]. Dropped messages emit [`NetworkEvent::RateLimited`] on the
+//! bus.
+
 use tokio::sync::mpsc;
 use tracing::info;
 
 use super::events::{EventBus, NetworkEvent};
 use super::rate_limiter::RateLimiter;
 
+/// Cloneable handle for outbound req/resp messaging.
 #[derive(Clone)]
 pub struct ReqResp {
     tx: mpsc::Sender<ReqRespMessage>,
@@ -11,13 +19,16 @@ pub struct ReqResp {
     limiter: RateLimiter,
 }
 
+/// An inbound or outbound req/resp message routed through the internal pipeline.
 #[derive(Debug)]
 pub enum ReqRespMessage {
+    /// An outbound (or echoed inbound) request.
     Request {
         peer_id: String,
         protocol: String,
         payload: Vec<u8>,
     },
+    /// An outbound (or echoed inbound) response.
     Response {
         peer_id: String,
         protocol: String,
@@ -26,12 +37,27 @@ pub enum ReqRespMessage {
 }
 
 impl ReqResp {
+    /// Creates a new [`ReqResp`] handle and returns the paired receiver.
+    ///
+    /// `buffer` sets the internal channel capacity. The receiver is consumed
+    /// by the req/resp inbound pipeline in the networking runtime.
     pub fn new(events: EventBus, buffer: usize) -> (Self, mpsc::Receiver<ReqRespMessage>) {
         let (tx, rx) = mpsc::channel(buffer);
         let limiter = RateLimiter::new(std::time::Duration::from_secs(1), 64);
-        (Self { tx, events, limiter }, rx)
+        (
+            Self {
+                tx,
+                events,
+                limiter,
+            },
+            rx,
+        )
     }
 
+    /// Sends a request `payload` to `peer_id` over `protocol`.
+    ///
+    /// Silently drops and emits [`NetworkEvent::RateLimited`] if the egress
+    /// rate limit is exceeded.
     pub async fn send_request(&self, peer_id: String, protocol: String, payload: Vec<u8>) {
         if !self.limiter.allow("reqresp_out").await {
             self.events.emit(NetworkEvent::RateLimited {
@@ -54,6 +80,10 @@ impl ReqResp {
         });
     }
 
+    /// Sends a response `payload` to `peer_id` over `protocol`.
+    ///
+    /// Silently drops and emits [`NetworkEvent::RateLimited`] if the egress
+    /// rate limit is exceeded.
     pub async fn send_response(&self, peer_id: String, protocol: String, payload: Vec<u8>) {
         if !self.limiter.allow("reqresp_out").await {
             self.events.emit(NetworkEvent::RateLimited {

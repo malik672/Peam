@@ -7,7 +7,7 @@ use lean_eth::containers::checkpoint::Checkpoint;
 use lean_eth::containers::validator::ValidatorIndex;
 use lean_eth::slot::Slot;
 use lean_eth::ssz::{SszDecode, SszEncode};
-use lean_eth::types::bytes::{Bytes3112, Bytes32};
+use lean_eth::types::bytes::{Bytes32, Bytes3112};
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
 
@@ -26,8 +26,7 @@ fn dummy_block() -> Block {
 
 fn dummy_proposer_attestation(slot: Slot) -> Attestation {
     Attestation {
-        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true])
-            .expect("bits"),
+        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
         data: AttestationData {
             slot,
             head: Checkpoint {
