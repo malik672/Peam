@@ -33,6 +33,17 @@ Run a second instance with:
 - different `metrics_port`
 - different QUIC listen port (once listen address is configurable via config path in networking).
 
+## Latest verification run
+- Date: February 26, 2026
+- Command:
+```bash
+cargo test --test ream_networking_ports -- --ignored
+```
+- Result: `ok` (3/3)
+  - `ream_two_nodes_connection_smoke`
+  - `ream_status_request_response_smoke`
+  - `ream_mdns_discovery_smoke`
+
 ## Notes
 - Pending slot index is memory-only; restart clears pending slots by design.
 - Canonical slot indexes + blobs remain in `canonical.redb`.

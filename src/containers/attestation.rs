@@ -7,43 +7,102 @@ use crate::types::bytes::{ByteList, Bytes32, Bytes3112};
 use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
 
+/// Maximum number of validators tracked by aggregation bitfields.
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 4_096;
+/// Number of attestation committees/subnets used by gossip validation.
+pub const ATTESTATION_COMMITTEE_COUNT: u64 = 1;
+
+/// Byte length of a post-quantum aggregate signature.
 pub const SIGNATURE_BYTES: usize = 3_112;
+
+/// Maximum byte length of a variable-length aggregated signature proof.
 pub const PROOF_MAX_BYTES: usize = 1_048_576;
 
-/// Attestation content describing the validator's observed chain view.
+/// The message content of an attestation: the slot, head, target, and source checkpoints
+/// that together describe the attesting validator's observed chain view.
+///
+/// # SSZ layout (fixed, 128 bytes)
+///
+/// | Byte range | Field    |
+/// |------------|----------|
+/// | 0 – 7      | `slot`   |
+/// | 8 – 47     | `head`   |
+/// | 48 – 87    | `target` |
+/// | 88 – 127   | `source` |
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttestationData {
+    /// Slot at which the attestation was created.
     pub slot: Slot,
+    /// Validator's observed canonical head checkpoint.
     pub head: Checkpoint,
+    /// Checkpoint the validator is voting to justify (target epoch boundary).
     pub target: Checkpoint,
+    /// Most recently justified checkpoint the validator observed (source epoch boundary).
     pub source: Checkpoint,
 }
 
-/// Aggregated attestation consisting of participation bits and message.
+/// Aggregated attestation: a set of validators (identified by `aggregation_bits`) all
+/// attesting to the same [`AttestationData`].
+///
+/// The `aggregation_bits` bitfield has one bit per validator in the registry; bit `i`
+/// is set when validator `i` contributed to this aggregate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
+    /// Bitfield of participating validators (one bit per validator index).
     pub aggregation_bits: BitList<VALIDATOR_REGISTRY_LIMIT>,
+    /// The attested chain view shared by all participating validators.
     pub data: AttestationData,
 }
 
+/// Type alias clarifying that an [`Attestation`] carrying multiple participants is
+/// an aggregated attestation.
 pub type AggregatedAttestation = Attestation;
 
-/// Validator attestation bundled with its signature.
+/// A single validator's attestation bundled with its post-quantum signature.
+///
+/// Used when a validator submits its own view before aggregation; the signature
+/// covers `hash_tree_root(message)`.
+///
+/// # SSZ layout (fixed, 8 + 128 + `SIGNATURE_BYTES` bytes)
+///
+/// | Byte range                         | Field          |
+/// |------------------------------------|----------------|
+/// | 0 – 7                              | `validator_id` |
+/// | 8 – 135                            | `message`      |
+/// | 136 – 135 + `SIGNATURE_BYTES`      | `signature`    |
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignedAttestation {
+    /// Index of the signing validator in the registry.
     pub validator_id: Uint64,
+    /// The attested chain view.
     pub message: AttestationData,
+    /// Post-quantum signature over `hash_tree_root(message)`.
     pub signature: Bytes3112,
 }
 
-/// Aggregated signature proof bundled with participants.
+/// An aggregated post-quantum signature proof together with the bitfield of
+/// validators whose individual signatures were combined.
+///
+/// Paired with an [`Attestation`] inside a block body to allow signature
+/// verification without re-transmitting the full message.
+///
+/// # SSZ layout (variable)
+///
+/// | Offset | Field          |
+/// |--------|----------------|
+/// | 0      | `participants` (offset, 4 B) |
+/// | 4      | `proof_data`   (offset, 4 B) |
+/// | …      | `participants` bytes         |
+/// | …      | `proof_data`   bytes         |
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AggregatedSignatureProof {
+    /// Bitfield of validators whose signatures were aggregated into `proof_data`.
     pub participants: BitList<VALIDATOR_REGISTRY_LIMIT>,
+    /// Raw bytes of the aggregated post-quantum proof.
     pub proof_data: ByteList<PROOF_MAX_BYTES>,
 }
 
+/// SSZ serialization for [`AttestationData`] — 128-byte fixed encoding.
 impl SszEncode for AttestationData {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 40 * 3);
@@ -56,6 +115,7 @@ impl SszEncode for AttestationData {
     }
 }
 
+/// SSZ deserialization for [`AttestationData`] — trusts that `bytes` is exactly 128 bytes.
 impl SszDecode for AttestationData {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let slot = Slot::decode_ssz(&bytes[0..8])?;
@@ -72,6 +132,9 @@ impl SszDecode for AttestationData {
 }
 
 impl AttestationData {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Returns `Err` if `bytes.len() != 128`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != Self::fixed_len() {
             return Err(format!(
@@ -84,6 +147,11 @@ impl AttestationData {
     }
 }
 
+/// Merkle hash-tree root for [`AttestationData`].
+///
+/// Hashes all four fields and merklizes them as a balanced 4-leaf tree:
+/// - Inner node of `[slot, head, target]` via `merkleize_tree_root_3`
+/// - Final root = `hash_nodes(above, source_root)`
 impl HashTreeRoot for AttestationData {
     fn hash_tree_root(&self) -> [u8; 32] {
         let slot_root = Bytes32::from(self.slot.hash_tree_root());
@@ -102,6 +170,11 @@ impl SszFixedLen for AttestationData {
     }
 }
 
+/// SSZ serialization for [`Attestation`] — variable-length encoding.
+///
+/// Layout: `[offset: u32][data: 128 B][aggregation_bits: variable]`
+/// The offset is a 4-byte little-endian pointer to where `aggregation_bits` starts
+/// (always `4 + 128 = 132`).
 impl SszEncode for Attestation {
     fn encode_ssz(&self) -> Vec<u8> {
         let data_bytes = self.data.encode_ssz();
@@ -117,6 +190,7 @@ impl SszEncode for Attestation {
     }
 }
 
+/// SSZ deserialization for [`Attestation`] — trusts that the offset is valid.
 impl SszDecode for Attestation {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -132,6 +206,10 @@ impl SszDecode for Attestation {
 }
 
 impl Attestation {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Returns `Err` if the total length is shorter than the minimum fixed section
+    /// (`4 + AttestationData::fixed_len()`).
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 4 + AttestationData::fixed_len() {
             return Err("Attestation missing offset table".to_string());
@@ -140,6 +218,9 @@ impl Attestation {
     }
 }
 
+/// Merkle hash-tree root for [`Attestation`].
+///
+/// `hash_tree_root = hash_nodes(aggregation_bits_root, data_root)`
 impl HashTreeRoot for Attestation {
     fn hash_tree_root(&self) -> [u8; 32] {
         let bits_root = Bytes32::from(self.aggregation_bits.hash_tree_root());
@@ -151,6 +232,7 @@ impl HashTreeRoot for Attestation {
 
 impl SszElement for Attestation {}
 
+/// SSZ serialization for [`SignedAttestation`] — fixed-length encoding.
 impl SszEncode for SignedAttestation {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 128 + SIGNATURE_BYTES);
@@ -163,6 +245,7 @@ impl SszEncode for SignedAttestation {
     }
 }
 
+/// SSZ deserialization for [`SignedAttestation`] — trusts that `bytes` is the correct length.
 impl SszDecode for SignedAttestation {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let validator_id = Uint64::decode_ssz(&bytes[0..8])?;
@@ -177,6 +260,9 @@ impl SszDecode for SignedAttestation {
 }
 
 impl SignedAttestation {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Returns `Err` if `bytes.len() != 8 + 128 + SIGNATURE_BYTES`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != Self::fixed_len() {
             return Err(format!(
@@ -189,6 +275,9 @@ impl SignedAttestation {
     }
 }
 
+/// Merkle hash-tree root for [`SignedAttestation`].
+///
+/// Merklizes all three fields as a balanced 3-leaf tree via `merkleize_tree_root_3`.
 impl HashTreeRoot for SignedAttestation {
     fn hash_tree_root(&self) -> [u8; 32] {
         let validator_root = Bytes32::from(self.validator_id.hash_tree_root());
@@ -205,6 +294,9 @@ impl SszFixedLen for SignedAttestation {
     }
 }
 
+/// SSZ serialization for [`AggregatedSignatureProof`] — variable-length encoding.
+///
+/// Layout: `[off_participants: u32][off_proof: u32][participants bytes][proof bytes]`
 impl SszEncode for AggregatedSignatureProof {
     fn encode_ssz(&self) -> Vec<u8> {
         let bits = self.participants.encode_ssz();
@@ -222,6 +314,7 @@ impl SszEncode for AggregatedSignatureProof {
     }
 }
 
+/// SSZ deserialization for [`AggregatedSignatureProof`] — trusts that offsets are valid.
 impl SszDecode for AggregatedSignatureProof {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -238,6 +331,9 @@ impl SszDecode for AggregatedSignatureProof {
     }
 }
 
+/// Merkle hash-tree root for [`AggregatedSignatureProof`].
+///
+/// `hash_tree_root = hash_nodes(participants_root, proof_data_root)`
 impl HashTreeRoot for AggregatedSignatureProof {
     fn hash_tree_root(&self) -> [u8; 32] {
         let bits_root = Bytes32::from(self.participants.hash_tree_root());

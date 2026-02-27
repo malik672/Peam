@@ -4,6 +4,7 @@
 //! configured interval it pops one seed and asks the [`PeerManager`] to connect
 //! to it. Seeds are added dynamically via [`Discovery::add_seed`].
 
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +27,8 @@ pub struct Discovery {
 struct InnerDiscovery {
     /// FIFO queue of peer IDs waiting to be dialed.
     seeds: Mutex<VecDeque<String>>,
+    /// Set used to deduplicate configured seeds.
+    seed_set: Mutex<HashSet<String>>,
     /// How often to attempt the next dial.
     interval: Duration,
 }
@@ -37,6 +40,7 @@ impl Discovery {
         Self {
             inner: Arc::new(InnerDiscovery {
                 seeds: Mutex::new(VecDeque::new()),
+                seed_set: Mutex::new(HashSet::new()),
                 interval,
             }),
         }
@@ -44,6 +48,11 @@ impl Discovery {
 
     /// Enqueues `peer_id` for dialing on the next available tick.
     pub async fn add_seed(&self, peer_id: String) {
+        let mut seed_set = self.inner.seed_set.lock().await;
+        if !seed_set.insert(peer_id.clone()) {
+            return;
+        }
+        drop(seed_set);
         let mut seeds = self.inner.seeds.lock().await;
         seeds.push_back(peer_id);
     }
@@ -64,8 +73,12 @@ impl Discovery {
 
     /// Pops the next seed from the front of the queue, returning `None` if
     /// the queue is empty.
+    ///
+    /// The popped seed is pushed back to preserve a round-robin dial cycle.
     async fn next_seed(&self) -> Option<String> {
         let mut seeds = self.inner.seeds.lock().await;
-        seeds.pop_front()
+        let next = seeds.pop_front()?;
+        seeds.push_back(next.clone());
+        Some(next)
     }
 }

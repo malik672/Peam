@@ -6,25 +6,77 @@ use crate::containers::state::State;
 use crate::ssz::SszFixedLen;
 use crate::types::uint::Uint64;
 
+/// Runtime settings for a [`Node`], parsed from the config file.
+///
+/// All fields have defaults applied by [`load_node_settings`] when the
+/// corresponding key is absent from the config.
+///
+/// # Defaults (when key is absent)
+///
+/// | Field                       | Default                                      |
+/// |-----------------------------|----------------------------------------------|
+/// | `metrics`                   | `false`                                      |
+/// | `metrics_address`           | `"127.0.0.1"`                                |
+/// | `metrics_port`              | `8080`                                       |
+/// | `discovery_interval_secs`   | `5`                                          |
+/// | `score_decay_interval_secs` | `30`                                         |
+/// | `score_decay_amount`        | `1`                                          |
+/// | `ban_threshold`             | `-100`                                       |
+/// | `allowed_topics`            | block + attestation devnet2 topics           |
+/// | `topic_scores`              | block=2, attestation=1                       |
+/// | `topic_validators`          | block + attestation validators               |
+/// | `max_gossip_bytes`          | `2_000_000`                                  |
+/// | `max_reqresp_bytes`         | `4_000_000`                                  |
+/// | `storage_dir`               | `None` (resolved to `data_dir/store`)        |
 #[derive(Clone, Debug)]
 pub struct NodeSettings {
+    /// Enable the Prometheus metrics HTTP server.
     pub metrics: bool,
+    /// Bind address for the metrics server (e.g. `"127.0.0.1"`).
     pub metrics_address: String,
+    /// TCP port for the metrics server.
     pub metrics_port: u16,
+    /// Interval in seconds between peer discovery rounds.
     pub discovery_interval_secs: u64,
+    /// Interval in seconds between peer score decay ticks.
     pub score_decay_interval_secs: u64,
+    /// Amount subtracted from a peer's score on each decay tick.
     pub score_decay_amount: i64,
+    /// Score threshold below which a peer is banned.
     pub ban_threshold: i64,
+    /// libp2p multiaddrs of bootstrap peers to dial on startup.
     pub bootnodes: Vec<String>,
+    /// Peers that are always trusted regardless of score.
     pub trusted_peers: Vec<String>,
+    /// Gossipsub topic strings this node will subscribe to.
     pub allowed_topics: Vec<String>,
+    /// Per-topic score increments applied when a valid message is received.
     pub topic_scores: Vec<(String, i64)>,
+    /// Per-topic gossip validator kind used to validate incoming messages.
     pub topic_validators: Vec<(String, crate::networking::GossipValidatorKind)>,
+    /// Maximum byte size of a gossipsub message payload.
     pub max_gossip_bytes: usize,
+    /// Maximum byte size of a request/response message.
     pub max_reqresp_bytes: usize,
+    /// Optional override for the block store directory.
+    /// Relative paths are resolved against `data_dir`; `None` defaults to
+    /// `data_dir/store`.
     pub storage_dir: Option<String>,
 }
 
+/// Load only the chain [`Config`] from `path`.
+///
+/// Accepts two formats:
+/// - **SSZ binary** — if `bytes.len() == Config::fixed_len()`, decoded directly
+///   via [`Config::decode_ssz_checked`].
+/// - **Key-value text** — lines of the form `key = value`; blank lines and
+///   lines starting with `#` are ignored. The only recognized key is
+///   `genesis_time` (parsed as `u64`).
+///
+/// # Errors
+///
+/// Returns `Err` if the file cannot be read, is not valid UTF-8 (text path),
+/// contains a malformed line, or `genesis_time` is missing.
 pub fn load_config(path: &Path) -> Result<Config, String> {
     let bytes =
         fs::read(path).map_err(|err| format!("Failed to read config {}: {err}", path.display()))?;
@@ -62,6 +114,25 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
     })
 }
 
+/// Load both the chain [`Config`] and [`NodeSettings`] from `path`.
+///
+/// Accepts the same two formats as [`load_config`]:
+///
+/// - **SSZ binary** — decoded as a bare [`Config`]; all [`NodeSettings`] fields
+///   are set to their defaults, including the devnet2 block and attestation topics.
+///
+/// - **Key-value text** — parses all known keys (see [`NodeSettings`] field docs
+///   for names). Multi-value keys (`bootnodes`, `trusted_peers`, `allowed_topics`)
+///   are comma-separated. `topic_scores` uses `topic:score` pairs;
+///   `topic_validators` uses `topic=kind` pairs where `kind` is one of
+///   `block`, `block_header`, `attestation`, `exit` (unrecognized kinds map to
+///   `GossipValidatorKind::None`). If `allowed_topics` is empty after parsing,
+///   the devnet2 defaults are substituted.
+///
+/// # Errors
+///
+/// Returns `Err` if the file cannot be read, is not valid UTF-8 (text path),
+/// contains a malformed line, or `genesis_time` is missing.
 pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String> {
     let bytes =
         fs::read(path).map_err(|err| format!("Failed to read config {}: {err}", path.display()))?;
@@ -307,6 +378,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     Ok((config, settings))
 }
 
+/// Construct a genesis [`State`] from the given chain [`Config`].
+///
+/// Delegates to [`State::generate_genesis_empty`], which produces an empty
+/// validator set with all checkpoints at slot 0.
 #[inline]
 pub fn build_genesis(config: Config) -> Result<State, String> {
     Ok(State::generate_genesis_empty(config.genesis_time))

@@ -313,8 +313,7 @@ impl Store for FileStore {
 
         // Build delta: only the entries that changed this call.
         let mut state_upserts = Vec::with_capacity(1 + promoted.len());
-        let mut block_upserts =
-            Vec::with_capacity(usize::from(block_canonical) + promoted.len());
+        let mut block_upserts = Vec::with_capacity(usize::from(block_canonical) + promoted.len());
         state_upserts.push((slot, state_root));
         if block_canonical {
             block_upserts.push((slot, root));

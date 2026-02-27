@@ -86,6 +86,7 @@ fn gossip_block_updates_fork_choice_head() {
     let state = Arc::new(RwLock::new(State::generate_genesis(Uint64(0), validators)));
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
+    let pending_attestations = Arc::new(RwLock::new(Vec::new()));
 
     let (signed, _post, root) = {
         let s = state.read().expect("state lock");
@@ -99,7 +100,14 @@ fn gossip_block_updates_fork_choice_head() {
     }
     .to_string();
 
-    handle_gossip_event(&topic, &payload, &state, &store, &fork_choice);
+    handle_gossip_event(
+        &topic,
+        &payload,
+        &state,
+        &store,
+        &fork_choice,
+        &pending_attestations,
+    );
     let fc = fork_choice.read().expect("fork choice lock");
     let fc = fc.as_ref().expect("fork choice");
     assert_eq!(fc.head(), root);
@@ -116,6 +124,7 @@ fn gossip_attestation_updates_fork_choice_votes() {
     let state = Arc::new(RwLock::new(State::generate_genesis(Uint64(0), validators)));
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
+    let pending_attestations = Arc::new(RwLock::new(Vec::new()));
 
     let (signed, _post, root) = {
         let s = state.read().expect("state lock");
@@ -129,7 +138,14 @@ fn gossip_attestation_updates_fork_choice_votes() {
     }
     .to_string();
 
-    handle_gossip_event(&topic, &payload, &state, &store, &fork_choice);
+    handle_gossip_event(
+        &topic,
+        &payload,
+        &state,
+        &store,
+        &fork_choice,
+        &pending_attestations,
+    );
 
     let signed_att = SignedAttestation {
         validator_id: Uint64(0),
@@ -160,7 +176,14 @@ fn gossip_attestation_updates_fork_choice_votes() {
     }
     .to_string();
 
-    handle_gossip_event(&att_topic, &att_payload, &state, &store, &fork_choice);
+    handle_gossip_event(
+        &att_topic,
+        &att_payload,
+        &state,
+        &store,
+        &fork_choice,
+        &pending_attestations,
+    );
     let fc = fork_choice.read().expect("fork choice lock");
     let fc = fc.as_ref().expect("fork choice");
     assert_eq!(fc.head(), root);

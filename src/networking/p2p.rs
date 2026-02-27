@@ -5,7 +5,7 @@
 //!
 //! # Transport stack
 //!
-//! TCP → Noise (authentication) → Yamux (multiplexing)
+//! QUIC (`quic-v1`)
 //!
 //! # Behaviours
 //!
@@ -22,22 +22,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use libp2p::core::upgrade;
+use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::gossipsub::{
     self, Behaviour as Gossipsub, Event as GossipsubEvent, IdentTopic, MessageAuthenticity,
 };
 use libp2p::identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent};
 use libp2p::identity::Keypair;
 use libp2p::mdns::{Config as MdnsConfig, Event as MdnsEvent, tokio::Behaviour as Mdns};
-use libp2p::noise;
 use libp2p::ping::{Behaviour as Ping, Config as PingConfig, Event as PingEvent};
+use libp2p::quic;
 use libp2p::request_response::{
     Behaviour as RequestResponse, Codec as RequestResponseCodec, Config as RequestResponseConfig,
     Event as RequestResponseEvent, Message as RequestResponseMessage, ProtocolSupport,
 };
 use libp2p::swarm::{Swarm, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Transport};
-use libp2p::{tcp, yamux};
 use libp2p_swarm_derive::NetworkBehaviour;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -46,6 +45,9 @@ use super::events::{EventBus, NetworkEvent};
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
 use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
+
+/// Explicit gossipsub protocol id for devnet-0 compatibility.
+const GOSSIPSUB_PROTOCOL_ID_V1_0: &str = "/meshsub/1.0.0";
 
 /// Configuration for constructing a [`P2pService`].
 #[derive(Clone)]
@@ -150,6 +152,14 @@ pub struct LeanResponse {
     pub payload: Vec<u8>,
 }
 
+#[inline]
+fn build_gossipsub_config_v1_0_strict() -> gossipsub::Config {
+    let mut builder = gossipsub::ConfigBuilder::default();
+    builder.protocol_id(GOSSIPSUB_PROTOCOL_ID_V1_0, gossipsub::Version::V1_0);
+    builder.validation_mode(gossipsub::ValidationMode::Strict);
+    builder.build().expect("valid gossipsub v1.0 config")
+}
+
 /// [`RequestResponseCodec`] impl for [`LeanReqRespCodec`].
 ///
 /// All four methods read/write the full payload as a flat byte buffer.
@@ -232,7 +242,7 @@ impl P2pService {
 
         let gossipsub = Gossipsub::new(
             MessageAuthenticity::Signed(keypair.clone()),
-            gossipsub::Config::default(),
+            build_gossipsub_config_v1_0_strict(),
         )
         .expect("gossipsub");
         let identify = Identify::new(IdentifyConfig::new(
@@ -257,13 +267,18 @@ impl P2pService {
             reqresp,
             mdns,
         };
-        let topic = IdentTopic::new(config.gossipsub_topic.clone());
-        let _ = behaviour.gossipsub.subscribe(&topic);
+        let mut topics = std::collections::HashSet::new();
+        topics.insert(config.gossipsub_topic.clone());
+        for topic in &config.allowed_topics {
+            topics.insert(topic.clone());
+        }
+        for topic in topics {
+            let ident = IdentTopic::new(topic);
+            let _ = behaviour.gossipsub.subscribe(&ident);
+        }
 
-        let transport = tcp::tokio::Transport::new(tcp::Config::default())
-            .upgrade(upgrade::Version::V1)
-            .authenticate(noise::Config::new(&keypair).expect("noise config"))
-            .multiplex(yamux::Config::default())
+        let transport = quic::tokio::Transport::new(quic::Config::new(&keypair))
+            .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn)))
             .boxed();
 
         let mut swarm = Swarm::new(
@@ -570,5 +585,24 @@ impl P2pService {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gossipsub_config_is_pinned_to_v1_0_and_strict_validation() {
+        let config = build_gossipsub_config_v1_0_strict();
+        let dbg = format!("{config:?}");
+        assert_eq!(GOSSIPSUB_PROTOCOL_ID_V1_0, "/meshsub/1.0.0");
+        assert!(dbg.contains(GOSSIPSUB_PROTOCOL_ID_V1_0));
+        assert!(!dbg.contains("/meshsub/1.1.0"));
+        assert!(!dbg.contains("/meshsub/1.2.0"));
+        assert!(matches!(
+            config.validation_mode(),
+            gossipsub::ValidationMode::Strict
+        ));
     }
 }

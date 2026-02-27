@@ -169,11 +169,11 @@ fn lean_spec_state_aggregation() {
         data: AttestationData {
             slot: Slot(Uint64(1)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(1)),
             },
             target: Checkpoint {
-                root: Bytes32::from([0x31u8; 32]),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(1)),
             },
             source: Checkpoint {
@@ -282,11 +282,11 @@ fn lean_spec_state_justified_slots() {
         data: AttestationData {
             slot: Slot(Uint64(1)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(1)),
             },
             target: Checkpoint {
-                root: Bytes32::from([0xA1u8; 32]),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(1)),
             },
             source: Checkpoint {
@@ -319,11 +319,11 @@ fn lean_spec_state_justified_slots() {
         data: AttestationData {
             slot: Slot(Uint64(2)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(2)),
             },
             target: Checkpoint {
-                root: Bytes32::from([0xA2u8; 32]),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(2)),
             },
             source: Checkpoint {
@@ -383,11 +383,11 @@ fn lean_spec_state_process_attestations() {
         data: AttestationData {
             slot: Slot(Uint64(1)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(1)),
             },
             target: Checkpoint {
-                root: Bytes32::from([0xAAu8; 32]),
+                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
                 slot: Slot(Uint64(1)),
             },
             source: Checkpoint {

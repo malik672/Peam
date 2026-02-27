@@ -12,6 +12,11 @@ cargo build
 cargo test
 ```
 
+## Devnet-0 defaults
+- Slot duration: exact `4` second boundaries (`SLOT_DURATION_SECS`, strict slot ticker)
+- Transport: QUIC (`/quic-v1`)
+- Gossip protocol: gossipsub pinned to `/meshsub/1.0.0` with strict validation mode
+
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.
 Release notes are tracked in `CHANGELOG.md`.

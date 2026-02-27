@@ -81,6 +81,12 @@ const EMPTY_BLOCK_BODY_ROOT_BYTES: [u8; 32] = [
     0xc6, 0xce, 0x90, 0xd5, 0xa5, 0xf8, 0x65, 0xce, 0x5a, 0x55, 0xc7, 0x75, 0x32, 0x5c, 0x91, 0x36,
 ];
 
+/// `HashTreeRoot` of the fixed genesis block header used by this client.
+pub const GENESIS_BLOCK_HEADER_ROOT_BYTES: [u8; 32] = [
+    0xed, 0x01, 0xb1, 0x82, 0x5c, 0x7b, 0x11, 0x2c, 0x8b, 0x9c, 0x6e, 0x0f, 0x41, 0xc4, 0xd4, 0x9e,
+    0x40, 0x0f, 0xc1, 0x20, 0x42, 0x55, 0x82, 0xe5, 0x33, 0xc3, 0x32, 0xa6, 0xac, 0x46, 0x08, 0x2e,
+];
+
 /// The full consensus state of a lean-Ethereum beacon node.
 ///
 /// `State` is the single source of truth for fork-choice and block validation.
@@ -150,23 +156,25 @@ impl State {
         let validators = Validators::new(vec![]).expect("empty validators");
         let empty_body_root = Bytes32::from(EMPTY_BLOCK_BODY_ROOT_BYTES);
         let balances = SszList::new(vec![]).expect("balances list");
+        let latest_block_header = BlockHeader {
+            slot: Slot(Uint64(0)),
+            proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
+            parent_root: Bytes32::zero(),
+            state_root: Bytes32::zero(),
+            body_root: empty_body_root,
+        };
+        let genesis_root = Bytes32::from(GENESIS_BLOCK_HEADER_ROOT_BYTES);
 
         State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
-            latest_block_header: BlockHeader {
-                slot: Slot(Uint64(0)),
-                proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
-                parent_root: Bytes32::zero(),
-                state_root: Bytes32::zero(),
-                body_root: empty_body_root,
-            },
+            latest_block_header,
             latest_justified: Checkpoint {
-                root: Bytes32::zero(),
+                root: genesis_root,
                 slot: Slot(Uint64(0)),
             },
             latest_finalized: Checkpoint {
-                root: Bytes32::zero(),
+                root: genesis_root,
                 slot: Slot(Uint64(0)),
             },
 
@@ -192,23 +200,25 @@ impl State {
             unsafe { write_at(&mut balances_vec, i, Uint64(0)) };
         }
         let balances = SszList::new(balances_vec).expect("balances list");
+        let latest_block_header = BlockHeader {
+            slot: Slot(Uint64(0)),
+            proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
+            parent_root: Bytes32::zero(),
+            state_root: Bytes32::zero(),
+            body_root: empty_body_root,
+        };
+        let genesis_root = Bytes32::from(GENESIS_BLOCK_HEADER_ROOT_BYTES);
 
         State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
-            latest_block_header: BlockHeader {
-                slot: Slot(Uint64(0)),
-                proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
-                parent_root: Bytes32::zero(),
-                state_root: Bytes32::zero(),
-                body_root: empty_body_root,
-            },
+            latest_block_header,
             latest_justified: Checkpoint {
-                root: Bytes32::zero(),
+                root: genesis_root,
                 slot: Slot(Uint64(0)),
             },
             latest_finalized: Checkpoint {
-                root: Bytes32::zero(),
+                root: genesis_root,
                 slot: Slot(Uint64(0)),
             },
 
@@ -230,6 +240,7 @@ impl State {
     /// # Errors
     ///
     /// Returns `Err` if `target_slot <= self.slot`.
+    #[inline]
     pub fn process_slots(&mut self, target_slot: Slot) -> Result<(), String> {
         if self.slot >= target_slot {
             return Err("target slot must be in the future".to_string());
@@ -254,6 +265,7 @@ impl State {
     /// # Errors
     ///
     /// Returns `Err` if `block.slot != self.slot` or if any header invariant fails.
+    #[inline]
     pub fn process_block_header(&mut self, block: BlockHeader) -> Result<(), String> {
         if block.slot != self.slot {
             return Err("block slot does not match state slot".to_string());
@@ -268,9 +280,6 @@ impl State {
     /// 1. `block.slot > latest_block_header.slot`
     /// 2. `block.proposer_index` is the correct proposer for `self.slot`
     /// 3. `block.parent_root == HashTreeRoot(latest_block_header)`
-    ///
-    /// On the very first block (genesis header slot == 0), seeds `latest_justified`
-    /// and `latest_finalized` roots from `block.parent_root`.
     ///
     /// Appends `1 + num_empty_slots` entries to [`historical_block_hashes`] and
     /// stages the new header with a zeroed `state_root` (filled later by
@@ -292,11 +301,6 @@ impl State {
         let expected_parent = self.latest_block_header.hash_tree_root();
         if block.parent_root != Bytes32::from(expected_parent) {
             return Err("block parent root does not match latest header root".to_string());
-        }
-
-        if self.latest_block_header.slot == Slot(Uint64(0)) {
-            self.latest_justified.root = block.parent_root;
-            self.latest_finalized.root = block.parent_root;
         }
 
         let block_slot = block.slot.0.0;
@@ -380,6 +384,7 @@ impl State {
     ///
     /// Returns `Err` if slot advancement, block processing, or the post-state root
     /// check fails.
+    #[inline]
     pub fn state_transition(&mut self, block: &Block) -> Result<(), String> {
         self.process_slots(block.slot)?;
         self.process_block_assuming_slot(block)?;
@@ -408,8 +413,10 @@ impl State {
     ///
     /// # Errors
     ///
-    /// Returns `Err` on malformed attestation data (invalid slot ordering or
-    /// [`set_justified_slot`] overflow).
+    /// Returns `Err` only for internal state-shape failures (for example,
+    /// [`set_justified_slot`] overflow). Malformed/stale attestations are
+    /// ignored (soft-fail) so a block is not invalidated by irrelevant votes.
+    #[inline]
     pub fn process_attestations(&mut self, attestations: &Attestations) -> Result<(), String> {
         let total_validators = self.validators.data.len();
         if total_validators == 0 {
@@ -417,12 +424,31 @@ impl State {
         }
         for att in attestations.data.iter() {
             if att.data.slot > self.slot {
-                return Err("attestation slot is in the future".to_string());
+                continue;
             }
             if att.data.target.slot < att.data.source.slot {
-                return Err("attestation target slot below source slot".to_string());
+                continue;
+            }
+            if att.data.head.slot < att.data.target.slot {
+                continue;
+            }
+            if att.data.slot < att.data.head.slot {
+                continue;
+            }
+            if !is_known_chain_root(self, &att.data.head.root)
+                || !is_known_chain_root(self, &att.data.source.root)
+                || !is_known_chain_root(self, &att.data.target.root)
+            {
+                continue;
             }
             if !slot::is_justifiable_after(att.data.target.slot, self.latest_finalized.slot)? {
+                continue;
+            }
+            if is_slot_justified(
+                &self.justified_slots,
+                self.latest_finalized.slot,
+                att.data.target.slot,
+            ) {
                 continue;
             }
             if !is_slot_justified(
@@ -461,9 +487,6 @@ impl State {
 
     /// Imports a signed block, dispatching to the appropriate [`SignatureVerifier`]
     /// based on the active feature flags.
-    ///
-    /// - With `pq_crypto` feature: uses [`PqSignatureVerifier`] (post-quantum).
-    /// - Without: uses [`StructuralSignatureVerifier`] (structural checks only).
     pub fn process_signed_block(
         &mut self,
         signed: &SignedBlockWithAttestation,
@@ -672,6 +695,20 @@ fn set_bits<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
         }
     }
     out
+}
+
+#[inline]
+fn is_known_chain_root(state: &State, root: &Bytes32) -> bool {
+    if *root == Bytes32::zero() {
+        return true;
+    }
+    if *root == state.latest_justified.root
+        || *root == state.latest_finalized.root
+        || *root == Bytes32::from(state.latest_block_header.hash_tree_root())
+    {
+        return true;
+    }
+    state.historical_block_hashes.data.iter().any(|v| v == root)
 }
 
 /// Returns `true` if `slot` is recorded as justified in the sliding window.

@@ -1,7 +1,7 @@
 #![allow(clippy::uninit_vec)]
 
 use lean_eth::containers::block::{Attestations, BlockBody};
-use lean_eth::containers::state::{State, Validators};
+use lean_eth::containers::state::{GENESIS_BLOCK_HEADER_ROOT_BYTES, State, Validators};
 use lean_eth::containers::validator::{Validator, ValidatorIndex};
 use lean_eth::slot::Slot;
 use lean_eth::ssz::HashTreeRoot;
@@ -42,10 +42,11 @@ fn genesis_default_configuration() {
     assert_eq!(state.config.genesis_time, Uint64(0));
     assert_eq!(state.validators.data.len(), 4);
     assert_eq!(state.balances.data.len(), 4);
+    let genesis_root = Bytes32::from(state.latest_block_header.hash_tree_root());
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
-    assert_eq!(state.latest_justified.root, Bytes32::zero());
+    assert_eq!(state.latest_justified.root, genesis_root);
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
-    assert_eq!(state.latest_finalized.root, Bytes32::zero());
+    assert_eq!(state.latest_finalized.root, genesis_root);
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(0)));
     assert_eq!(
         state.latest_block_header.proposer_index,
@@ -58,6 +59,15 @@ fn genesis_default_configuration() {
     assert_eq!(state.justified_slots.len(), 0);
     assert_eq!(state.justifications_roots.data.len(), 0);
     assert_eq!(state.justifications_validators.len(), 0);
+}
+
+#[test]
+fn genesis_header_root_constant_matches_computed_hash() {
+    let validators = make_validators(1);
+    let state = State::generate_genesis(Uint64(0), validators);
+    let computed = Bytes32::from(state.latest_block_header.hash_tree_root());
+    let expected = Bytes32::from(GENESIS_BLOCK_HEADER_ROOT_BYTES);
+    assert_eq!(computed, expected);
 }
 
 #[test]

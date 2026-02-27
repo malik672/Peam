@@ -1,6 +1,20 @@
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
 use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Target slot duration for devnet-0.
+pub const SLOT_DURATION_SECS: u64 = 4;
+/// Target slot duration in milliseconds.
+pub const SLOT_DURATION_MILLIS: u128 = (SLOT_DURATION_SECS as u128) * 1_000;
+/// Number of fork-choice processing intervals within a slot.
+pub const INTERVALS_PER_SLOT: u64 = 4;
+/// Slot interval duration in milliseconds.
+pub const SLOT_INTERVAL_MILLIS: u128 = SLOT_DURATION_MILLIS / (INTERVALS_PER_SLOT as u128);
+/// Interval index at which new gossip attestations are promoted to active votes.
+pub const ACCEPTANCE_INTERVAL_INDEX: u64 = 3;
+/// Interval index at which safe-target recomputation should run.
+pub const SAFE_TARGET_INTERVAL_INDEX: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Slot(pub Uint64);
@@ -56,6 +70,63 @@ pub fn justified_index_after(candidate_slot: Slot, finalized_slot: Slot) -> Opti
         return None;
     }
     Some(candidate_slot.0.0 - finalized_slot.0.0 - 1)
+}
+
+/// Computes the current slot index from unix wall-clock time.
+///
+/// Formula:
+/// `slot = max(0, (unix_now_secs - genesis_time_secs) / SLOT_DURATION_SECS)`.
+#[inline]
+pub fn slot_index_from_unix_secs(genesis_time_secs: u64, unix_now_secs: u64) -> u64 {
+    slot_index_from_unix_millis(genesis_time_secs, (unix_now_secs as u128) * 1_000)
+}
+
+/// Computes the current slot index from unix wall-clock time in milliseconds.
+///
+/// Formula:
+/// `slot = max(0, (unix_now_millis - genesis_time_millis) / SLOT_DURATION_MILLIS)`.
+#[inline]
+pub fn slot_index_from_unix_millis(genesis_time_secs: u64, unix_now_millis: u128) -> u64 {
+    let genesis_millis = (genesis_time_secs as u128) * 1_000;
+    let elapsed = unix_now_millis.saturating_sub(genesis_millis);
+    (elapsed / SLOT_DURATION_MILLIS) as u64
+}
+
+/// Returns the current unix timestamp in seconds.
+#[inline]
+pub fn unix_now_secs() -> Option<u64> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    Some(now.as_secs())
+}
+
+/// Returns the current unix timestamp in milliseconds.
+#[inline]
+pub fn unix_now_millis() -> Option<u128> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    Some(now.as_millis())
+}
+
+/// Returns the delay until the next slot boundary.
+///
+/// This is used to anchor a strict slot ticker with
+/// `tokio::time::interval_at(start, Duration::from_secs(SLOT_DURATION_SECS))`.
+#[inline]
+pub fn next_slot_boundary_delay(genesis_time_secs: u64, unix_now_millis: u128) -> Duration {
+    let genesis_millis = (genesis_time_secs as u128) * 1_000;
+    let elapsed = unix_now_millis.saturating_sub(genesis_millis);
+    let next_slot = (elapsed / SLOT_DURATION_MILLIS) + 1;
+    let next_boundary_millis = genesis_millis + next_slot * SLOT_DURATION_MILLIS;
+    let delay_millis = next_boundary_millis.saturating_sub(unix_now_millis);
+    Duration::from_millis(delay_millis.min(u128::from(u64::MAX)) as u64)
+}
+
+/// Returns the current interval index within the slot `[0, INTERVALS_PER_SLOT)`.
+#[inline]
+pub fn interval_index_from_unix_millis(genesis_time_secs: u64, unix_now_millis: u128) -> u64 {
+    let genesis_millis = (genesis_time_secs as u128) * 1_000;
+    let elapsed = unix_now_millis.saturating_sub(genesis_millis);
+    let in_slot = elapsed % SLOT_DURATION_MILLIS;
+    (in_slot / SLOT_INTERVAL_MILLIS) as u64
 }
 
 pub fn is_justifiable_after(candidate_slot: Slot, finalized_slot: Slot) -> Result<bool, String> {

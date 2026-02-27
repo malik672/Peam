@@ -8,55 +8,135 @@ use crate::types::bytes::{Bytes32, Bytes3112};
 use crate::types::collections::SszList;
 use crate::unsafe_vec::write_bytes_at;
 
+/// Maximum number of attestations that can appear in a single block body.
 pub const ATTESTATIONS_LIMIT: usize = 4_096;
+
+/// SSZ list of [`Attestation`]s included in a block body.
 pub type Attestations = SszList<Attestation, ATTESTATIONS_LIMIT>;
+
+/// SSZ list of [`AggregatedSignatureProof`]s, one per attestation in the block body.
+/// Parallel index to [`Attestations`].
 pub type AttestationSignatures = SszList<AggregatedSignatureProof, ATTESTATIONS_LIMIT>;
 
+/// The compact header of a block: all fields except the body itself.
+///
+/// Used as the canonical identifier for a block (via `hash_tree_root`) and stored
+/// in [`State::latest_block_header`] during and after a state transition.
+///
+/// `state_root` is zeroed while the transition is in-flight and written back once
+/// the post-state root has been verified.
+///
+/// # SSZ layout (fixed, 112 bytes)
+///
+/// | Byte range | Field             |
+/// |------------|-------------------|
+/// | 0 – 7      | `slot`            |
+/// | 8 – 15     | `proposer_index`  |
+/// | 16 – 47    | `parent_root`     |
+/// | 48 – 79    | `state_root`      |
+/// | 80 – 111   | `body_root`       |
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct BlockHeader {
+    /// Slot at which this block was proposed.
     pub slot: Slot,
+    /// Validator index of the block proposer.
     pub proposer_index: ValidatorIndex,
+    /// `hash_tree_root` of the parent block header.
     pub parent_root: Bytes32,
+    /// `hash_tree_root` of the post-state; zero while the transition is in-flight.
     pub state_root: Bytes32,
+    /// `hash_tree_root` of the [`BlockBody`].
     pub body_root: Bytes32,
 }
 
+/// The body of a block: the list of attestations included by the proposer.
+///
+/// `hash_tree_root(BlockBody)` equals `hash_tree_root(attestations)` directly,
+/// since the body has only one field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockBody {
+    /// Attestations included in this block, up to [`ATTESTATIONS_LIMIT`].
     pub attestations: Attestations,
 }
 
+/// A full block: header fields inlined together with the variable-length body.
+///
+/// The five header fields (`slot`, `proposer_index`, `parent_root`, `state_root`,
+/// `body`) mirror [`BlockHeader`]; `body_root` is derived on demand via
+/// [`Block::header`].
+///
+/// # SSZ layout (variable)
+///
+/// | Byte range | Field                    |
+/// |------------|--------------------------|
+/// | 0 – 7      | `slot`                   |
+/// | 8 – 15     | `proposer_index`         |
+/// | 16 – 47    | `parent_root`            |
+/// | 48 – 79    | `state_root`             |
+/// | 80 – 83    | `body` offset (4 B, LE)  |
+/// | 84 – …     | `body` bytes             |
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Block {
+    /// Slot at which this block was proposed.
     pub slot: Slot,
+    /// Validator index of the block proposer.
     pub proposer_index: ValidatorIndex,
+    /// `hash_tree_root` of the parent block header.
     pub parent_root: Bytes32,
+    /// `hash_tree_root` of the post-state.
     pub state_root: Bytes32,
+    /// Block body containing the attestations.
     pub body: BlockBody,
 }
 
+/// A [`Block`] paired with the proposer's own attestation.
+///
+/// The proposer attestation is submitted alongside the block so that the
+/// proposer's vote is immediately visible to fork-choice without waiting
+/// for a separate aggregate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockWithAttestation {
+    /// The proposed block.
     pub block: Block,
-    /// Spec defines a single proposer attestation.
+    /// The proposer's attestation, which must have exactly one participant
+    /// matching `block.proposer_index`.
     pub proposer_attestation: Attestation,
 }
 
+/// Signature bundle for a [`BlockWithAttestation`].
+///
+/// Contains one [`AggregatedSignatureProof`] per attestation in the block body
+/// (parallel to `block.body.attestations`) plus the proposer's individual
+/// post-quantum signature.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockSignatures {
+    /// Aggregated proofs for each attestation in the block body.
     pub attestation_signatures: AttestationSignatures,
+    /// Proposer's post-quantum signature over `hash_tree_root(proposer_attestation.data)`.
     pub proposer_signature: Bytes3112,
 }
 
+/// A fully signed block ready for import: message + signatures.
+///
+/// This is the top-level type exchanged over the network and passed to
+/// [`State::process_signed_block`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignedBlockWithAttestation {
+    /// The block and proposer attestation.
     pub message: BlockWithAttestation,
+    /// Cryptographic signatures covering the message.
     pub signature: BlockSignatures,
 }
 
+/// A [`Block`] paired with its full set of aggregated attestation signatures.
+///
+/// Used as an intermediate representation when signatures are attached to a
+/// block separately from the proposer attestation (e.g. during gossip aggregation).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockWithSignatures {
+    /// The block.
     pub block: Block,
+    /// Aggregated proofs, one per attestation in `block.body.attestations`.
     pub signatures: AttestationSignatures,
 }
 
@@ -64,7 +144,13 @@ impl SszElement for Block {}
 impl SszElement for SignedBlockWithAttestation {}
 
 impl SignedBlockWithAttestation {
-    /// Basic structural checks for a signed block envelope.
+    /// Structural pre-checks before signature verification or state transition.
+    ///
+    /// Validates:
+    /// - `attestation_signatures.len() == block.body.attestations.len()`
+    /// - `proposer_attestation.data.slot == block.slot`
+    /// - `proposer_attestation.aggregation_bits` has exactly one set bit
+    /// - that bit's index equals `block.proposer_index`
     pub fn validate_basic(&self) -> Result<(), String> {
         let block = &self.message.block;
         let sig_count = self.signature.attestation_signatures.data.len();
@@ -88,6 +174,8 @@ impl SignedBlockWithAttestation {
     }
 }
 
+/// Return the index of the single set bit in `bits`, or `None` if there are zero
+/// or more than one set bits.
 fn single_set_bit(
     bits: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
 ) -> Option<usize> {
@@ -110,6 +198,7 @@ fn single_set_bit(
     found
 }
 
+/// SSZ serialization for [`BlockHeader`] — fixed 112-byte encoding.
 impl SszEncode for BlockHeader {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(112);
@@ -123,6 +212,7 @@ impl SszEncode for BlockHeader {
     }
 }
 
+/// SSZ deserialization for [`BlockHeader`] — trusts that `bytes` is exactly 112 bytes.
 impl SszDecode for BlockHeader {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let slot = Slot::decode_ssz(&bytes[0..8])?;
@@ -141,6 +231,9 @@ impl SszDecode for BlockHeader {
 }
 
 impl BlockHeader {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Returns `Err` if `bytes.len() != 112`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != Self::fixed_len() {
             return Err(format!(
@@ -153,6 +246,10 @@ impl BlockHeader {
     }
 }
 
+/// Merkle hash-tree root for [`BlockHeader`].
+///
+/// Merklizes the five fields as a balanced 8-leaf tree (width=8) via
+/// `merkleize_tree_root`: `[slot, proposer_index, parent_root, state_root, body_root]`.
 impl HashTreeRoot for BlockHeader {
     fn hash_tree_root(&self) -> [u8; 32] {
         let field_roots = [
@@ -173,6 +270,10 @@ impl SszFixedLen for BlockHeader {
     }
 }
 
+/// SSZ serialization for [`BlockBody`] — variable-length encoding.
+///
+/// Layout: `[attestations_offset: u32][attestations bytes]`
+/// The offset is always `4` (immediately after the single offset word).
 impl SszEncode for BlockBody {
     fn encode_ssz(&self) -> Vec<u8> {
         let fixed_len = 4;
@@ -194,6 +295,7 @@ impl SszEncode for BlockBody {
     }
 }
 
+/// SSZ deserialization for [`BlockBody`] — trusts that the offset is valid.
 impl SszDecode for BlockBody {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -207,6 +309,10 @@ impl SszDecode for BlockBody {
 }
 
 impl BlockBody {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Validates that total length is at least 4 bytes and that the offset
+    /// equals `4` (the only valid value given a single variable field).
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 4 {
             return Err("BlockBody missing offset table".to_string());
@@ -222,12 +328,20 @@ impl BlockBody {
     }
 }
 
+/// Merkle hash-tree root for [`BlockBody`].
+///
+/// Delegates directly to `attestations.hash_tree_root()` since the body has
+/// only one field.
 impl HashTreeRoot for BlockBody {
     fn hash_tree_root(&self) -> [u8; 32] {
         self.attestations.hash_tree_root()
     }
 }
 
+/// SSZ serialization for [`Block`] — variable-length encoding.
+///
+/// Layout: `[slot: 8][proposer_index: 8][parent_root: 32][state_root: 32]`
+/// `[body_offset: 4][body bytes]`. The body offset is always `84`.
 impl SszEncode for Block {
     fn encode_ssz(&self) -> Vec<u8> {
         let fixed_len = 8 + 8 + 32 + 32 + 4;
@@ -254,6 +368,7 @@ impl SszEncode for Block {
     }
 }
 
+/// SSZ deserialization for [`Block`] — trusts that the body offset is valid.
 impl SszDecode for Block {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let slot = Slot::decode_ssz(&bytes[0..8])?;
@@ -275,6 +390,10 @@ impl SszDecode for Block {
 }
 
 impl Block {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Validates that total length covers the fixed section (84 bytes) and
+    /// that the body offset equals exactly `84`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 8 + 8 + 32 + 32 + 4 {
             return Err("Block missing offset table".to_string());
@@ -299,6 +418,11 @@ impl Block {
         })
     }
 
+    /// Derive the [`BlockHeader`] for this block.
+    ///
+    /// Computes `body_root = hash_tree_root(body)` on the fly. The resulting
+    /// header is what gets stored in [`State::latest_block_header`] and used
+    /// as the canonical block identifier.
     pub fn header(&self) -> BlockHeader {
         BlockHeader {
             slot: self.slot,
@@ -310,6 +434,11 @@ impl Block {
     }
 }
 
+/// Merkle hash-tree root for [`Block`].
+///
+/// Merklizes the five logical fields as a balanced 8-leaf tree (width=8):
+/// `[slot, proposer_index, parent_root, state_root, body_root]`.
+/// `body_root` is computed inline as `hash_tree_root(body)`.
 impl HashTreeRoot for Block {
     fn hash_tree_root(&self) -> [u8; 32] {
         let field_roots = [
@@ -324,6 +453,9 @@ impl HashTreeRoot for Block {
     }
 }
 
+/// SSZ serialization for [`BlockWithAttestation`] — variable-length, two offsets.
+///
+/// Layout: `[off_block: u32][off_proposer: u32][block bytes][proposer_attestation bytes]`
 impl SszEncode for BlockWithAttestation {
     fn encode_ssz(&self) -> Vec<u8> {
         let block = self.block.encode_ssz();
@@ -341,6 +473,7 @@ impl SszEncode for BlockWithAttestation {
     }
 }
 
+/// SSZ deserialization for [`BlockWithAttestation`] — trusts that offsets are valid.
 impl SszDecode for BlockWithAttestation {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -358,6 +491,10 @@ impl SszDecode for BlockWithAttestation {
 }
 
 impl BlockWithAttestation {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Validates that total length is at least 8 bytes, `off_block == 8`,
+    /// and `off_block <= off_proposer <= bytes.len()`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 8 {
             return Err("BlockWithAttestation missing offset table".to_string());
@@ -379,6 +516,9 @@ impl BlockWithAttestation {
     }
 }
 
+/// Merkle hash-tree root for [`BlockWithAttestation`].
+///
+/// `hash_tree_root = hash_nodes(block_root, proposer_attestation_root)`
 impl HashTreeRoot for BlockWithAttestation {
     fn hash_tree_root(&self) -> [u8; 32] {
         let block_root = Bytes32::from(self.block.hash_tree_root());
@@ -388,6 +528,10 @@ impl HashTreeRoot for BlockWithAttestation {
     }
 }
 
+/// SSZ serialization for [`BlockSignatures`] — variable-length encoding.
+///
+/// Layout: `[off_sigs: u32][proposer_signature: SIGNATURE_BYTES][attestation_signatures bytes]`
+/// The offset points past the fixed section (`4 + Bytes3112::LEN`).
 impl SszEncode for BlockSignatures {
     fn encode_ssz(&self) -> Vec<u8> {
         let sigs = self.attestation_signatures.encode_ssz();
@@ -402,6 +546,7 @@ impl SszEncode for BlockSignatures {
     }
 }
 
+/// SSZ deserialization for [`BlockSignatures`] — trusts that the offset is valid.
 impl SszDecode for BlockSignatures {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -417,6 +562,10 @@ impl SszDecode for BlockSignatures {
 }
 
 impl BlockSignatures {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Validates that total length covers the fixed section and that
+    /// `off_sigs == 4 + Bytes3112::LEN`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 4 + Bytes3112::LEN {
             return Err("BlockSignatures missing offset table".to_string());
@@ -436,6 +585,9 @@ impl BlockSignatures {
     }
 }
 
+/// Merkle hash-tree root for [`BlockSignatures`].
+///
+/// `hash_tree_root = hash_nodes(attestation_signatures_root, proposer_signature_root)`
 impl HashTreeRoot for BlockSignatures {
     fn hash_tree_root(&self) -> [u8; 32] {
         let sigs_root = Bytes32::from(self.attestation_signatures.hash_tree_root());
@@ -445,6 +597,9 @@ impl HashTreeRoot for BlockSignatures {
     }
 }
 
+/// SSZ serialization for [`SignedBlockWithAttestation`] — variable-length, two offsets.
+///
+/// Layout: `[off_msg: u32][off_sig: u32][message bytes][signature bytes]`
 impl SszEncode for SignedBlockWithAttestation {
     fn encode_ssz(&self) -> Vec<u8> {
         let msg = self.message.encode_ssz();
@@ -462,6 +617,7 @@ impl SszEncode for SignedBlockWithAttestation {
     }
 }
 
+/// SSZ deserialization for [`SignedBlockWithAttestation`] — trusts that offsets are valid.
 impl SszDecode for SignedBlockWithAttestation {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -476,6 +632,10 @@ impl SszDecode for SignedBlockWithAttestation {
 }
 
 impl SignedBlockWithAttestation {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Validates that total length is at least 8 bytes, `off_msg == 8`,
+    /// and `off_msg <= off_sig <= bytes.len()`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 8 {
             return Err("SignedBlockWithAttestation missing offset table".to_string());
@@ -494,6 +654,9 @@ impl SignedBlockWithAttestation {
     }
 }
 
+/// Merkle hash-tree root for [`SignedBlockWithAttestation`].
+///
+/// `hash_tree_root = hash_nodes(message_root, signature_root)`
 impl HashTreeRoot for SignedBlockWithAttestation {
     fn hash_tree_root(&self) -> [u8; 32] {
         let msg_root = Bytes32::from(self.message.hash_tree_root());
@@ -503,6 +666,9 @@ impl HashTreeRoot for SignedBlockWithAttestation {
     }
 }
 
+/// SSZ serialization for [`BlockWithSignatures`] — variable-length, two offsets.
+///
+/// Layout: `[off_block: u32][off_sigs: u32][block bytes][signatures bytes]`
 impl SszEncode for BlockWithSignatures {
     fn encode_ssz(&self) -> Vec<u8> {
         let block = self.block.encode_ssz();
@@ -520,6 +686,7 @@ impl SszEncode for BlockWithSignatures {
     }
 }
 
+/// SSZ deserialization for [`BlockWithSignatures`] — trusts that offsets are valid.
 impl SszDecode for BlockWithSignatures {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let mut buf = [0u8; 4];
@@ -534,6 +701,10 @@ impl SszDecode for BlockWithSignatures {
 }
 
 impl BlockWithSignatures {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    ///
+    /// Validates that total length is at least 8 bytes, `off_block == 8`,
+    /// and `off_block <= off_sigs <= bytes.len()`.
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() < 8 {
             return Err("BlockWithSignatures missing offset table".to_string());
@@ -552,6 +723,9 @@ impl BlockWithSignatures {
     }
 }
 
+/// Merkle hash-tree root for [`BlockWithSignatures`].
+///
+/// `hash_tree_root = hash_nodes(block_root, signatures_root)`
 impl HashTreeRoot for BlockWithSignatures {
     fn hash_tree_root(&self) -> [u8; 32] {
         let block_root = Bytes32::from(self.block.hash_tree_root());

@@ -6,18 +6,26 @@ use lean_eth::containers::checkpoint::Checkpoint;
 use lean_eth::containers::state::{State, Validators};
 use lean_eth::containers::validator::{Validator, ValidatorIndex};
 use lean_eth::fork_choice::ForkChoiceStore;
+use lean_eth::node::proposal_head_from_pending;
 use lean_eth::slot::Slot;
 use lean_eth::ssz::HashTreeRoot;
 use lean_eth::types::bitlist::BitList;
 use lean_eth::types::bytes::{Bytes32, Bytes52, Bytes3112};
 use lean_eth::types::collections::SszList;
 use lean_eth::types::uint::Uint64;
+use std::sync::{Arc, RwLock};
 
 fn build_signed_block(
     base_state: &State,
     slot: u64,
     include_attestation: bool,
 ) -> (SignedBlockWithAttestation, State, Bytes32) {
+    let validator_count = base_state.validators.data.len() as u64;
+    let proposer = if validator_count == 0 {
+        0
+    } else {
+        slot % validator_count
+    };
     let mut temp = base_state.clone();
     temp.process_slots(Slot(Uint64(slot)))
         .expect("process slots");
@@ -48,7 +56,7 @@ fn build_signed_block(
     let body = BlockBody { attestations };
     let mut block = Block {
         slot: Slot(Uint64(slot)),
-        proposer_index: ValidatorIndex(Uint64(0)),
+        proposer_index: ValidatorIndex(Uint64(proposer)),
         parent_root,
         state_root: Bytes32::zero(),
         body,
@@ -62,7 +70,12 @@ fn build_signed_block(
     block.state_root = Bytes32::from(post.hash_tree_root());
 
     let proposer_attestation = Attestation {
-        aggregation_bits: BitList::new(vec![true]).expect("participants"),
+        aggregation_bits: BitList::new({
+            let mut bits = vec![false; proposer as usize + 1];
+            bits[proposer as usize] = true;
+            bits
+        })
+        .expect("participants"),
         data: AttestationData {
             slot: block.slot,
             head: Checkpoint {
@@ -154,5 +167,206 @@ fn fork_choice_uses_votes_to_pick_head() {
         },
     };
     store.on_attestation(&vote);
+    store.accept_new_votes();
+    assert_eq!(store.head(), root_b);
+}
+
+#[test]
+fn proposal_head_applies_pending_votes_before_returning_head() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+
+    let (anchor_block, anchor_state, anchor_root) = build_signed_block(&state, 1, false);
+    let mut store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+    assert_eq!(store.head(), anchor_root);
+
+    let (fork_a, state_a, _root_a) = build_signed_block(&anchor_state, 2, false);
+    let (fork_b, state_b, root_b) = build_signed_block(&anchor_state, 2, true);
+    store.on_block(fork_a, state_a).expect("fork a");
+    store.on_block(fork_b, state_b).expect("fork b");
+
+    let pending_vote = Attestation {
+        aggregation_bits: BitList::new(vec![true]).expect("participants"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(2)),
+            },
+            target: Checkpoint {
+                root: root_b,
+                slot: Slot(Uint64(2)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    };
+
+    let proposal_head = store.get_proposal_head_with_pending([&pending_vote]);
+    assert_eq!(proposal_head, root_b);
+}
+
+#[test]
+fn node_proposal_helper_drains_pending_and_returns_head() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+
+    let (anchor_block, anchor_state, _anchor_root) = build_signed_block(&state, 1, false);
+    let mut store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+
+    let (fork_a, state_a, _root_a) = build_signed_block(&anchor_state, 2, false);
+    let (fork_b, state_b, root_b) = build_signed_block(&anchor_state, 2, true);
+    store.on_block(fork_a, state_a).expect("fork a");
+    store.on_block(fork_b, state_b).expect("fork b");
+
+    let pending_vote = Attestation {
+        aggregation_bits: BitList::new(vec![true]).expect("participants"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(2)),
+            },
+            target: Checkpoint {
+                root: root_b,
+                slot: Slot(Uint64(2)),
+            },
+            source: Checkpoint {
+                root: Bytes32::zero(),
+                slot: Slot(Uint64(0)),
+            },
+        },
+    };
+
+    let fc = Arc::new(RwLock::new(Some(store)));
+    let pending = Arc::new(RwLock::new(vec![pending_vote]));
+    let head = proposal_head_from_pending(&fc, &pending).expect("proposal head");
+    assert_eq!(head, root_b);
+    assert!(pending.read().expect("pending lock").is_empty());
+}
+
+#[test]
+fn safe_target_advances_after_supermajority_votes() {
+    let validators = Validators::new(vec![
+        Validator {
+            pubkey: Bytes52::from([0x01u8; 52]),
+            index: ValidatorIndex(Uint64(0)),
+            balance: Uint64(0),
+        },
+        Validator {
+            pubkey: Bytes52::from([0x02u8; 52]),
+            index: ValidatorIndex(Uint64(1)),
+            balance: Uint64(0),
+        },
+        Validator {
+            pubkey: Bytes52::from([0x03u8; 52]),
+            index: ValidatorIndex(Uint64(2)),
+            balance: Uint64(0),
+        },
+    ])
+    .expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+    let (anchor_block, anchor_state, _anchor_root) = build_signed_block(&state, 1, false);
+    let mut store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+    let (next_block, next_state, next_root) = build_signed_block(&anchor_state, 2, false);
+    store.on_block(next_block, next_state).expect("on block");
+
+    // 2 of 3 validators => supermajority.
+    let vote = Attestation {
+        aggregation_bits: BitList::new(vec![true, true, false]).expect("participants"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: Checkpoint {
+                root: next_root,
+                slot: Slot(Uint64(2)),
+            },
+            target: Checkpoint {
+                root: next_root,
+                slot: Slot(Uint64(2)),
+            },
+            source: Checkpoint {
+                root: store.latest_finalized().root,
+                slot: store.latest_finalized().slot,
+            },
+        },
+    };
+    store.on_attestation(&vote);
+    store.accept_new_votes();
+    assert_eq!(store.safe_target(), next_root);
+}
+
+#[test]
+fn reorg_vote_shift_changes_head() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+    let (anchor_block, anchor_state, _anchor_root) = build_signed_block(&state, 1, false);
+    let mut store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+
+    let (fork_a, state_a, root_a) = build_signed_block(&anchor_state, 2, false);
+    let (fork_b, state_b, root_b) = build_signed_block(&anchor_state, 2, true);
+    store.on_block(fork_a, state_a).expect("fork a");
+    store.on_block(fork_b, state_b).expect("fork b");
+
+    let vote_a = Attestation {
+        aggregation_bits: BitList::new(vec![true]).expect("participants"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: Checkpoint {
+                root: root_a,
+                slot: Slot(Uint64(2)),
+            },
+            target: Checkpoint {
+                root: root_a,
+                slot: Slot(Uint64(2)),
+            },
+            source: Checkpoint {
+                root: store.latest_finalized().root,
+                slot: store.latest_finalized().slot,
+            },
+        },
+    };
+    store.on_attestation(&vote_a);
+    // Votes are staged first and only become active after acceptance.
+    assert_ne!(store.head(), root_a);
+    store.accept_new_votes();
+    assert_eq!(store.head(), root_a);
+
+    let vote_b = Attestation {
+        aggregation_bits: BitList::new(vec![true]).expect("participants"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: Checkpoint {
+                root: root_b,
+                slot: Slot(Uint64(2)),
+            },
+            target: Checkpoint {
+                root: root_b,
+                slot: Slot(Uint64(2)),
+            },
+            source: Checkpoint {
+                root: store.latest_finalized().root,
+                slot: store.latest_finalized().slot,
+            },
+        },
+    };
+    store.on_attestation(&vote_b);
+    store.accept_new_votes();
     assert_eq!(store.head(), root_b);
 }

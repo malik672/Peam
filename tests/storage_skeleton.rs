@@ -277,7 +277,10 @@ fn file_store_put_signed_block_persists_chain_heads() {
     // Slot 1 is non-finalized and lives in the in-memory pending window only.
     // After reopen, pending is empty by design.
     assert_eq!(reopened.get_block_by_slot(1), None);
-    assert_eq!(reopened.get_block(&root), Some(signed.message.block.clone()));
+    assert_eq!(
+        reopened.get_block(&root),
+        Some(signed.message.block.clone())
+    );
     assert_eq!(reopened.head(), Some(root));
     assert_eq!(reopened.justified(), Some(state.latest_justified.root));
     assert_eq!(reopened.finalized(), Some(state.latest_finalized.root));

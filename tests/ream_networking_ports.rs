@@ -16,7 +16,9 @@ use lean_eth::types::uint::Uint64;
 use std::sync::{Arc, RwLock};
 
 fn addr_for(port: u16) -> Multiaddr {
-    format!("/ip4/127.0.0.1/tcp/{port}").parse().expect("addr")
+    format!("/ip4/127.0.0.1/udp/{port}/quic-v1")
+        .parse()
+        .expect("addr")
 }
 
 fn empty_state() -> Arc<RwLock<State>> {
