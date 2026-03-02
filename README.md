@@ -12,8 +12,8 @@ cargo build
 cargo test
 ```
 
-## Devnet-0 status
-- **Complete** as of commit `9601b03`.
+## Devnet status
+- Currently devenet 2
 
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.
