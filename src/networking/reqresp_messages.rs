@@ -13,9 +13,9 @@ use crate::ssz::SszEncode;
 /// All req/resp protocols supported by the lean-Ethereum node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeanSupportedProtocol {
-    /// `/lean_eth/reqresp/blocks_by_root/1`
+    /// `/peam/reqresp/blocks_by_root/1`
     BlocksByRootV1,
-    /// `/lean_eth/reqresp/status/1`
+    /// `/peam/reqresp/status/1`
     StatusV1,
 }
 
@@ -34,10 +34,10 @@ impl LeanSupportedProtocol {
     }
 
     /// Constructs the full libp2p protocol ID string,
-    /// e.g. `/lean_eth/reqresp/blocks_by_root/1`.
+    /// e.g. `/peam/reqresp/blocks_by_root/1`.
     pub fn protocol_id(&self) -> String {
         format!(
-            "/lean_eth/reqresp/{}/{}",
+            "/peam/reqresp/{}/{}",
             self.message_name(),
             self.schema_version()
         )
@@ -49,7 +49,7 @@ impl LeanSupportedProtocol {
     /// refers to an unknown protocol / unsupported version.
     pub fn parse_protocol_id(protocol: &str) -> Option<Self> {
         let parts: Vec<&str> = protocol.trim_start_matches('/').split('/').collect();
-        if parts.len() != 4 || parts[0] != "lean_eth" || parts[1] != "reqresp" {
+        if parts.len() != 4 || parts[0] != "peam" || parts[1] != "reqresp" {
             return None;
         }
         let name = parts[2];

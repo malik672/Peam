@@ -12,6 +12,7 @@ Use the template at `/Users/malik/Desktop/mc2/lean_eth/lean_eth/testing/interop/
 - `bootnodes`
 - `trusted_peers`
 - `genesis_time` (must match the devnet)
+- `validator_count` (set to devnet target, e.g. `400` for devnet-2)
 - `allowed_topics` (must match devnet topics)
 
 ## 2) Run node

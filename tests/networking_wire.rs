@@ -1,30 +1,30 @@
 use std::sync::Arc;
 
-use lean_eth::containers::attestation::{
+use libp2p::gossipsub::TopicHash;
+use peam::containers::attestation::{
     AggregatedSignatureProof, Attestation, AttestationData, SignedAttestation,
 };
-use lean_eth::containers::block::{
+use peam::containers::block::{
     Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
 };
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::gossip::GossipBlock;
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::networking::gossipsub::lean::message::LeanGossipsubMessage;
-use lean_eth::networking::gossipsub::lean::topics::{
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::gossip::GossipBlock;
+use peam::containers::validator::ValidatorIndex;
+use peam::networking::gossipsub::lean::message::LeanGossipsubMessage;
+use peam::networking::gossipsub::lean::topics::{
     ENCODING_POSTFIX, LEAN_ATTESTATION_SUBNET_PREFIX, LEAN_ATTESTATION_TOPIC, LEAN_BLOCK_TOPIC,
     LeanGossipTopic, LeanGossipTopicKind, TOPIC_PREFIX,
 };
-use lean_eth::networking::{
+use peam::networking::{
     GossipSignatureVerifier, GossipValidatorKind, LeanSupportedProtocol, NoopGossipVerifier,
     validate_gossip,
 };
-use lean_eth::slot::Slot;
-use lean_eth::ssz::SszEncode;
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::bytes::{ByteList, Bytes3112};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
-use libp2p::gossipsub::TopicHash;
+use peam::slot::Slot;
+use peam::ssz::SszEncode;
+use peam::types::bytes::Bytes32;
+use peam::types::bytes::{ByteList, Bytes3112};
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 #[test]
 fn gossip_topic_roundtrip_block() {
@@ -91,7 +91,7 @@ fn gossip_attestation_message_decode_signed() {
     let signed = SignedAttestation {
         validator_id: Uint64(1),
         message: data,
-        signature: lean_eth::types::bytes::Bytes3112::zero(),
+        signature: peam::types::bytes::Bytes3112::zero(),
     };
     let payload = signed.encode_ssz();
     let topic = LeanGossipTopic {
@@ -128,7 +128,7 @@ fn gossip_attestation_subnet_message_decode_signed() {
     let signed = SignedAttestation {
         validator_id: Uint64(1),
         message: data,
-        signature: lean_eth::types::bytes::Bytes3112::zero(),
+        signature: peam::types::bytes::Bytes3112::zero(),
     };
     let payload = signed.encode_ssz();
     let topic = LeanGossipTopic {
@@ -159,14 +159,14 @@ fn reqresp_protocol_roundtrip() {
         let parsed = LeanSupportedProtocol::parse_protocol_id(&id).expect("parse");
         assert_eq!(parsed, proto);
     }
-    assert!(LeanSupportedProtocol::parse_protocol_id("/lean_eth/reqresp/status/2").is_none());
+    assert!(LeanSupportedProtocol::parse_protocol_id("/peam/reqresp/status/2").is_none());
     assert!(LeanSupportedProtocol::parse_protocol_id("/other/reqresp/status/1").is_none());
 }
 
 #[test]
 fn gossip_block_rejects_mismatched_aggregate_participants() {
     let att = Attestation {
-        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true, false]).expect("bits"),
+        aggregation_bits: peam::types::bitlist::BitList::new(vec![true, false]).expect("bits"),
         data: AttestationData {
             slot: Slot(Uint64(0)),
             head: Checkpoint {
@@ -193,7 +193,7 @@ fn gossip_block_rejects_mismatched_aggregate_participants() {
         },
     };
     let proposer_attestation = Attestation {
-        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
+        aggregation_bits: peam::types::bitlist::BitList::new(vec![true]).expect("bits"),
         data: AttestationData {
             slot: block.slot,
             head: Checkpoint {
@@ -211,7 +211,7 @@ fn gossip_block_rejects_mismatched_aggregate_participants() {
         },
     };
     let proof = AggregatedSignatureProof {
-        participants: lean_eth::types::bitlist::BitList::new(vec![false, true]).expect("parts"),
+        participants: peam::types::bitlist::BitList::new(vec![false, true]).expect("parts"),
         proof_data: ByteList::new(vec![0x42]).expect("proof"),
     };
     let signed = SignedBlockWithAttestation {

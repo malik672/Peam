@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use lean_eth::containers::block::{Block, BlockBody};
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::slot::Slot;
-use lean_eth::storage::{FileStore, Store};
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::block::{Block, BlockBody};
+use peam::containers::state::{State, Validators};
+use peam::containers::validator::ValidatorIndex;
+use peam::slot::Slot;
+use peam::storage::{FileStore, Store};
+use peam::types::bytes::Bytes32;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 const KEEP_RECENT_SLOTS: u64 = 64;
 const SMALL_ROWS: u64 = 256;
@@ -20,7 +20,7 @@ fn temp_store_dir(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    std::env::temp_dir().join(format!("lean_eth_perf_{tag}_{stamp}"))
+    std::env::temp_dir().join(format!("peam_perf_{tag}_{stamp}"))
 }
 
 fn root_from_u64(v: u64) -> Bytes32 {

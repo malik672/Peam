@@ -1,7 +1,7 @@
-use lean_eth::ssz::hash::{BYTES_PER_CHUNK, chunkify_fixed, merkleize_with_limit, mix_in_length};
-use lean_eth::ssz::{HashTreeRoot, SszEncode};
-use lean_eth::types::bitlist::{BitList, BitVector};
-use lean_eth::types::bytes::Bytes32;
+use peam::ssz::hash::{BYTES_PER_CHUNK, chunkify_fixed, merkleize_with_limit, mix_in_length};
+use peam::ssz::{HashTreeRoot, SszEncode};
+use peam::types::bitlist::{BitList, BitVector};
+use peam::types::bytes::Bytes32;
 
 #[test]
 fn bitlist_encode_decode_roundtrip() {

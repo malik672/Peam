@@ -1,4 +1,4 @@
-use lean_eth::networking::{NetworkEventBus, PeerManager};
+use peam::networking::{NetworkEventBus, PeerManager};
 
 #[tokio::test]
 async fn peer_score_decay_and_ban() {

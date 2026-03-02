@@ -1,15 +1,15 @@
-use lean_eth::containers::block::BlockHeader;
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::config::Config;
-use lean_eth::containers::state::{
+use peam::containers::block::BlockHeader;
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::config::Config;
+use peam::containers::state::{
     JustificationRoots, JustificationValidators, JustifiedSlots, State, Validators,
 };
-use lean_eth::containers::validator::{Validator, ValidatorIndex};
-use lean_eth::slot::Slot;
-use lean_eth::types::bitlist::{BitList, BitVector};
-use lean_eth::types::bytes::{Bytes32, Bytes52};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::slot::Slot;
+use peam::types::bitlist::{BitList, BitVector};
+use peam::types::bytes::{Bytes32, Bytes52};
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 #[test]
 fn bitlist_enforces_limit() {

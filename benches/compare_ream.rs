@@ -1,21 +1,21 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 
-use lean_eth::containers::state::State as LeanEthState;
-use lean_eth::containers::state::Validators as LeanEthValidators;
-use lean_eth::containers::validator::Validator as LeanEthValidator;
-use lean_eth::containers::validator::ValidatorIndex as LeanEthValidatorIndex;
-use lean_eth::slot::Slot as LeanEthSlot;
-use lean_eth::ssz::hash::{chunkify_fixed, merkleize};
-use lean_eth::ssz::{
+use peam::containers::state::State as LeanEthState;
+use peam::containers::state::Validators as LeanEthValidators;
+use peam::containers::validator::Validator as LeanEthValidator;
+use peam::containers::validator::ValidatorIndex as LeanEthValidatorIndex;
+use peam::slot::Slot as LeanEthSlot;
+use peam::ssz::hash::{chunkify_fixed, merkleize};
+use peam::ssz::{
     HashTreeRoot as LeanEthHashTreeRoot, SszDecode as LeanEthSszDecode,
     SszFixedLen as LeanEthSszFixedLen,
 };
-use lean_eth::types::bytes::Bytes32 as LeanEthBytes32;
-use lean_eth::types::bytes::Bytes52 as LeanEthBytes52;
-use lean_eth::types::collections::SszList as LeanEthSszList;
-use lean_eth::types::uint::Uint64 as LeanEthUint64;
+use peam::types::bytes::Bytes32 as LeanEthBytes32;
+use peam::types::bytes::Bytes52 as LeanEthBytes52;
+use peam::types::collections::SszList as LeanEthSszList;
+use peam::types::uint::Uint64 as LeanEthUint64;
 
-fn make_lean_eth_state(num_validators: u64) -> LeanEthState {
+fn make_peam_state(num_validators: u64) -> LeanEthState {
     let mut vals = Vec::with_capacity(num_validators as usize);
     for i in 0..num_validators {
         vals.push(LeanEthValidator {
@@ -107,9 +107,9 @@ impl ReamLikeState {
 fn bench_hash_tree_root(c: &mut Criterion) {
     let mut group = c.benchmark_group("hash_tree_root");
 
-    group.bench_function("lean_eth_state_root", |b| {
+    group.bench_function("peam_state_root", |b| {
         b.iter_batched(
-            || make_lean_eth_state(16),
+            || make_peam_state(16),
             |state| black_box(state.hash_tree_root()),
             BatchSize::SmallInput,
         )
@@ -129,9 +129,9 @@ fn bench_hash_tree_root(c: &mut Criterion) {
 fn bench_process_slots(c: &mut Criterion) {
     let mut group = c.benchmark_group("process_slots");
 
-    group.bench_function("lean_eth_process_slots", |b| {
+    group.bench_function("peam_process_slots", |b| {
         b.iter_batched(
-            || make_lean_eth_state(16),
+            || make_peam_state(16),
             |mut state| {
                 let _ = state.process_slots(LeanEthSlot(LeanEthUint64(1024)));
                 black_box(state)
@@ -180,7 +180,7 @@ fn bench_decode_list(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode_ssz_list_u64");
     let bytes = make_u64_list_bytes(4096);
 
-    group.bench_function("lean_eth_decode_ssz", |b| {
+    group.bench_function("peam_decode_ssz", |b| {
         b.iter(|| {
             let decoded = <LeanEthSszList<LeanEthUint64, 4096> as LeanEthSszDecode>::decode_ssz(
                 black_box(&bytes),

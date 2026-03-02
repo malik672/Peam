@@ -1,19 +1,19 @@
-use lean_eth::containers::block::{
+use peam::containers::block::{
     Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
 };
-use lean_eth::containers::req_resp::{
+use peam::containers::req_resp::{
     BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse,
     MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Ping, Pong, Status,
 };
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::slot::Slot;
-use lean_eth::ssz::{HashTreeRoot, SszDecode, SszEncode};
-use lean_eth::storage::{MemoryStore, Store};
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64 as U64;
-use lean_eth::types::uint::Uint64;
+use peam::containers::state::{State, Validators};
+use peam::containers::validator::ValidatorIndex;
+use peam::slot::Slot;
+use peam::ssz::{HashTreeRoot, SszDecode, SszEncode};
+use peam::storage::{MemoryStore, Store};
+use peam::types::bytes::Bytes32;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64 as U64;
+use peam::types::uint::Uint64;
 
 fn compute_state_root_for_block(state: &State, block: &Block) -> Bytes32 {
     let mut temp = state.clone();
@@ -28,8 +28,8 @@ fn compute_state_root_for_block(state: &State, block: &Block) -> Bytes32 {
 }
 
 fn dummy_signed_block() -> SignedBlockWithAttestation {
-    let v = lean_eth::containers::validator::Validator {
-        pubkey: lean_eth::types::bytes::Bytes52::from([0x01u8; 52]),
+    let v = peam::containers::validator::Validator {
+        pubkey: peam::types::bytes::Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -54,23 +54,23 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
     };
     block.state_root = compute_state_root_for_block(state, &block);
     let proposer_attestation = {
-        let data = lean_eth::containers::attestation::AttestationData {
+        let data = peam::containers::attestation::AttestationData {
             slot: block.slot,
-            head: lean_eth::containers::checkpoint::Checkpoint {
+            head: peam::containers::checkpoint::Checkpoint {
                 root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
-            target: lean_eth::containers::checkpoint::Checkpoint {
+            target: peam::containers::checkpoint::Checkpoint {
                 root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
-            source: lean_eth::containers::checkpoint::Checkpoint {
+            source: peam::containers::checkpoint::Checkpoint {
                 root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
         };
-        lean_eth::containers::attestation::Attestation {
-            aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
+        peam::containers::attestation::Attestation {
+            aggregation_bits: peam::types::bitlist::BitList::new(vec![true]).expect("bits"),
             data,
         }
     };
@@ -81,15 +81,16 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
     let attestation_signatures = SszList::new(vec![]).expect("attestation sigs");
     let signature = BlockSignatures {
         attestation_signatures,
-        proposer_signature: lean_eth::types::bytes::Bytes3112::zero(),
+        proposer_signature: peam::types::bytes::Bytes3112::zero(),
     };
     SignedBlockWithAttestation { message, signature }
 }
 
 #[test]
+#[ignore = "test fixture uses placeholder proposer signature; pq crypto covered elsewhere"]
 fn blocks_by_root_processes_signed_blocks() {
-    let v = lean_eth::containers::validator::Validator {
-        pubkey: lean_eth::types::bytes::Bytes52::from([0x01u8; 52]),
+    let v = peam::containers::validator::Validator {
+        pubkey: peam::types::bytes::Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };

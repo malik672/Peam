@@ -7,6 +7,7 @@ include!(concat!(env!("OUT_DIR"), "/zero_hashes.rs"));
 
 pub const BYTES_PER_CHUNK: usize = 32;
 
+#[inline]
 pub fn hash_nodes(left: &Bytes32, right: &Bytes32) -> Bytes32 {
     let mut hasher = Sha256::new();
     hasher.update(left.as_array());
@@ -17,6 +18,7 @@ pub fn hash_nodes(left: &Bytes32, right: &Bytes32) -> Bytes32 {
     Bytes32::from_slice(&out)
 }
 
+#[inline]
 pub fn chunkify_fixed(data: &[u8]) -> Vec<Bytes32> {
     if data.is_empty() {
         return vec![Bytes32::zero()];
@@ -109,6 +111,7 @@ pub fn merkleize_tree_root(chunks: &[Bytes32]) -> Bytes32 {
 }
 
 // width fixed to 4 for 3 field roots
+#[inline]
 pub fn merkleize_tree_root_3(chunks: &[Bytes32]) -> Bytes32 {
     let z0 = zero_tree_root_no_check(1);
 
@@ -118,6 +121,7 @@ pub fn merkleize_tree_root_3(chunks: &[Bytes32]) -> Bytes32 {
 }
 
 // width fixed to 16 for 11 field roots
+#[inline]
 pub fn merkleize_tree_root_11(chunks: &[Bytes32]) -> Bytes32 {
     let z0 = zero_tree_root_no_check(1);
     let z1 = zero_tree_root_no_check(2);
@@ -141,6 +145,7 @@ pub fn merkleize_tree_root_11(chunks: &[Bytes32]) -> Bytes32 {
     hash_nodes(&m0, &m1)
 }
 
+#[inline]
 pub fn merkleize_with_limit(chunks: &[Bytes32], limit: usize) -> Result<Bytes32, String> {
     if limit < chunks.len() {
         return Err("merkleize limit smaller than input".to_string());
@@ -172,16 +177,23 @@ pub fn merkleize_with_limit(chunks: &[Bytes32], limit: usize) -> Result<Bytes32,
         let mut out_idx = 0usize;
         while i < level.len() {
             let left = &level[i];
-            i += 1;
+            unsafe {
+                i = i.unchecked_add(1);
+            }
             let right = if i < level.len() {
-                let r = &level[i];
-                i += 1;
+                let r: &Bytes32 = &level[i];
+                unsafe {
+                    i = i.unchecked_add(1);
+                }
                 r
             } else {
                 &zero_tree_root_no_check(subtree_size)
             };
-            unsafe { write_at(&mut next, out_idx, hash_nodes(left, right)) };
-            out_idx += 1;
+            unsafe {
+                write_at(&mut next, out_idx, hash_nodes(left, right));
+                // safety: level.len() is bound by usize::MAX and based on the iteration pattern, out_idx will always be less than next_len.
+                out_idx = out_idx.unchecked_add(1);
+            };
         }
         level = next;
         subtree_size <<= 1;
@@ -190,6 +202,7 @@ pub fn merkleize_with_limit(chunks: &[Bytes32], limit: usize) -> Result<Bytes32,
     Ok(level[0])
 }
 
+#[inline]
 pub fn mix_in_length(root: &Bytes32, length: usize) -> Bytes32 {
     let mut length_bytes = [0u8; 32];
     let len_u64 = length as u64;
@@ -198,12 +211,14 @@ pub fn mix_in_length(root: &Bytes32, length: usize) -> Bytes32 {
     hash_nodes(root, &length_node)
 }
 
+#[inline]
 fn zero_tree_root_no_check(width: usize) -> Bytes32 {
     let depth = width.trailing_zeros() as usize;
     let bytes = ZERO_HASHES[depth];
     Bytes32::from(bytes)
 }
 
+#[inline]
 fn _zero_tree_root(width: usize) -> Bytes32 {
     if width <= 1 {
         return Bytes32::zero();

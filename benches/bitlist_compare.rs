@@ -3,8 +3,8 @@
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 
-use lean_eth::ssz::{SszDecode as LeanSszDecode, SszEncode as LeanSszEncode};
-use lean_eth::types::bitlist::BitList as LeanBitList;
+use peam::ssz::{SszDecode as LeanSszDecode, SszEncode as LeanSszEncode};
+use peam::types::bitlist::BitList as LeanBitList;
 
 use ssz::Decode as ReamDecode;
 use ssz::Encode as ReamEncode;
@@ -42,7 +42,7 @@ fn make_ream_bitlist() -> ReamBitList<U4096> {
 fn bench_bitlist_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("bitlist_encode");
 
-    group.bench_function("lean_eth_encode", |b| {
+    group.bench_function("peam_encode", |b| {
         b.iter_batched(
             || make_lean_bitlist(),
             |list| black_box(list.encode_ssz()),
@@ -65,7 +65,7 @@ fn bench_bitlist_decode(c: &mut Criterion) {
     let mut group = c.benchmark_group("bitlist_decode");
     let bytes = make_ream_bitlist().as_ssz_bytes();
 
-    group.bench_function("lean_eth_decode", |b| {
+    group.bench_function("peam_decode", |b| {
         b.iter(|| {
             let decoded =
                 <LeanBitList<BIT_LEN> as LeanSszDecode>::decode_ssz(black_box(&bytes)).unwrap();

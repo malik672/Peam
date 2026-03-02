@@ -1,18 +1,16 @@
-use lean_eth::containers::attestation::{Attestation, AttestationData, SignedAttestation};
-use lean_eth::containers::block::{
+use peam::containers::attestation::{Attestation, AttestationData, SignedAttestation};
+use peam::containers::block::{
     Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
     SignedBlockWithAttestation,
 };
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::gossip::{
-    GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
-};
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::slot::Slot;
-use lean_eth::ssz::{HashTreeRoot, SszDecode, SszEncode};
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::gossip::{GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit};
+use peam::containers::validator::ValidatorIndex;
+use peam::slot::Slot;
+use peam::ssz::{HashTreeRoot, SszDecode, SszEncode};
+use peam::types::bytes::Bytes32;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 fn dummy_block() -> Block {
     let body = BlockBody {
@@ -30,7 +28,7 @@ fn dummy_block() -> Block {
 fn dummy_signed_block() -> SignedBlockWithAttestation {
     let block = dummy_block();
     let proposer_attestation = Attestation {
-        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
+        aggregation_bits: peam::types::bitlist::BitList::new(vec![true]).expect("bits"),
         data: AttestationData {
             slot: block.slot,
             head: Checkpoint {
@@ -53,7 +51,7 @@ fn dummy_signed_block() -> SignedBlockWithAttestation {
     };
     let signature = BlockSignatures {
         attestation_signatures: SszList::new(vec![]).expect("attestation sigs"),
-        proposer_signature: lean_eth::types::bytes::Bytes3112::zero(),
+        proposer_signature: peam::types::bytes::Bytes3112::zero(),
     };
     SignedBlockWithAttestation { message, signature }
 }
@@ -103,7 +101,7 @@ fn gossip_attestation_roundtrip() {
     let attestation = SignedAttestation {
         validator_id: Uint64(1),
         message: data,
-        signature: lean_eth::types::bytes::Bytes3112::zero(),
+        signature: peam::types::bytes::Bytes3112::zero(),
     };
     let msg = GossipAttestation { attestation };
     let encoded = msg.encode_ssz();

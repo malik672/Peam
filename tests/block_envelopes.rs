@@ -1,15 +1,15 @@
-use lean_eth::containers::attestation::{Attestation, AttestationData};
-use lean_eth::containers::block::{
+use peam::containers::attestation::{Attestation, AttestationData};
+use peam::containers::block::{
     AttestationSignatures, Block, BlockBody, BlockSignatures, BlockWithAttestation,
     BlockWithSignatures, SignedBlockWithAttestation,
 };
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::slot::Slot;
-use lean_eth::ssz::{SszDecode, SszEncode};
-use lean_eth::types::bytes::{Bytes32, Bytes3112};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::validator::ValidatorIndex;
+use peam::slot::Slot;
+use peam::ssz::{SszDecode, SszEncode};
+use peam::types::bytes::{Bytes32, Bytes3112};
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 fn dummy_block() -> Block {
     let body = BlockBody {
@@ -26,7 +26,7 @@ fn dummy_block() -> Block {
 
 fn dummy_proposer_attestation(slot: Slot) -> Attestation {
     Attestation {
-        aggregation_bits: lean_eth::types::bitlist::BitList::new(vec![true]).expect("bits"),
+        aggregation_bits: peam::types::bitlist::BitList::new(vec![true]).expect("bits"),
         data: AttestationData {
             slot,
             head: Checkpoint {

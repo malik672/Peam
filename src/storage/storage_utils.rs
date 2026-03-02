@@ -24,7 +24,6 @@
 //!
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,34 +43,28 @@ pub(super) fn is_pinned(pinned: &[Option<Bytes32>; 3], root: &Bytes32) -> bool {
     pinned.iter().flatten().any(|p| p == root)
 }
 
-/// Decodes SSZ bytes into a [`State`], catching any panics from the decoder.
+/// Decodes SSZ bytes into a [`State`].
 ///
-/// Returns `None` if decoding panics or returns an error.
+/// Returns `None` if decoding returns an error.
+#[inline]
 pub(super) fn decode_state_safe(bytes: &[u8]) -> Option<State> {
-    catch_unwind(AssertUnwindSafe(|| State::decode_ssz(bytes)))
-        .ok()
-        .and_then(Result::ok)
+    State::decode_ssz(bytes).ok()
 }
 
-/// Decodes SSZ bytes into a [`Block`], catching any panics from the decoder.
+/// Decodes SSZ bytes into a [`Block`].
 ///
-/// Returns `None` if decoding panics or returns an error.
+/// Returns `None` if decoding returns an error.
+#[inline]
 pub(super) fn decode_block_safe(bytes: &[u8]) -> Option<Block> {
-    catch_unwind(AssertUnwindSafe(|| Block::decode_ssz(bytes)))
-        .ok()
-        .and_then(Result::ok)
+    Block::decode_ssz(bytes).ok()
 }
 
-/// Decodes SSZ bytes into a [`SignedBlockWithAttestation`], catching any
-/// panics from the decoder.
+/// Decodes SSZ bytes into a [`SignedBlockWithAttestation`].
 ///
-/// Returns `None` if decoding panics or returns an error.
+/// Returns `None` if decoding returns an error.
+#[inline]
 pub(super) fn decode_signed_block_safe(bytes: &[u8]) -> Option<SignedBlockWithAttestation> {
-    catch_unwind(AssertUnwindSafe(|| {
-        SignedBlockWithAttestation::decode_ssz(bytes)
-    }))
-    .ok()
-    .and_then(Result::ok)
+    SignedBlockWithAttestation::decode_ssz(bytes).ok()
 }
 
 /// Encodes a payload into the lean-ethereum blob format.
@@ -95,29 +88,22 @@ pub(super) fn encode_blob(kind: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Decodes a blob produced by [`encode_blob`], returning the inner payload.
+/// Header size of the LEANSTRG blob envelope.
+pub(super) const BLOB_HEADER_LEN: usize = 8 + 1 + 1 + 4 + 32; // 46
+
+/// Validates a blob envelope and returns the byte offset where the payload
+/// starts, avoiding a second heap allocation on the read path.
 ///
-/// Validation steps:
-/// 1. Checks the `LEANSTRG` magic prefix.
-/// 2. Verifies the version byte matches [`BLOB_VERSION`].
-/// 3. Verifies the `kind` byte matches `expected_kind`.
-/// 4. Reads the 4-byte LE payload length and verifies total file size.
-/// 5. Verifies the SHA-256 checksum of the payload.
+/// Checks: magic prefix, version, kind, length. SHA-256 checksum is **not**
+/// verified — redb provides its own ACID integrity guarantees.
 ///
-/// **Backward compatibility**: if the first 8 bytes are *not* the magic
-/// string, the raw bytes are returned as-is (legacy raw-SSZ format).
-///
-/// Returns `None` on any format, version, kind, length, or checksum mismatch.
+/// Returns `None` on any format, version, kind, or length mismatch.
 #[inline]
-pub(super) fn decode_blob(expected_kind: u8, bytes: &[u8]) -> Option<Vec<u8>> {
-    // Backward compatibility with previous raw-SSZ persistence format.
-    if bytes.len() < 8 {
+pub(super) fn decode_blob_offset(expected_kind: u8, bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < BLOB_HEADER_LEN {
         return None;
     }
     if &bytes[0..8] != BLOB_MAGIC {
-        return Some(bytes.to_vec());
-    }
-    if bytes.len() < 8 + 1 + 1 + 4 + 32 {
         return None;
     }
     if bytes[8] != BLOB_VERSION {
@@ -126,20 +112,11 @@ pub(super) fn decode_blob(expected_kind: u8, bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes[9] != expected_kind {
         return None;
     }
-    let mut len_buf = [0u8; 4];
-    len_buf.copy_from_slice(&bytes[10..14]);
-    let payload_len = u32::from_le_bytes(len_buf) as usize;
-    let payload_offset = 14 + 32;
-    if bytes.len() != payload_offset + payload_len {
+    let payload_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+    if bytes.len() != BLOB_HEADER_LEN + payload_len {
         return None;
     }
-    let expected_checksum = &bytes[14..46];
-    let payload = &bytes[payload_offset..];
-    let actual_checksum = Sha256::digest(payload);
-    if actual_checksum.as_slice() != expected_checksum {
-        return None;
-    }
-    Some(payload.to_vec())
+    Some(BLOB_HEADER_LEN)
 }
 
 /// Checks whether the schema version file at `root/SCHEMA_FILE` matches

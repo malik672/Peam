@@ -1,10 +1,10 @@
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::containers::validator::{Validator, ValidatorIndex};
-use lean_eth::slot::Slot;
-use lean_eth::ssz::SszEncode;
-use lean_eth::types::bytes::Bytes52;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::state::{State, Validators};
+use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::slot::Slot;
+use peam::ssz::SszEncode;
+use peam::types::bytes::Bytes52;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 #[test]
 fn state_encode_decode_roundtrip() {

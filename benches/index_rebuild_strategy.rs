@@ -1,5 +1,5 @@
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
-use lean_eth::types::bytes::Bytes32;
+use peam::types::bytes::Bytes32;
 use rapidhash::RapidHashMap;
 
 const ENTRIES: u64 = 200_000;

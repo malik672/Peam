@@ -3,11 +3,23 @@ use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode};
 use crate::types::bytes::Bytes32;
 use crate::unsafe_vec::{write_at, write_bytes_at};
 
+/// Fixed-length homogeneous sequence of exactly `LENGTH` elements.
+///
+/// SSZ encoding: fixed-size elements are concatenated directly; variable-size
+/// elements use a 4-byte offset table followed by serialized payloads.
+/// hash_tree_root merkleizes element roots (or packed bytes for fixed-size
+/// primitives) with limit = `LENGTH`. No mix-in-length (size is static).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SszVector<T, const LENGTH: usize> {
     pub data: Vec<T>,
 }
 
+/// Variable-length homogeneous sequence bounded by `LIMIT` elements.
+///
+/// SSZ encoding matches `SszVector` but the element count is inferred from
+/// the offset table (variable-size) or total byte length (fixed-size).
+/// hash_tree_root merkleizes element roots with limit = `LIMIT`, then
+/// mixes in the actual length as a separate 32-byte LE chunk.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SszList<T, const LIMIT: usize> {
     pub data: Vec<T>,

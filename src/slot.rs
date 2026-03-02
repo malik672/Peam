@@ -54,6 +54,7 @@ impl Slot {
 }
 
 impl HashTreeRoot for Slot {
+    #[inline]
     fn hash_tree_root(&self) -> [u8; 32] {
         self.0.hash_tree_root()
     }

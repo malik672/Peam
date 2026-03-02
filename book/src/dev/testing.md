@@ -4,7 +4,6 @@
 
 ```bash
 cargo build
-cargo build --features pq_crypto
 ```
 
 The build requires stable Rust (edition 2024). No nightly features are used.
@@ -32,14 +31,13 @@ All tests pass without any external dependencies (no running node, no network).
 | `lean_spec_fixtures.rs` | Spec fixture roundtrips |
 | `networking_wire.rs` | Wire message encode/decode |
 | `node_gossip_integration.rs` | End-to-end gossip → storage integration |
-| `pq_negative.rs` | PQ feature flag and invalid-material rejection |
+| `pq_negative.rs` | PQ invalid-material rejection |
 | `ream_networking_ports.rs` | Real-socket networking smoke tests (ignored by default) |
 | `req_resp.rs` | Req/resp protocol encode/decode |
 | `slot_logic.rs` | Slot arithmetic and justification window |
 | `ssz_collections.rs` | SszList / SszVector roundtrips |
 | `ssz_containers.rs` | All container SSZ roundtrips |
 | `state_logic.rs` | State transition correctness |
-| `storage_skeleton.rs` | FileStore open/write/read/prune |
 | `prune_perf_regression.rs` | Prune performance regression guard |
 
 ### Networking tests (require real sockets)
@@ -56,7 +54,6 @@ Set `LEAN_ETH_REQUIRE_MDNS=1` to make the mDNS discovery test fail hard on timeo
 
 ```bash
 cargo test --test pq_negative
-cargo test --features pq_crypto --test pq_negative
 ```
 
 ## Fixtures

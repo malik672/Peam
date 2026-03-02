@@ -1,9 +1,9 @@
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
 use crate::unsafe_vec::write_bytes_at;
 
+/// SSZ unsigned 64-bit integer. Little-endian encoded to 8 bytes on the wire.
+/// hash_tree_root zero-pads to a 32-byte chunk (LE u64 in bytes 0..8, zeros in 8..32).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-
-// Wrapper around u64
 pub struct Uint64(pub u64);
 
 impl SszEncode for Uint64 {

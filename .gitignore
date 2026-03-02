@@ -5,3 +5,6 @@ whir-p3/
 book/book/
 plan.md
 TODO.md
+DEVNET_SPINUP.local.md
+.tmp/
+scripts/

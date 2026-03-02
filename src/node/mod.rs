@@ -1,34 +1,33 @@
-use std::collections::HashMap;
+mod gossip;
+mod head;
+mod tasks;
+
+pub use gossip::handle_gossip_event;
+pub use head::proposal_head_from_pending;
+
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
 
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
-use crate::app::{NodeSettings, build_genesis, load_node_settings};
-use crate::containers::attestation::{Attestation, VALIDATOR_REGISTRY_LIMIT};
+use crate::app::{NodeSettings, build_genesis_with_validator_count, load_node_settings};
+use crate::containers::attestation::Attestation;
 use crate::containers::config::Config;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::spawn_metrics_server;
-use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::{
     Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
 };
-use crate::slot::{
-    ACCEPTANCE_INTERVAL_INDEX, INTERVALS_PER_SLOT, SAFE_TARGET_INTERVAL_INDEX, SLOT_DURATION_SECS,
-    interval_index_from_unix_millis, next_slot_boundary_delay, slot_index_from_unix_millis,
-    unix_now_millis,
-};
 use crate::ssz::HashTreeRoot;
-use crate::storage::{FileStore, Store};
-use crate::types::bitlist::BitList;
-use crate::types::bytes::Bytes32;
-use libp2p::gossipsub::TopicHash;
-use std::sync::{Arc, RwLock};
+use crate::storage::FileStore;
+
+use tasks::{
+    apply_devnet_pq_validator_pubkeys, spawn_consensus_lifecycle_task, spawn_signed_attestation_task,
+    spawn_strict_slot_clock,
+};
 
 /// Filesystem paths used to initialize a [`Node`].
 #[derive(Clone, Debug)]
@@ -78,242 +77,8 @@ pub struct Node {
     metrics_task: Option<JoinHandle<()>>,
     /// Handle to the fork-choice lifecycle interval task.
     lifecycle_task: Option<JoinHandle<()>>,
-}
-
-/// Drain all pending attestations into the fork-choice store and return the
-/// current proposal head root.
-///
-/// Takes a write lock on `pending_attestations`, drains the buffer, then takes
-/// a write lock on `fork_choice` and calls
-/// [`ForkChoiceStore::get_proposal_head_with_pending`].
-///
-/// Returns `None` if fork-choice has not yet been initialized (i.e. no block
-/// has been imported yet).
-pub fn proposal_head_from_pending(
-    fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
-    pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
-) -> Option<Bytes32> {
-    let drained = {
-        let mut pending = pending_attestations
-            .write()
-            .expect("pending attestations lock");
-        pending.drain(..).collect::<Vec<_>>()
-    };
-    let aggregated = aggregate_attestations(drained);
-    let mut fc = fork_choice.write().expect("fork choice lock");
-    let fc = fc.as_mut()?;
-    Some(fc.get_proposal_head_with_pending(aggregated.iter()))
-}
-
-/// Merge attestations with identical `AttestationData` using bitwise OR over
-/// participant sets, then order by descending participant count.
-fn aggregate_attestations(attestations: Vec<Attestation>) -> Vec<Attestation> {
-    let mut grouped: HashMap<[u8; 32], Attestation> = HashMap::new();
-    for attestation in attestations {
-        let key = attestation.data.hash_tree_root();
-        if let Some(existing) = grouped.get_mut(&key) {
-            merge_aggregation_bits(
-                &mut existing.aggregation_bits,
-                &attestation.aggregation_bits,
-            );
-        } else {
-            grouped.insert(key, attestation);
-        }
-    }
-    let mut out = grouped.into_values().collect::<Vec<_>>();
-    out.sort_by(|a, b| {
-        participant_count(&b.aggregation_bits).cmp(&participant_count(&a.aggregation_bits))
-    });
-    out
-}
-
-#[inline]
-fn participant_count(
-    bits: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
-) -> usize {
-    let mut count = 0usize;
-    let len = bits.len();
-    for i in 0..len {
-        let byte = i / 8;
-        let bit = i % 8;
-        if byte >= bits.data.len() {
-            break;
-        }
-        if (bits.data[byte] & (1u8 << bit)) != 0 {
-            count += 1;
-        }
-    }
-    count
-}
-
-fn merge_aggregation_bits(
-    dst: &mut BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
-    src: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
-) {
-    let target_len = dst.len.max(src.len);
-    let target_bytes = target_len.div_ceil(8);
-    if dst.data.len() < target_bytes {
-        dst.data.resize(target_bytes, 0);
-    }
-    for i in 0..src.data.len() {
-        if i < dst.data.len() {
-            dst.data[i] |= src.data[i];
-        }
-    }
-    dst.len = target_len;
-}
-
-#[inline]
-fn spawn_strict_slot_clock(genesis_time_secs: u64) -> Arc<AtomicU64> {
-    let now = unix_now_millis().unwrap_or(0);
-    let initial_slot = slot_index_from_unix_millis(genesis_time_secs, now);
-    let delay = next_slot_boundary_delay(genesis_time_secs, now);
-    let slot_clock = Arc::new(AtomicU64::new(initial_slot));
-    let slot_clock_task = Arc::clone(&slot_clock);
-    tokio::spawn(async move {
-        let start = tokio::time::Instant::now() + delay;
-        let mut ticker = tokio::time::interval_at(start, Duration::from_secs(SLOT_DURATION_SECS));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            let Some(now_millis) = unix_now_millis() else {
-                continue;
-            };
-            let slot = slot_index_from_unix_millis(genesis_time_secs, now_millis);
-            slot_clock_task.store(slot, Ordering::Relaxed);
-        }
-    });
-    slot_clock
-}
-
-#[inline]
-fn spawn_consensus_lifecycle_task(
-    genesis_time_secs: u64,
-    fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
-    pending_attestations: Arc<RwLock<Vec<Attestation>>>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let interval_millis = ((SLOT_DURATION_SECS * 1_000) / INTERVALS_PER_SLOT).max(1);
-        let mut ticker = tokio::time::interval(Duration::from_millis(interval_millis));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            let Some(now_millis) = unix_now_millis() else {
-                continue;
-            };
-            let interval = interval_index_from_unix_millis(genesis_time_secs, now_millis);
-            let drained = {
-                let mut pending = pending_attestations
-                    .write()
-                    .expect("pending attestations lock");
-                pending.drain(..).collect::<Vec<_>>()
-            };
-            let aggregated = aggregate_attestations(drained);
-            let mut fc_guard = fork_choice.write().expect("fork choice lock");
-            let Some(fc) = fc_guard.as_mut() else {
-                continue;
-            };
-            for attestation in &aggregated {
-                fc.on_attestation(attestation);
-            }
-            if interval == SAFE_TARGET_INTERVAL_INDEX {
-                fc.update_safe_target();
-            }
-            if interval == ACCEPTANCE_INTERVAL_INDEX {
-                fc.accept_new_votes();
-            }
-        }
-    })
-}
-
-/// Decode and dispatch a single gossipsub message, updating shared state.
-///
-/// Deserializes `payload` according to `topic` into a [`LeanGossipsubMessage`],
-/// then branches on the message type:
-///
-/// - **Block** — acquires write locks on `state` and `store`, imports the block
-///   via `Store::put_signed_block`, then either initializes fork-choice (if not
-///   yet set) or calls `ForkChoiceStore::on_block`. Silently ignored on
-///   decode or import failure.
-///
-/// - **Attestation / AttestationSubnet** — reconstructs a single-validator
-///   [`Attestation`] from the `SignedAttestation`, bounds-checks the validator
-///   index, and appends it to `pending_attestations`. A separate lifecycle task
-///   promotes these votes into fork-choice at interval boundaries.
-///   Silently ignored if the validator index is out of range or the bitlist
-///   construction fails.
-pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
-    topic: &str,
-    payload: &[u8],
-    state: &Arc<RwLock<State>>,
-    store: &Arc<RwLock<S>>,
-    fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
-    pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
-) {
-    let topic_hash = TopicHash::from_raw(topic.to_string());
-    let msg = match LeanGossipsubMessage::decode(&topic_hash, payload) {
-        Ok(msg) => msg,
-        Err(_) => return,
-    };
-    match msg {
-        LeanGossipsubMessage::Block(block) => {
-            let signed = block.block.clone();
-            let root = Bytes32::from(signed.message.block.hash_tree_root());
-            let mut state_guard = state.write().expect("state lock");
-            let mut store_guard = store.write().expect("store lock");
-            if store_guard
-                .put_signed_block(root, signed.clone(), &mut state_guard)
-                .is_ok()
-            {
-                let mut fc = fork_choice.write().expect("fork choice lock");
-                if fc.is_none() {
-                    if let Ok(new_fc) = ForkChoiceStore::new(signed.clone(), state_guard.clone()) {
-                        *fc = Some(new_fc);
-                    }
-                } else if let Some(fc) = fc.as_mut() {
-                    let _ = fc.on_block(signed.clone(), state_guard.clone());
-                }
-            }
-        }
-        LeanGossipsubMessage::Attestation(att) => {
-            let att = &att.attestation;
-            let idx = att.validator_id.0 as usize;
-            if idx >= VALIDATOR_REGISTRY_LIMIT {
-                return;
-            }
-            let mut bits = vec![false; idx + 1];
-            bits[idx] = true;
-            if let Ok(bitlist) = BitList::new(bits) {
-                let aggregated = Attestation {
-                    aggregation_bits: bitlist,
-                    data: att.message.clone(),
-                };
-                pending_attestations
-                    .write()
-                    .expect("pending attestations lock")
-                    .push(aggregated.clone());
-            }
-        }
-        LeanGossipsubMessage::AttestationSubnet { attestation, .. } => {
-            let att = &attestation.attestation;
-            let idx = att.validator_id.0 as usize;
-            if idx >= VALIDATOR_REGISTRY_LIMIT {
-                return;
-            }
-            let mut bits = vec![false; idx + 1];
-            bits[idx] = true;
-            if let Ok(bitlist) = BitList::new(bits) {
-                let aggregated = Attestation {
-                    aggregation_bits: bitlist,
-                    data: att.message.clone(),
-                };
-                pending_attestations
-                    .write()
-                    .expect("pending attestations lock")
-                    .push(aggregated.clone());
-            }
-        }
-    }
+    /// Handle to the local signed-attestation publishing task.
+    signing_task: Option<JoinHandle<()>>,
 }
 
 impl Node {
@@ -330,11 +95,14 @@ impl Node {
     /// Returns `Err` if config loading, genesis construction, or store opening fails.
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
         let (config, settings) = load_node_settings(&node_config.config_path)?;
-        let state = Arc::new(RwLock::new(build_genesis(config.clone())?));
+        let mut genesis_state =
+            build_genesis_with_validator_count(config.clone(), settings.validator_count)?;
+        apply_devnet_pq_validator_pubkeys(&mut genesis_state);
+        let state = Arc::new(RwLock::new(genesis_state));
         let store_dir = settings
             .storage_dir
             .as_ref()
-            .map(|dir| PathBuf::from(dir))
+            .map(PathBuf::from)
             .map(|dir| {
                 if dir.is_absolute() {
                     dir
@@ -361,6 +129,7 @@ impl Node {
             shutdown_rx,
             metrics_task: None,
             lifecycle_task: None,
+            signing_task: None,
         })
     }
 
@@ -450,6 +219,28 @@ impl Node {
             });
         }
 
+        if let Some(networking) = &self.networking {
+            let maybe_att_topic = self
+                .settings
+                .allowed_topics
+                .iter()
+                .find(|topic| topic.contains("attestation"))
+                .cloned();
+            if let Some(attestation_topic) = maybe_att_topic {
+                self.signing_task = spawn_signed_attestation_task(
+                    self.config.genesis_time.0,
+                    self.settings.local_validator_index as usize,
+                    attestation_topic,
+                    networking.p2p_sender(),
+                    self.state.clone(),
+                    self.fork_choice.clone(),
+                    self.pending_attestations.clone(),
+                );
+            } else {
+                warn!("no attestation topic configured; local signing task disabled");
+            }
+        }
+
         self.lifecycle_task = Some(spawn_consensus_lifecycle_task(
             self.config.genesis_time.0,
             self.fork_choice.clone(),
@@ -464,6 +255,8 @@ impl Node {
             self.metrics_task = Some(spawn_metrics_server(
                 self.state.clone(),
                 self.store.clone(),
+                self.fork_choice.clone(),
+                self.networking.as_ref().map(|n| n.peers.clone()),
                 bind,
             ));
         }
@@ -484,6 +277,9 @@ impl Node {
             task.abort();
         }
         if let Some(task) = self.lifecycle_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.signing_task.take() {
             task.abort();
         }
         info!("node stopped");

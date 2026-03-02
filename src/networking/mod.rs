@@ -25,7 +25,7 @@ mod events;
 mod gossip;
 pub mod gossipsub;
 mod p2p;
-mod peer_manager;
+pub mod peer_manager;
 mod rate_limiter;
 mod reqresp;
 mod reqresp_handler;
@@ -298,6 +298,11 @@ impl Networking {
                 payload,
             })
             .await;
+    }
+
+    /// Returns a clone of the internal libp2p command sender.
+    pub fn p2p_sender(&self) -> tokio::sync::mpsc::Sender<P2pCommand> {
+        self.p2p_tx.clone()
     }
 }
 

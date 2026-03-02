@@ -3,6 +3,37 @@
 //! This module owns on-disk persistence, startup recovery/loading,
 //! canonical/pending index bookkeeping, and [`Store`] implementation details
 //! for database-backed operation.
+//!
+//! # Data flow
+//!
+//! ```text
+//! put_signed_block(root, signed, state)
+//!   ├─ state.process_signed_block()          state transition
+//!   ├─ encode_blob(BLOCK|SIGNED|STATE)       wrap SSZ in LEANSTRG envelope
+//!   ├─ index_block_slot / index_state_slot   route to canonical or pending
+//!   ├─ promote_finalized_slot_in_memory()    drain pending ≤ finalized
+//!   └─ canonical_db.persist_signed_block_bundle()  single atomic redb write txn
+//! ```
+//!
+//! # Read paths
+//!
+//! | Method | Warm (in-memory) | Cold (redb) |
+//! |--------|------------------|-------------|
+//! | `get_state(root)` | — | redb read txn → decode blob → SSZ decode |
+//! | `get_block(root)` | — | redb read txn → decode blob → SSZ decode |
+//! | `get_state_by_slot(slot)` | pending cache hit | slot index → root → cold path |
+//! | `get_block_by_slot(slot)` | pending cache hit | slot index → root → cold path |
+//!
+//! By-root reads always go to disk (no in-memory blob cache). By-slot reads
+//! check the pending window first (`O(1)` mod-indexed lookup), then fall
+//! through to the canonical `RapidHashMap` index for the root, then to redb.
+//!
+//! # Persistence model
+//!
+//! Dirty tracking (`index_dirty`, `meta_dirty`) defers redb writes until
+//! `flush_canonical()`. The `Drop` impl flushes any remaining dirty state.
+//! `put_signed_block` bypasses this and writes everything in one atomic
+//! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +78,16 @@ pub struct FileStore {
 
 impl FileStore {
     /// Opens (or creates) a [`FileStore`] at `root`.
+    ///
+    /// Startup sequence:
+    /// 1. Verify/create `schema_version` file.
+    /// 2. Open `canonical.redb` (creates + ensures all 6 tables on first run).
+    /// 3. Load state/block slot indexes into `RapidHashMap`s.
+    /// 4. Load fork-choice metadata (head, finalized, justified).
+    /// 5. Derive `finalized_slot` by decoding the finalized block (cold read).
+    ///
+    /// Recovery: corrupt index rows or metadata are silently skipped and
+    /// counted in [`RecoveryReport`].
     pub fn open<P: AsRef<Path>>(root: P) -> Result<Self, String> {
         let root = root.as_ref().to_path_buf();
         ensure_schema_version(&root)?;
@@ -70,6 +111,7 @@ impl FileStore {
         Ok(store)
     }
 
+    /// Returns the filesystem root directory of this store.
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -94,25 +136,38 @@ impl FileStore {
         self.pending_blocks.len()
     }
 
+    /// Cold-path state read: zero-copy from redb mmap → validate header →
+    /// SSZ decode. No intermediate heap allocation.
     #[inline]
     fn load_state_by_root(&self, root: &Bytes32) -> Option<State> {
-        let bytes = self.canonical_db.load_state_blob(*root).ok()??;
-        let bytes = decode_blob(BLOB_KIND_STATE, &bytes)?;
-        decode_state_safe(&bytes)
+        self.canonical_db
+            .with_state_blob(*root, |bytes| {
+                let off = decode_blob_offset(BLOB_KIND_STATE, bytes)?;
+                decode_state_safe(&bytes[off..])
+            })
+            .ok()?
     }
 
+    /// Cold-path block read. Same zero-copy pipeline.
     #[inline]
     fn load_block_by_root(&self, root: &Bytes32) -> Option<Block> {
-        let bytes = self.canonical_db.load_block_blob(*root).ok()??;
-        let bytes = decode_blob(BLOB_KIND_BLOCK, &bytes)?;
-        decode_block_safe(&bytes)
+        self.canonical_db
+            .with_block_blob(*root, |bytes| {
+                let off = decode_blob_offset(BLOB_KIND_BLOCK, bytes)?;
+                decode_block_safe(&bytes[off..])
+            })
+            .ok()?
     }
 
+    /// Cold-path signed-block read. Same zero-copy pipeline.
     #[inline]
     fn load_signed_block_by_root(&self, root: &Bytes32) -> Option<SignedBlockWithAttestation> {
-        let bytes = self.canonical_db.load_signed_block_blob(*root).ok()??;
-        let bytes = decode_blob(BLOB_KIND_SIGNED_BLOCK, &bytes)?;
-        decode_signed_block_safe(&bytes)
+        self.canonical_db
+            .with_signed_block_blob(*root, |bytes| {
+                let off = decode_blob_offset(BLOB_KIND_SIGNED_BLOCK, bytes)?;
+                decode_signed_block_safe(&bytes[off..])
+            })
+            .ok()?
     }
 
     /// Promote all pending rows at `slot <= finalized_slot` into canonical indexes.
@@ -157,13 +212,17 @@ impl FileStore {
         Ok(())
     }
 
+    /// Records a state root in the canonical slot index and marks dirty.
     #[inline]
     fn index_state_slot(&mut self, slot: u64, root: Bytes32) {
         self.state_by_slot.insert(slot, root);
         self.index_dirty = true;
     }
 
-    /// Returns `true` if the block was routed to the canonical index, `false` if pending.
+    /// Routes a block to the canonical or pending index based on finalized_slot.
+    ///
+    /// Returns `true` if routed to canonical (slot ≤ finalized), `false` if
+    /// buffered in the pending window (slot > finalized).
     #[inline]
     fn index_block_slot(&mut self, slot: u64, root: Bytes32, state_root: Bytes32) -> bool {
         match self.finalized_slot {
@@ -179,7 +238,11 @@ impl FileStore {
         }
     }
 
-    /// Loads startup metadata and all indexes.
+    /// Loads startup metadata and all indexes from `canonical.redb`.
+    ///
+    /// Called once during [`open`]. Loads state/block slot indexes, fork-choice
+    /// metadata, and derives `finalized_slot` from the finalized block (requires
+    /// one cold read + SSZ decode).
     #[inline]
     fn load_from_disk(&mut self) -> Result<(), String> {
         self.load_state_index()?;
@@ -220,6 +283,7 @@ impl FileStore {
         Ok(())
     }
 
+    /// Marks fork-choice metadata as needing a flush to redb.
     #[inline]
     fn set_meta_dirty(&mut self) {
         self.meta_dirty = true;
@@ -240,6 +304,8 @@ impl FileStore {
     }
 }
 
+/// Best-effort flush on shutdown. Persists any dirty indexes/metadata that
+/// were not yet written to `canonical.redb`. Errors are silently ignored.
 impl Drop for FileStore {
     fn drop(&mut self) {
         if self.index_dirty || self.meta_dirty {
@@ -248,6 +314,18 @@ impl Drop for FileStore {
     }
 }
 
+/// [`Store`] implementation for [`FileStore`].
+///
+/// - **Reads by root** always hit redb (cold path).
+/// - **Reads by slot** check the pending window first, then the canonical
+///   slot index, then fall through to the cold path.
+/// - **`put_state` / `put_block`** persist the blob immediately, then update
+///   the in-memory index (deferred flush).
+/// - **`put_signed_block`** runs state transition, encodes all three blobs,
+///   updates indexes and metadata, then writes everything in a single atomic
+///   redb transaction via `persist_signed_block_bundle`.
+/// - **`set_head` / `set_finalized` / `set_justified`** update metadata and
+///   flush immediately. `set_finalized` also promotes pending entries.
 impl Store for FileStore {
     #[inline]
     fn get_state(&self, root: &Bytes32) -> Option<State> {
@@ -273,6 +351,7 @@ impl Store for FileStore {
         self.load_signed_block_by_root(root)
     }
 
+    #[inline]
     fn put_block(&mut self, root: Bytes32, block: Block) {
         let slot = block.slot.0.0;
         let state_root = block.state_root;
@@ -283,6 +362,13 @@ impl Store for FileStore {
         self.index_block_slot(slot, root, state_root);
     }
 
+    /// Hot write path: state transition → encode → index → atomic persist.
+    ///
+    /// All three blobs (block, signed block, post-state) plus index/meta
+    /// deltas are written in a single redb write transaction. If the
+    /// transaction commits, in-memory dirty flags are cleared. If it fails,
+    /// in-memory state is ahead of disk (recovered on next `flush_canonical`
+    /// or `Drop`).
     #[inline]
     fn put_signed_block(
         &mut self,
@@ -290,8 +376,10 @@ impl Store for FileStore {
         signed: SignedBlockWithAttestation,
         state: &mut State,
     ) -> Result<(), String> {
+        // Phase 1: state transition (may fail, no side effects on store yet).
         state.process_signed_block(&signed)?;
 
+        // Phase 2: SSZ encode + blob envelope wrapping.
         let block = signed.message.block.clone();
         let slot = block.slot.0.0;
         let state_root = block.state_root;
@@ -299,7 +387,7 @@ impl Store for FileStore {
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
 
-        // Update in-memory view first, then persist blobs + snapshot atomically.
+        // Phase 3: update in-memory indexes and metadata.
         self.head = Some(root);
         self.justified = Some(state.latest_justified.root);
         self.finalized = Some(state.latest_finalized.root);
@@ -311,7 +399,7 @@ impl Store for FileStore {
         self.index_state_slot(slot, state_root);
         let promoted = self.promote_finalized_slot_in_memory(fin_slot);
 
-        // Build delta: only the entries that changed this call.
+        // Phase 4: build delta upserts (only rows changed this call).
         let mut state_upserts = Vec::with_capacity(1 + promoted.len());
         let mut block_upserts = Vec::with_capacity(usize::from(block_canonical) + promoted.len());
         state_upserts.push((slot, state_root));
@@ -323,6 +411,7 @@ impl Store for FileStore {
             block_upserts.push((entry.slot, entry.block_root));
         }
 
+        // Phase 5: single atomic redb write transaction.
         self.canonical_db.persist_signed_block_bundle(
             root,
             &block_blob,
@@ -340,6 +429,7 @@ impl Store for FileStore {
         Ok(())
     }
 
+    /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
     fn get_state_by_slot(&self, slot: u64) -> Option<State> {
         if let Some(entry) = self.pending_blocks.get(slot) {
             return self.load_state_by_root(&entry.state_root);
@@ -348,6 +438,7 @@ impl Store for FileStore {
         self.load_state_by_root(&root)
     }
 
+    /// By-slot block read: pending window (`O(1)`) → canonical index → cold path.
     fn get_block_by_slot(&self, slot: u64) -> Option<Block> {
         if let Some(entry) = self.pending_blocks.get(slot) {
             return self.load_block_by_root(&entry.block_root);
@@ -370,6 +461,8 @@ impl Store for FileStore {
         self.finalized
     }
 
+    /// Sets finalized root, derives `finalized_slot` via cold read, promotes
+    /// pending entries ≤ that slot into canonical, then flushes to redb.
     fn set_finalized(&mut self, root: Bytes32) {
         self.finalized = Some(root);
         self.finalized_slot = self.load_block_by_root(&root).map(|block| block.slot.0.0);

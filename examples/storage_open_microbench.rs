@@ -4,14 +4,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use lean_eth::containers::block::{Block, BlockBody};
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::slot::Slot;
-use lean_eth::storage::{FileStore, Store};
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::block::{Block, BlockBody};
+use peam::containers::state::{State, Validators};
+use peam::containers::validator::ValidatorIndex;
+use peam::slot::Slot;
+use peam::storage::{FileStore, Store};
+use peam::types::bytes::Bytes32;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 const FIXTURE_ROWS: u64 = 1_000;
 const ITERATIONS: usize = 100;
@@ -27,7 +27,7 @@ fn fixture_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    std::env::temp_dir().join(format!("lean_eth_{name}_{stamp}"))
+    std::env::temp_dir().join(format!("peam_{name}_{stamp}"))
 }
 
 fn dummy_block(slot: u64) -> Block {
@@ -109,19 +109,19 @@ fn main() {
     }
 
     println!(
-        "lean_eth_open_1k_states_1k_blocks avg: {:.3} ms",
+        "peam_open_1k_states_1k_blocks avg: {:.3} ms",
         avg_ms(open_total, ITERATIONS)
     );
     println!(
-        "lean_eth_cold_read_state_by_root avg: {:.3} ms",
+        "peam_cold_read_state_by_root avg: {:.3} ms",
         avg_ms(cold_state_root_total, ITERATIONS)
     );
     println!(
-        "lean_eth_cold_read_block_by_slot avg: {:.3} ms",
+        "peam_cold_read_block_by_slot avg: {:.3} ms",
         avg_ms(cold_block_slot_total, ITERATIONS)
     );
     println!(
-        "lean_eth_cold_read_state_by_slot avg: {:.3} ms",
+        "peam_cold_read_state_by_slot avg: {:.3} ms",
         avg_ms(cold_state_slot_total, ITERATIONS)
     );
 

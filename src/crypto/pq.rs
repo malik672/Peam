@@ -1,17 +1,15 @@
-//! Real post-quantum signature implementation, compiled only with `pq_crypto`.
+//! Real post-quantum signature implementation.
 //!
 //! Uses `leansig` for single signatures.
-//! Aggregate / multi-signature verification (`verify_aggregate_signature`)
-//! is a stub that always returns an error; a full multisig implementation
-//! will be wired up in a future feature.
-//!
-//! # Feature gates
-//!
-//! | Feature       | Effect |
-//! |---------------|--------|
-//! | `pq_crypto`   | Enables this entire module |
+//! Aggregate signing/verifying uses `lean-multisig` (devnet-2 target).
 
+use lean_multisig::{
+    Devnet2XmssAggregateSignature, xmss_aggregate_signatures, xmss_aggregation_setup_prover,
+    xmss_aggregation_setup_verifier, xmss_verify_aggregated_signatures,
+};
 use leansig::{MESSAGE_LENGTH, serialization::Serializable, signature::SignatureScheme};
+use rand::{SeedableRng, rngs::StdRng};
+use ssz::{Decode, Encode};
 
 use crate::types::bytes::{Bytes52, Bytes3112};
 
@@ -26,15 +24,149 @@ pub type LeanSigPublicKey = <LeanSigScheme as SignatureScheme>::PublicKey;
 
 /// Signature type for [`LeanSigScheme`].
 pub type LeanSigSignature = <LeanSigScheme as SignatureScheme>::Signature;
+/// Secret key type for [`LeanSigScheme`].
+pub type LeanSigSecretKey = <LeanSigScheme as SignatureScheme>::SecretKey;
 
-/// No-op placeholder; a real aggregate verifier setup will be added with multisig support.
-pub fn setup_aggregate_verifier() {}
+/// Narrow per-key active signing interval used for local devnet key material.
+const DEVNET_KEY_ACTIVE_EPOCHS: usize = 8;
+
+/// Pre-computes aggregation proving artifacts.
+pub fn setup_aggregate_prover() {
+    xmss_aggregation_setup_prover();
+}
+
+/// Pre-computes aggregation verification artifacts.
+pub fn setup_aggregate_verifier() {
+    xmss_aggregation_setup_verifier();
+}
+
+/// Deterministically derives a validator keypair for a devnet validator index.
+///
+/// This is used for local-devnet key material so every client can derive the
+/// same validator registry without external key distribution.
+#[inline]
+pub fn key_gen_for_devnet_validator(
+    validator_index: usize,
+) -> Result<(Bytes52, LeanSigSecretKey), String> {
+    let mut seed = [0u8; 32];
+    seed[0..8]
+        .copy_from_slice(&(0x4456_4E45_5431_0000u64 ^ (validator_index as u64)).to_le_bytes());
+    let mut rng = StdRng::from_seed(seed);
+    let (pk, sk) =
+        <LeanSigScheme as SignatureScheme>::key_gen(&mut rng, 0, DEVNET_KEY_ACTIVE_EPOCHS);
+    let pk_bytes = pk.to_bytes();
+    if pk_bytes.len() != 52 {
+        return Err(format!(
+            "unexpected public key length {}, expected 52",
+            pk_bytes.len()
+        ));
+    }
+    Ok((Bytes52::from_slice(&pk_bytes), sk))
+}
+
+/// Signs a 32-byte message and returns the canonical 3112-byte signature.
+#[inline]
+pub fn sign_message(
+    secret_key: &LeanSigSecretKey,
+    epoch: u32,
+    message: &[u8; MESSAGE_LENGTH],
+) -> Result<Bytes3112, String> {
+    let sig = <LeanSigScheme as SignatureScheme>::sign(secret_key, epoch, message)
+        .map_err(|err| format!("failed to sign message: {err}"))?;
+    let sig_bytes = sig.to_bytes();
+    if sig_bytes.len() != Bytes3112::LEN {
+        return Err(format!(
+            "unexpected signature length {}, expected {}",
+            sig_bytes.len(),
+            Bytes3112::LEN
+        ));
+    }
+    Ok(Bytes3112::from_slice(&sig_bytes))
+}
+
+/// Aggregates signatures using leanMultisig.
+///
+/// This function keeps the legacy name to avoid touching higher-level call sites.
+/// It no longer returns naive `sig_0 || sig_1 || ...` bytes.
+pub fn sign_aggregate_concat(
+    public_keys: &[Bytes52],
+    secret_keys: &[&LeanSigSecretKey],
+    epoch: u32,
+    message: &[u8; MESSAGE_LENGTH],
+) -> Result<Vec<u8>, String> {
+    if public_keys.is_empty() {
+        return Err("aggregate signature participants must be non-empty".to_string());
+    }
+    if public_keys.len() != secret_keys.len() {
+        return Err(format!(
+            "public key count ({}) does not match secret key count ({})",
+            public_keys.len(),
+            secret_keys.len()
+        ));
+    }
+    let mut signatures = Vec::with_capacity(secret_keys.len());
+    for secret_key in secret_keys {
+        let signature = sign_message(secret_key, epoch, message)?;
+        // SAFETY:
+        // - `signatures` was preallocated with `secret_keys.len()`, and we perform
+        //   exactly one insertion per loop iteration, so `len < capacity` always holds.
+        // - `signature` is fully initialized before writing.
+        unsafe {
+            let idx = signatures.len();
+            signatures.set_len(idx + 1);
+            *signatures.get_unchecked_mut(idx) = signature;
+        }
+    }
+    aggregate_signatures_impl(public_keys, &signatures, message, epoch)
+}
+
+#[inline]
+fn aggregate_signatures_impl(
+    public_keys: &[Bytes52],
+    signatures: &[Bytes3112],
+    message: &[u8; MESSAGE_LENGTH],
+    epoch: u32,
+) -> Result<Vec<u8>, String> {
+    let pub_keys = public_keys
+        .iter()
+        .map(public_key_from_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    let sigs = signatures
+        .iter()
+        .map(signature_from_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    let aggregate = xmss_aggregate_signatures(&pub_keys, &sigs, message, epoch)
+        .map_err(|err| format!("failed to aggregate signatures: {err:?}"))?;
+    Ok(aggregate.as_ssz_bytes())
+}
+
+/// Aggregates pre-existing signatures into a single SSZ-encoded leanMultisig proof.
+#[inline]
+pub fn aggregate_signatures(
+    public_keys: &[Bytes52],
+    signatures: &[Bytes3112],
+    message: &[u8; MESSAGE_LENGTH],
+    epoch: u32,
+) -> Result<Vec<u8>, String> {
+    if public_keys.is_empty() {
+        return Err("aggregate signature participants must be non-empty".to_string());
+    }
+    if public_keys.len() != signatures.len() {
+        return Err(format!(
+            "public key count ({}) does not match signature count ({})",
+            public_keys.len(),
+            signatures.len()
+        ));
+    }
+    aggregate_signatures_impl(public_keys, signatures, message, epoch)
+}
 
 /// Deserializes a 52-byte public key into a [`LeanSigPublicKey`].
 ///
 /// # Errors
 ///
 /// Returns `Err` if the byte slice is not a valid encoded public key.
+#[inline]
 pub fn public_key_from_bytes(bytes: &Bytes52) -> Result<LeanSigPublicKey, String> {
     LeanSigPublicKey::from_bytes(bytes.as_ref())
         .map_err(|err| format!("Failed to decode LeanSigPublicKey: {err:?}"))
@@ -45,6 +177,7 @@ pub fn public_key_from_bytes(bytes: &Bytes52) -> Result<LeanSigPublicKey, String
 /// # Errors
 ///
 /// Returns `Err` if the byte slice is not a valid encoded signature.
+#[inline]
 pub fn signature_from_bytes(bytes: &Bytes3112) -> Result<LeanSigSignature, String> {
     LeanSigSignature::from_bytes(bytes.as_ref())
         .map_err(|err| format!("Failed to decode LeanSigSignature: {err:?}"))
@@ -59,6 +192,7 @@ pub fn signature_from_bytes(bytes: &Bytes3112) -> Result<LeanSigSignature, Strin
 ///
 /// Returns `Err` if key/signature deserialization fails or if verification does
 /// not pass.
+#[inline]
 pub fn verify_signature(
     public_key: &Bytes52,
     epoch: u32,
@@ -75,15 +209,41 @@ pub fn verify_signature(
     }
 }
 
-/// Stub: aggregate signature verification is not yet implemented.
-///
-/// Always returns `Err`. A full multisig implementation will be wired up in a
-/// future release.
+/// Verifies an SSZ-encoded leanMultisig aggregated signature proof.
 pub fn verify_aggregate_signature(
-    _public_keys: &[Bytes52],
-    _message: &[u8; 32],
-    _aggregate_signature_bytes: &[u8],
-    _epoch: u32,
+    public_keys: &[Bytes52],
+    message: &[u8; 32],
+    aggregate_signature_bytes: &[u8],
+    epoch: u32,
 ) -> Result<(), String> {
-    Err("aggregate signature verification not yet implemented".to_string())
+    if public_keys.is_empty() {
+        return Err("aggregate signature participants must be non-empty".to_string());
+    }
+
+    let aggregate = Devnet2XmssAggregateSignature::from_ssz_bytes(aggregate_signature_bytes)
+        .map_err(|err| format!("failed to decode aggregate signature: {err:?}"))?;
+    let pub_keys = public_keys
+        .iter()
+        .map(public_key_from_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    xmss_verify_aggregated_signatures(&pub_keys, message, &aggregate, epoch)
+        .map_err(|err| format!("failed to verify aggregated signatures: {err}"))
+}
+
+
+/// Verifies an SSZ-encoded leanMultisig aggregated signature proof.
+pub fn verify_aggregate_signature_no_check(
+    public_keys: &[Bytes52],
+    message: &[u8; 32],
+    aggregate_signature_bytes: &[u8],
+    epoch: u32,
+) -> Result<(), String> {
+    let aggregate = Devnet2XmssAggregateSignature::from_ssz_bytes(aggregate_signature_bytes)
+        .map_err(|err| format!("failed to decode aggregate signature: {err:?}"))?;
+    let pub_keys = public_keys
+        .iter()
+        .map(public_key_from_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    xmss_verify_aggregated_signatures(&pub_keys, message, &aggregate, epoch)
+        .map_err(|err| format!("failed to verify aggregated signatures: {err}"))
 }

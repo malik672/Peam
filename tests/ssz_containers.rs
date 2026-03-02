@@ -1,12 +1,12 @@
-use lean_eth::containers::attestation::{Attestation, AttestationData};
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::validator::{Validator, ValidatorIndex};
-use lean_eth::slot::Slot;
-use lean_eth::ssz::hash::hash_nodes;
-use lean_eth::ssz::{HashTreeRoot, SszEncode};
-use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::{Bytes32, Bytes52};
-use lean_eth::types::uint::Uint64;
+use peam::containers::attestation::{Attestation, AttestationData};
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::slot::Slot;
+use peam::ssz::hash::hash_nodes;
+use peam::ssz::{HashTreeRoot, SszEncode};
+use peam::types::bitlist::BitList;
+use peam::types::bytes::{Bytes32, Bytes52};
+use peam::types::uint::Uint64;
 
 fn chunk_from_bytes(data: &[u8]) -> Bytes32 {
     let mut chunk = [0u8; 32];
@@ -95,7 +95,7 @@ fn validator_hash_tree_root_matches_manual_chunks() {
     let balance_chunk = chunk_from_bytes(&0u64.to_le_bytes());
     let expected = {
         let roots = [pubkey_root, index_chunk, balance_chunk];
-        lean_eth::ssz::hash::merkleize_unsafe(&roots)
+        peam::ssz::hash::merkleize_unsafe(&roots)
     };
 
     assert_eq!(validator.hash_tree_root(), expected.as_array());

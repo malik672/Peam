@@ -2,14 +2,14 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use lean_eth::containers::block::{Block, BlockBody};
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::slot::Slot;
-use lean_eth::storage::{FileStore, Store};
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::block::{Block, BlockBody};
+use peam::containers::state::{State, Validators};
+use peam::containers::validator::ValidatorIndex;
+use peam::slot::Slot;
+use peam::storage::{FileStore, Store};
+use peam::types::bytes::Bytes32;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 const FIXTURE_BLOCKS: u64 = 1_000;
 const FIXTURE_STATES: u64 = 1_000;
@@ -25,7 +25,7 @@ fn fixture_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    std::env::temp_dir().join(format!("lean_eth_bench_{name}_{stamp}"))
+    std::env::temp_dir().join(format!("peam_bench_{name}_{stamp}"))
 }
 
 fn dummy_block(slot: u64) -> Block {

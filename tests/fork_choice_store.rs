@@ -1,18 +1,18 @@
-use lean_eth::containers::attestation::{Attestation, AttestationData};
-use lean_eth::containers::block::{
+use peam::containers::attestation::{Attestation, AttestationData};
+use peam::containers::block::{
     Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
 };
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::state::{State, Validators};
-use lean_eth::containers::validator::{Validator, ValidatorIndex};
-use lean_eth::fork_choice::ForkChoiceStore;
-use lean_eth::node::proposal_head_from_pending;
-use lean_eth::slot::Slot;
-use lean_eth::ssz::HashTreeRoot;
-use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::{Bytes32, Bytes52, Bytes3112};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::state::{State, Validators};
+use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::fork_choice::ForkChoiceStore;
+use peam::node::proposal_head_from_pending;
+use peam::slot::Slot;
+use peam::ssz::HashTreeRoot;
+use peam::types::bitlist::BitList;
+use peam::types::bytes::{Bytes32, Bytes52, Bytes3112};
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 use std::sync::{Arc, RwLock};
 
 fn build_signed_block(
@@ -369,4 +369,30 @@ fn reorg_vote_shift_changes_head() {
     store.on_attestation(&vote_b);
     store.accept_new_votes();
     assert_eq!(store.head(), root_b);
+    assert!(
+        store.reorgs_total() >= 1,
+        "vote-shift reorg should be counted"
+    );
+}
+
+#[test]
+fn head_slot_and_validator_count_getters() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+
+    let (anchor_block, anchor_state, _anchor_root) = build_signed_block(&state, 1, false);
+    let store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+
+    assert_eq!(store.head_slot(), 1);
+    assert_eq!(store.validator_count(), 1);
+    assert_eq!(store.reorgs_total(), 0);
+    assert_eq!(
+        store.previous_justified().slot,
+        store.latest_justified().slot
+    );
 }

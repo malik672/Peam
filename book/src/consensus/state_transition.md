@@ -16,7 +16,7 @@ This is the top-level entry point. It runs the full pipeline:
 1. **`process_slots`** — advance `state.slot` to `block.slot`, appending zero-hashes to `historical_block_hashes` for any skipped slots.
 2. **`process_block_header`** — verify slot ordering, set `latest_block_header`.
 3. **`process_attestations`** — validate and record each attestation.
-4. **`verify_proposer_signature`** — verify the PQ proposer signature (if `pq_crypto` feature is enabled).
+4. **`verify_proposer_signature`** — verify the PQ proposer signature.
 5. **Post-state root check** — compute `hash_tree_root(state)` and verify it equals `block.state_root`.
 6. **Commit** — write `latest_block_header.state_root = block.state_root`.
 

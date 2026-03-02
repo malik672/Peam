@@ -1,9 +1,9 @@
-use lean_eth::ssz::hash::{merkleize_with_limit, mix_in_length};
-use lean_eth::ssz::{HashTreeRoot, SszEncode};
-use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::{SszList, SszVector};
-use lean_eth::types::uint::Uint64;
+use peam::ssz::hash::{merkleize_with_limit, mix_in_length};
+use peam::ssz::{HashTreeRoot, SszEncode};
+use peam::types::bitlist::BitList;
+use peam::types::bytes::Bytes32;
+use peam::types::collections::{SszList, SszVector};
+use peam::types::uint::Uint64;
 
 fn chunk_from_u64s(values: &[u64]) -> Bytes32 {
     let mut chunk = [0u8; 32];

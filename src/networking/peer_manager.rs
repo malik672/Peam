@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Mutex;
 use tracing::info;
@@ -31,6 +32,8 @@ struct InnerPeerManager {
     /// Score map: peer ID → current score (may be negative).
     scores: Mutex<HashMap<String, i64>>,
     events: EventBus,
+    /// Connected peer count, updated atomically for sync access from metrics.
+    peer_count: AtomicUsize,
 }
 
 impl PeerManager {
@@ -41,6 +44,7 @@ impl PeerManager {
                 peers: Mutex::new(HashSet::new()),
                 scores: Mutex::new(HashMap::new()),
                 events,
+                peer_count: AtomicUsize::new(0),
             }),
         }
     }
@@ -51,6 +55,7 @@ impl PeerManager {
     pub async fn connect(&self, peer_id: String) {
         let mut peers = self.inner.peers.lock().await;
         if peers.insert(peer_id.clone()) {
+            self.inner.peer_count.store(peers.len(), Ordering::Relaxed);
             info!("peer_connected={peer_id}");
             self.inner
                 .scores
@@ -70,6 +75,7 @@ impl PeerManager {
     pub async fn disconnect(&self, peer_id: &str) {
         let mut peers = self.inner.peers.lock().await;
         if peers.remove(peer_id) {
+            self.inner.peer_count.store(peers.len(), Ordering::Relaxed);
             self.inner.scores.lock().await.remove(peer_id);
             info!("peer_disconnected={peer_id}");
             self.inner.events.emit(NetworkEvent::PeerDisconnected {
@@ -151,6 +157,10 @@ impl PeerManager {
             banned.push(peer_id);
         }
 
+        if !banned.is_empty() {
+            self.inner.peer_count.store(peers.len(), Ordering::Relaxed);
+        }
+
         banned
     }
 
@@ -164,5 +174,13 @@ impl PeerManager {
     pub async fn list(&self) -> Vec<String> {
         let peers = self.inner.peers.lock().await;
         peers.iter().cloned().collect()
+    }
+
+    /// Returns the current connected peer count without async locking.
+    ///
+    /// Safe to call from synchronous contexts (e.g. metrics rendering).
+    #[inline]
+    pub fn peer_count(&self) -> usize {
+        self.inner.peer_count.load(Ordering::Relaxed)
     }
 }

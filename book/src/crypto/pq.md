@@ -1,20 +1,6 @@
 # PQ Signatures
 
-`lean_eth` has post-quantum signature hooks built in, enabled by the `pq_crypto` feature flag.
-
-## Feature flags
-
-| Feature | Effect |
-|---------|--------|
-| *(none)* | `pq::verify_signature` returns `Err("pq crypto feature disabled")` |
-| `pq_crypto` | Real XMSS-based single-signature verification via `leansig` |
-
-Enable `pq_crypto`:
-
-```bash
-cargo build --features pq_crypto
-cargo test --features pq_crypto
-```
+`lean_eth` has post-quantum signatures enabled by default on master.
 
 ## Signature scheme
 
@@ -47,16 +33,13 @@ pub fn verify_signature(
     signature: &Bytes3112,
 ) -> Result<(), String>
 
-// Stub — always returns Err (aggregate multisig not yet wired)
+// Verify an aggregated multisig proof
 pub fn verify_aggregate_signature(
     public_keys: &[Bytes52],
     message: &[u8; 32],
     aggregate_signature_bytes: &[u8],
     epoch: u32,
 ) -> Result<(), String>
-
-// No-op placeholder for aggregate verifier setup
-pub fn setup_aggregate_verifier() {}
 ```
 
 ## Dependency
@@ -67,10 +50,8 @@ pub fn setup_aggregate_verifier() {}
 
 ```bash
 cargo test --test pq_negative
-cargo test --features pq_crypto --test pq_negative
 ```
 
 Tests verify that:
-- Without `pq_crypto`: `verify_signature` returns the "feature disabled" error.
-- With `pq_crypto`: `verify_signature` with all-zero key/signature returns a decode or verification error.
-- With `pq_crypto`: `verify_aggregate_signature` returns "not yet implemented".
+- `verify_signature` with invalid key/signature returns a decode or verification error.
+- `verify_aggregate_signature` rejects malformed aggregate proof bytes.

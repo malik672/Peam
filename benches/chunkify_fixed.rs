@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lean_eth::ssz::hash::chunkify_fixed;
+use peam::ssz::hash::chunkify_fixed;
 
 fn bench_chunkify_fixed(c: &mut Criterion) {
     let empty: Vec<u8> = Vec::new();

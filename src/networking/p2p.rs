@@ -46,7 +46,7 @@ use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
 use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
 
-/// Explicit gossipsub protocol id for devnet-0 compatibility.
+/// Explicit gossipsub protocol id pinned to v1.0.
 const GOSSIPSUB_PROTOCOL_ID_V1_0: &str = "/meshsub/1.0.0";
 
 /// Configuration for constructing a [`P2pService`].
@@ -134,6 +134,34 @@ impl AsRef<str> for LeanReqRespProtocol {
     }
 }
 
+#[inline]
+fn encode_reqresp_envelope(protocol: &str, payload: &[u8]) -> Vec<u8> {
+    let proto = protocol.as_bytes();
+    let proto_len = proto.len().min(u16::MAX as usize) as u16;
+    let mut out = Vec::with_capacity(2 + proto_len as usize + payload.len());
+    out.extend_from_slice(&proto_len.to_le_bytes());
+    out.extend_from_slice(&proto[..proto_len as usize]);
+    out.extend_from_slice(payload);
+    out
+}
+
+#[inline]
+fn decode_reqresp_envelope(buf: Vec<u8>, negotiated_protocol: &str) -> (String, Vec<u8>) {
+    if buf.len() < 2 {
+        return (negotiated_protocol.to_string(), buf);
+    }
+    let proto_len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
+    if buf.len() < 2 + proto_len {
+        return (negotiated_protocol.to_string(), buf);
+    }
+    let proto = std::str::from_utf8(&buf[2..(2 + proto_len)]).ok();
+    let payload = buf[(2 + proto_len)..].to_vec();
+    match proto {
+        Some(protocol) => (protocol.to_string(), payload),
+        None => (negotiated_protocol.to_string(), payload),
+    }
+}
+
 /// A raw inbound or outbound req/resp request.
 #[derive(Debug, Clone)]
 pub struct LeanRequest {
@@ -179,10 +207,8 @@ impl RequestResponseCodec for LeanReqRespCodec {
     {
         let mut buf = Vec::new();
         futures::AsyncReadExt::read_to_end(io, &mut buf).await?;
-        Ok(LeanRequest {
-            protocol: protocol.0.clone(),
-            payload: buf,
-        })
+        let (protocol, payload) = decode_reqresp_envelope(buf, &protocol.0);
+        Ok(LeanRequest { protocol, payload })
     }
 
     async fn read_response<T>(
@@ -195,22 +221,21 @@ impl RequestResponseCodec for LeanReqRespCodec {
     {
         let mut buf = Vec::new();
         futures::AsyncReadExt::read_to_end(io, &mut buf).await?;
-        Ok(LeanResponse {
-            protocol: protocol.0.clone(),
-            payload: buf,
-        })
+        let (protocol, payload) = decode_reqresp_envelope(buf, &protocol.0);
+        Ok(LeanResponse { protocol, payload })
     }
 
     async fn write_request<T>(
         &mut self,
         _: &LeanReqRespProtocol,
         io: &mut T,
-        LeanRequest { payload, .. }: LeanRequest,
+        LeanRequest { protocol, payload }: LeanRequest,
     ) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        futures::AsyncWriteExt::write_all(io, &payload).await?;
+        let framed = encode_reqresp_envelope(&protocol, &payload);
+        futures::AsyncWriteExt::write_all(io, &framed).await?;
         futures::AsyncWriteExt::close(io).await?;
         Ok(())
     }
@@ -219,12 +244,13 @@ impl RequestResponseCodec for LeanReqRespCodec {
         &mut self,
         _: &LeanReqRespProtocol,
         io: &mut T,
-        LeanResponse { payload, .. }: LeanResponse,
+        LeanResponse { protocol, payload }: LeanResponse,
     ) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        futures::AsyncWriteExt::write_all(io, &payload).await?;
+        let framed = encode_reqresp_envelope(&protocol, &payload);
+        futures::AsyncWriteExt::write_all(io, &framed).await?;
         futures::AsyncWriteExt::close(io).await?;
         Ok(())
     }
@@ -246,7 +272,7 @@ impl P2pService {
         )
         .expect("gossipsub");
         let identify = Identify::new(IdentifyConfig::new(
-            "/lean_eth/1.0.0".to_string(),
+            "/peam/1.0.0".to_string(),
             keypair.public(),
         ));
         let ping = Ping::new(PingConfig::new().with_interval(Duration::from_secs(10)));

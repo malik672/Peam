@@ -1,17 +1,17 @@
 use std::env;
 use std::path::PathBuf;
 
-use lean_eth::app::{build_genesis, load_config};
-use lean_eth::containers::config::Config;
-use lean_eth::node::{Node, NodeConfig};
-use lean_eth::ssz::HashTreeRoot;
-use lean_eth::types::uint::Uint64;
+use peam::app::{build_genesis, load_config};
+use peam::containers::config::Config;
+use peam::node::{Node, NodeConfig};
+use peam::ssz::HashTreeRoot;
+use peam::types::uint::Uint64;
 
 fn print_usage() {
     eprintln!("Usage:");
-    eprintln!("  lean_eth --config <path>");
-    eprintln!("  lean_eth --genesis-time <u64>");
-    eprintln!("  lean_eth --run --config <path> --data-dir <path>");
+    eprintln!("  peam --config <path>");
+    eprintln!("  peam --genesis-time <u64>");
+    eprintln!("  peam --run --config <path> --data-dir <path>");
 }
 
 fn to_hex(bytes: &[u8]) -> String {

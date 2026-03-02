@@ -1,12 +1,12 @@
 use std::fs;
 
-use lean_eth::app::{build_genesis, load_config};
-use lean_eth::containers::state::State;
-use lean_eth::ssz::SszEncode;
+use peam::app::{build_genesis, load_config};
+use peam::containers::state::State;
+use peam::ssz::SszEncode;
 
 fn write_temp_config(contents: &str) -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
-    let filename = format!("lean_eth_config_{}.txt", std::process::id());
+    let filename = format!("peam_config_{}.txt", std::process::id());
     path.push(filename);
     fs::write(&path, contents).expect("write config");
     path

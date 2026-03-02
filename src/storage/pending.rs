@@ -29,27 +29,26 @@ pub(super) struct PendingEntry {
 ///
 /// Backed by `Box<[Option<PendingEntry>]>` and addressed by `slot % capacity`.
 /// The stored slot is checked to avoid false hits on wraparound.
+/// Entry count is tracked incrementally to avoid O(n) scans.
 pub(super) struct PendingSlotCache {
     /// Fixed table of pending entries; `None` means empty bucket.
     entries: Box<[Option<PendingEntry>]>,
+    /// Number of occupied buckets, maintained incrementally.
+    count: usize,
 }
 
 impl PendingSlotCache {
     /// Creates a new pending cache with `capacity` buckets.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `capacity == 0`.
     pub(super) fn new(capacity: usize) -> Self {
-        assert!(capacity > 0, "pending cache capacity must be > 0");
         Self {
             entries: vec![None; capacity].into_boxed_slice(),
+            count: 0,
         }
     }
 
     #[inline]
     pub(super) fn len(&self) -> usize {
-        self.entries.iter().filter(|entry| entry.is_some()).count()
+        self.count
     }
 
     #[inline]
@@ -71,6 +70,9 @@ impl PendingSlotCache {
     ) -> Option<PendingEntry> {
         let idx = self.index(slot);
         let prev = self.entries[idx];
+        if prev.is_none() {
+            self.count += 1;
+        }
         self.entries[idx] = Some(PendingEntry {
             slot,
             block_root,
@@ -101,6 +103,7 @@ impl PendingSlotCache {
                 if value.slot <= upper_inclusive {
                     out.push(value);
                     *entry = None;
+                    self.count -= 1;
                 }
             }
         }
@@ -117,6 +120,7 @@ impl PendingSlotCache {
             if let Some(value) = *entry {
                 if !keep(value.slot, value.block_root, value.state_root) {
                     *entry = None;
+                    self.count -= 1;
                 }
             }
         }

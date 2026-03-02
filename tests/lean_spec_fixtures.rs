@@ -2,16 +2,16 @@
 
 use std::path::PathBuf;
 
-use lean_eth::containers::block::BlockBody;
-use lean_eth::containers::block::BlockHeader;
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::config::Config;
-use lean_eth::containers::req_resp::BlocksByRootRequest;
-use lean_eth::containers::validator::ValidatorIndex;
-use lean_eth::ssz::{SszDecode, SszEncode};
-use lean_eth::types::bytes::Bytes32;
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::block::BlockBody;
+use peam::containers::block::BlockHeader;
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::config::Config;
+use peam::containers::req_resp::BlocksByRootRequest;
+use peam::containers::validator::ValidatorIndex;
+use peam::ssz::{SszDecode, SszEncode};
+use peam::types::bytes::Bytes32;
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 use serde_json::Value;
 
@@ -106,7 +106,7 @@ fn lean_spec_checkpoint_zero_fixture() {
     let root = entry["value"]["root"].as_str().expect("root");
     let slot = entry["value"]["slot"].as_u64().expect("slot");
     assert_eq!(decoded.root, bytes32_from_hex(root));
-    assert_eq!(decoded.slot, lean_eth::slot::Slot(Uint64(slot)));
+    assert_eq!(decoded.slot, peam::slot::Slot(Uint64(slot)));
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn lean_spec_checkpoint_typical_fixture() {
     let root = entry["value"]["root"].as_str().expect("root");
     let slot = entry["value"]["slot"].as_u64().expect("slot");
     assert_eq!(decoded.root, bytes32_from_hex(root));
-    assert_eq!(decoded.slot, lean_eth::slot::Slot(Uint64(slot)));
+    assert_eq!(decoded.slot, peam::slot::Slot(Uint64(slot)));
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn lean_spec_block_header_zero_fixture() {
     let state_root = entry["value"]["stateRoot"].as_str().expect("stateRoot");
     let body_root = entry["value"]["bodyRoot"].as_str().expect("bodyRoot");
 
-    assert_eq!(decoded.slot, lean_eth::slot::Slot(Uint64(slot)));
+    assert_eq!(decoded.slot, peam::slot::Slot(Uint64(slot)));
     assert_eq!(decoded.proposer_index, ValidatorIndex(Uint64(proposer)));
     assert_eq!(decoded.parent_root, bytes32_from_hex(parent_root));
     assert_eq!(decoded.state_root, bytes32_from_hex(state_root));
@@ -177,7 +177,7 @@ fn lean_spec_block_header_typical_fixture() {
     let state_root = entry["value"]["stateRoot"].as_str().expect("stateRoot");
     let body_root = entry["value"]["bodyRoot"].as_str().expect("bodyRoot");
 
-    assert_eq!(decoded.slot, lean_eth::slot::Slot(Uint64(slot)));
+    assert_eq!(decoded.slot, peam::slot::Slot(Uint64(slot)));
     assert_eq!(decoded.proposer_index, ValidatorIndex(Uint64(proposer)));
     assert_eq!(decoded.parent_root, bytes32_from_hex(parent_root));
     assert_eq!(decoded.state_root, bytes32_from_hex(state_root));

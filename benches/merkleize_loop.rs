@@ -2,8 +2,8 @@
 #![allow(clippy::manual_div_ceil)]
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use lean_eth::ssz::hash::{hash_nodes, merkleize_unsafe};
-use lean_eth::types::bytes::Bytes32;
+use peam::ssz::hash::{hash_nodes, merkleize_unsafe};
+use peam::types::bytes::Bytes32;
 
 fn merkleize_with_limit_while(chunks: &[Bytes32], limit: usize) -> Bytes32 {
     if limit == 0 {

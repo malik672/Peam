@@ -30,8 +30,12 @@ pub struct ForkChoiceStore {
     head_slot: u64,
     /// Most recently seen justified checkpoint (updated on every `on_block`).
     latest_justified: Checkpoint,
+    /// Previously seen justified checkpoint (set to old `latest_justified` on change).
+    previous_justified: Checkpoint,
     /// Most recently seen finalized checkpoint (updated on every `on_block`).
     latest_finalized: Checkpoint,
+    /// Total number of chain reorganizations detected.
+    reorgs_total: u64,
     /// Number of validators in the active registry.
     validator_count: usize,
     /// All imported blocks keyed by block root.
@@ -78,7 +82,9 @@ impl ForkChoiceStore {
             safe_target: root,
             head_slot: slot,
             latest_justified: anchor_state.latest_justified,
+            previous_justified: anchor_state.latest_justified,
             latest_finalized: anchor_state.latest_finalized,
+            reorgs_total: 0,
             validator_count: anchor_state.validators.data.len(),
             blocks,
             states,
@@ -125,8 +131,12 @@ impl ForkChoiceStore {
             apply_vote_to(&self.blocks, &mut self.latest_votes, att);
         }
         apply_vote_to(&self.blocks, &mut self.latest_votes, &proposer_attestation);
+        if post_state.latest_justified != self.latest_justified {
+            self.previous_justified = self.latest_justified;
+        }
         self.latest_justified = post_state.latest_justified;
         self.latest_finalized = post_state.latest_finalized;
+        let old_head = self.head;
         let head = self.find_head();
         if let Some(head_block) = self.blocks.get(&head) {
             self.head = head;
@@ -134,6 +144,16 @@ impl ForkChoiceStore {
         } else if slot > self.head_slot {
             self.head = root;
             self.head_slot = slot;
+        }
+        if self.head != old_head {
+            let new_parent = self
+                .parents
+                .get(&self.head)
+                .copied()
+                .unwrap_or(Bytes32::zero());
+            if new_parent != old_head {
+                self.reorgs_total += 1;
+            }
         }
         self.refresh_safe_target();
         Ok(())
@@ -159,10 +179,21 @@ impl ForkChoiceStore {
         for (validator_id, root) in pending {
             self.latest_votes.insert(validator_id, root);
         }
+        let old_head = self.head;
         let head = self.find_head();
         if let Some(head_block) = self.blocks.get(&head) {
             self.head = head;
             self.head_slot = head_block.message.block.slot.0.0;
+        }
+        if self.head != old_head {
+            let new_parent = self
+                .parents
+                .get(&self.head)
+                .copied()
+                .unwrap_or(Bytes32::zero());
+            if new_parent != old_head {
+                self.reorgs_total += 1;
+            }
         }
         self.refresh_safe_target();
     }
@@ -315,6 +346,26 @@ impl ForkChoiceStore {
     #[inline]
     pub fn safe_target(&self) -> Bytes32 {
         self.safe_target
+    }
+
+    #[inline]
+    pub fn head_slot(&self) -> u64 {
+        self.head_slot
+    }
+
+    #[inline]
+    pub fn previous_justified(&self) -> Checkpoint {
+        self.previous_justified
+    }
+
+    #[inline]
+    pub fn reorgs_total(&self) -> u64 {
+        self.reorgs_total
+    }
+
+    #[inline]
+    pub fn validator_count(&self) -> usize {
+        self.validator_count
     }
 }
 

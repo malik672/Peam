@@ -485,23 +485,13 @@ impl State {
         Ok(())
     }
 
-    /// Imports a signed block, dispatching to the appropriate [`SignatureVerifier`]
-    /// based on the active feature flags.
+    /// Imports a signed block using the canonical post-quantum verifier.
     pub fn process_signed_block(
         &mut self,
         signed: &SignedBlockWithAttestation,
     ) -> Result<(), String> {
-        #[cfg(feature = "pq_crypto")]
-        {
-            let verifier = PqSignatureVerifier;
-            self.process_signed_block_with_verifier(signed, &verifier)
-        }
-
-        #[cfg(not(feature = "pq_crypto"))]
-        {
-            let verifier = StructuralSignatureVerifier;
-            self.process_signed_block_with_verifier(signed, &verifier)
-        }
+        let verifier = PqSignatureVerifier;
+        self.process_signed_block_with_verifier(signed, &verifier)
     }
 
     /// Imports a signed block using the provided [`SignatureVerifier`].
@@ -619,45 +609,59 @@ impl SignatureVerifier for StructuralSignatureVerifier {
 
 /// A [`SignatureVerifier`] that performs full post-quantum aggregate-signature
 /// verification for each attestation and the block proposer.
-///
-/// Only compiled when the `pq_crypto` feature is enabled.
 pub struct PqSignatureVerifier;
 
 impl SignatureVerifier for PqSignatureVerifier {
     fn verify_signed_block(
         &self,
-        _signed: &SignedBlockWithAttestation,
-        _state: &State,
+        signed: &SignedBlockWithAttestation,
+        state: &State,
     ) -> Result<(), String> {
-        let signed = _signed;
-        let state = _state;
-        let block = &signed.message.block;
-        pq::setup_aggregate_verifier();
+        static PQ_AGG_VERIFIER_INIT: std::sync::Once = std::sync::Once::new();
+        PQ_AGG_VERIFIER_INIT.call_once(pq::setup_aggregate_verifier);
 
-        for (att, proof) in block
-            .body
-            .attestations
-            .data
-            .iter()
-            .zip(signed.signature.attestation_signatures.data.iter())
-        {
+        let block = &signed.message.block;
+        let attestations = &block.body.attestations.data;
+        let proofs = &signed.signature.attestation_signatures.data;
+        if attestations.len() != proofs.len() {
+            return Err(format!(
+                "attestation signatures count {} does not match attestations {}",
+                proofs.len(),
+                attestations.len()
+            ));
+        }
+
+        let validators = &state.validators.data;
+        let mut public_keys = Vec::new();
+
+        for (att, proof) in attestations.iter().zip(proofs.iter()) {
             if proof.participants != att.aggregation_bits {
                 return Err(
                     "attestation signature participants do not match aggregation bits".to_string(),
                 );
             }
-            let mut public_keys = Vec::new();
-            for idx in set_bits(&att.aggregation_bits) {
-                let validator = state
-                    .validators
-                    .data
-                    .get(idx)
-                    .ok_or_else(|| "validator index out of range".to_string())?;
-                public_keys.push(validator.pubkey);
+
+            public_keys.clear();
+            let bit_len = att.aggregation_bits.len();
+            for (byte_idx, byte) in att.aggregation_bits.data.iter().copied().enumerate() {
+                let mut remaining = byte;
+                while remaining != 0 {
+                    let bit = remaining.trailing_zeros() as usize;
+                    let idx = byte_idx * 8 + bit;
+                    if idx >= bit_len {
+                        break;
+                    }
+                    let validator = validators
+                        .get(idx)
+                        .ok_or_else(|| "validator index out of range".to_string())?;
+                    public_keys.push(validator.pubkey);
+                    remaining &= remaining - 1;
+                }
             }
+
             if !public_keys.is_empty() {
                 let message = att.data.hash_tree_root();
-                pq::verify_aggregate_signature(
+                pq::verify_aggregate_signature_no_check(
                     &public_keys,
                     &message,
                     proof.proof_data.as_slice(),
@@ -668,9 +672,7 @@ impl SignatureVerifier for PqSignatureVerifier {
 
         let proposer_attestation = &signed.message.proposer_attestation;
         let proposer_idx = block.proposer_index.0.0 as usize;
-        let proposer = state
-            .validators
-            .data
+        let proposer = validators
             .get(proposer_idx)
             .ok_or_else(|| "proposer index out of range".to_string())?;
         let proposer_message = proposer_attestation.data.hash_tree_root();
@@ -685,6 +687,7 @@ impl SignatureVerifier for PqSignatureVerifier {
 }
 
 /// Returns the indices of all set bits in `bits`, in ascending order.
+#[inline]
 fn set_bits<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
     let len = bits.len();

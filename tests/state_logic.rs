@@ -1,19 +1,19 @@
-use lean_eth::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
-use lean_eth::containers::block::{
+use peam::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
+use peam::containers::block::{
     AttestationSignatures, Attestations, Block, BlockBody, BlockHeader, BlockSignatures,
     BlockWithAttestation, SignedBlockWithAttestation,
 };
-use lean_eth::containers::checkpoint::Checkpoint;
-use lean_eth::containers::state::{SignatureVerifier, State, Validators};
-use lean_eth::containers::validator::{Validator, ValidatorIndex};
-use lean_eth::slot::Slot;
-use lean_eth::ssz::HashTreeRoot;
-use lean_eth::types::bitlist::BitList;
-use lean_eth::types::bytes::ByteList;
-use lean_eth::types::bytes::Bytes3112;
-use lean_eth::types::bytes::{Bytes32, Bytes52};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::checkpoint::Checkpoint;
+use peam::containers::state::{SignatureVerifier, State, Validators};
+use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::slot::Slot;
+use peam::ssz::HashTreeRoot;
+use peam::types::bitlist::BitList;
+use peam::types::bytes::ByteList;
+use peam::types::bytes::Bytes3112;
+use peam::types::bytes::{Bytes32, Bytes52};
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 #[test]
 fn process_slots_advances_state_and_sets_root() {
@@ -267,7 +267,7 @@ fn signed_block_signature_count_mismatch() {
         message,
         signature: BlockSignatures {
             attestation_signatures: sigs,
-            proposer_signature: lean_eth::types::bytes::Bytes3112::zero(),
+            proposer_signature: peam::types::bytes::Bytes3112::zero(),
         },
     };
 
@@ -307,7 +307,7 @@ fn signed_block_proposer_attestation_slot_mismatch() {
         message,
         signature: BlockSignatures {
             attestation_signatures: SszList::new(vec![]).expect("signatures"),
-            proposer_signature: lean_eth::types::bytes::Bytes3112::zero(),
+            proposer_signature: peam::types::bytes::Bytes3112::zero(),
         },
     };
 

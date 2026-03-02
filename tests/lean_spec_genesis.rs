@@ -1,13 +1,13 @@
 #![allow(clippy::uninit_vec)]
 
-use lean_eth::containers::block::{Attestations, BlockBody};
-use lean_eth::containers::state::{GENESIS_BLOCK_HEADER_ROOT_BYTES, State, Validators};
-use lean_eth::containers::validator::{Validator, ValidatorIndex};
-use lean_eth::slot::Slot;
-use lean_eth::ssz::HashTreeRoot;
-use lean_eth::types::bytes::{Bytes32, Bytes52};
-use lean_eth::types::collections::SszList;
-use lean_eth::types::uint::Uint64;
+use peam::containers::block::{Attestations, BlockBody};
+use peam::containers::state::{GENESIS_BLOCK_HEADER_ROOT_BYTES, State, Validators};
+use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::slot::Slot;
+use peam::ssz::HashTreeRoot;
+use peam::types::bytes::{Bytes32, Bytes52};
+use peam::types::collections::SszList;
+use peam::types::uint::Uint64;
 
 fn make_validators(n: usize) -> Validators {
     let mut vals: Vec<Validator> = Vec::with_capacity(n);

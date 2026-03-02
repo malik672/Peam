@@ -2,17 +2,28 @@ use crate::ssz::hash::{chunkify_fixed, hash_nodes, mix_in_length};
 use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::unsafe_vec::write_bytes_at;
 
+/// 32-byte fixed-size value. Used for block roots, state roots, and all
+/// Merkle tree outputs. SSZ `hash_tree_root` returns the inner bytes directly
+/// (identity — a single chunk is already its own root).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Bytes32([u8; 32]);
 
+/// 52-byte fixed-size value. Holds a post-quantum (XMSS) public key.
+/// SSZ hash_tree_root splits into two 32-byte chunks (left: bytes 0..32,
+/// right: bytes 32..52 zero-padded) and hashes the pair.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Bytes52([u8; 52]);
 
+/// Variable-length byte list bounded by `LIMIT`. SSZ-encoded as raw bytes;
+/// hash_tree_root chunkifies, merkleizes to `ceil(LIMIT/32)` leaves, then
+/// mixes in the actual length.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ByteList<const LIMIT: usize> {
     pub data: Vec<u8>,
 }
 
+/// 3112-byte fixed-size value. Holds a post-quantum (XMSS) signature.
+/// SSZ hash_tree_root chunkifies into 98 chunks and merkleizes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Bytes3112([u8; 3112]);
 
@@ -151,6 +162,7 @@ impl<const LIMIT: usize> ByteList<LIMIT> {
 }
 
 impl<const LIMIT: usize> HashTreeRoot for ByteList<LIMIT> {
+    #[inline]
     fn hash_tree_root(&self) -> [u8; 32] {
         let chunks = chunkify_fixed(&self.data);
         let limit_chunks = (LIMIT + 31) / 32;

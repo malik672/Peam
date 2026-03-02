@@ -1,3 +1,34 @@
+//! Low-level redb wrapper for `canonical.redb`.
+//!
+//! This is the only module that talks directly to redb. [`FileStore`] delegates
+//! all disk I/O here and never opens tables or transactions itself.
+//!
+//! # Tables
+//!
+//! ```text
+//! ┌────────────────────────────┬──────────────┬───────────────────────────┐
+//! │ Table                      │ Key          │ Value                     │
+//! ├────────────────────────────┼──────────────┼───────────────────────────┤
+//! │ canonical_state_slot       │ u64 (slot)   │ [u8] (Bytes32 root)       │
+//! │ canonical_block_slot       │ u64 (slot)   │ [u8] (Bytes32 root)       │
+//! │ canonical_meta             │ &str (key)   │ [u8] (Bytes32 root)       │
+//! │ canonical_state_blob       │ [u8] (root)  │ [u8] (LEANSTRG envelope)  │
+//! │ canonical_block_blob       │ [u8] (root)  │ [u8] (LEANSTRG envelope)  │
+//! │ canonical_signed_block_blob│ [u8] (root)  │ [u8] (LEANSTRG envelope)  │
+//! └────────────────────────────┴──────────────┴───────────────────────────┘
+//! ```
+//!
+//! Slot tables map `slot → root` (canonical index). Blob tables map
+//! `root → envelope` (the actual serialized data). Meta stores three
+//! string-keyed roots: `"head"`, `"finalized"`, `"justified"`.
+//!
+//! # Transaction model
+//!
+//! - Reads use `begin_read` (shared, lock-free on redb).
+//! - Single-blob writes use `begin_write` + commit (one table touched).
+//! - [`persist_snapshot`] and [`persist_signed_block_bundle`] batch multiple
+//!   table writes into a single `begin_write` → commit for atomicity.
+
 use std::path::Path;
 
 use rapidhash::RapidHashMap;
@@ -5,35 +36,82 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use super::Bytes32;
 
+/// Canonical state slot index: `slot → Bytes32 state root`.
 const STATE_SLOT_TABLE: TableDefinition<'static, u64, &'static [u8]> =
     TableDefinition::new("canonical_state_slot");
+/// Canonical block slot index: `slot → Bytes32 block root`.
 const BLOCK_SLOT_TABLE: TableDefinition<'static, u64, &'static [u8]> =
     TableDefinition::new("canonical_block_slot");
+/// Fork-choice metadata: `"head"|"finalized"|"justified" → Bytes32 root`.
 const META_TABLE: TableDefinition<'static, &'static str, &'static [u8]> =
     TableDefinition::new("canonical_meta");
+/// State blobs keyed by root: `Bytes32 state_root → LEANSTRG envelope`.
 const STATE_BLOB_TABLE: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("canonical_state_blob");
+/// Block blobs keyed by root: `Bytes32 block_root → LEANSTRG envelope`.
 const BLOCK_BLOB_TABLE: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("canonical_block_blob");
+/// Signed block blobs keyed by root: `Bytes32 block_root → LEANSTRG envelope`.
 const SIGNED_BLOCK_BLOB_TABLE: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("canonical_signed_block_blob");
 
+/// Thin wrapper around a single `redb::Database` file (`canonical.redb`).
+///
+/// All methods are synchronous and operate on a single redb `Database` handle.
+/// Thread safety comes from redb's internal locking (single-writer, multi-reader).
 pub(super) struct CanonicalDb {
     db: Database,
 }
 
 impl CanonicalDb {
+    /// Opens an existing redb file or creates a new one at `path`.
+    ///
+    /// Table creation (`ensure_tables`) only runs when the DB is first created.
+    /// Existing DBs skip the write txn entirely, avoiding the lock acquisition
+    /// + commit overhead on cold open.
     pub(super) fn open(path: &Path) -> Result<Self, String> {
-        let db = if path.exists() {
-            Database::open(path).map_err(to_string)?
-        } else {
+        let is_new = !path.exists();
+        let db = if is_new {
             Database::create(path).map_err(to_string)?
+        } else {
+            Database::open(path).map_err(to_string)?
         };
         let out = Self { db };
-        out.ensure_tables()?;
+        if is_new {
+            // Fresh DB: create all tables once.
+            out.ensure_tables()?;
+        } else if !out.tables_exist() {
+            // Existing DB: avoid a write txn on the hot open path.
+            // Only repair if a table is actually missing.
+            out.ensure_tables()?;
+        }
         Ok(out)
     }
 
+    /// Fast existence check for all canonical tables using a read txn.
+    ///
+    /// Returns `false` when any table is missing or unreadable, allowing
+    /// [`open`] to run one-time repair via [`ensure_tables`].
+    #[inline]
+    fn tables_exist(&self) -> bool {
+        let Ok(read_txn) = self.db.begin_read() else {
+            return false;
+        };
+        read_txn.open_table(STATE_SLOT_TABLE).is_ok()
+            && read_txn.open_table(BLOCK_SLOT_TABLE).is_ok()
+            && read_txn.open_table(META_TABLE).is_ok()
+            && read_txn.open_table(STATE_BLOB_TABLE).is_ok()
+            && read_txn.open_table(BLOCK_BLOB_TABLE).is_ok()
+            && read_txn.open_table(SIGNED_BLOCK_BLOB_TABLE).is_ok()
+    }
+
+    /// Creates all 6 tables if they don't already exist.
+    ///
+    /// redb's `open_table` inside a write txn is idempotent — it creates the
+    /// table on first call and returns the existing handle on subsequent calls.
+    /// The write txn + commit is the cost paid on every `open()`, even when
+    /// the DB is already fully initialized.
+    #[inline]
     fn ensure_tables(&self) -> Result<(), String> {
         let write_txn = self.db.begin_write().map_err(to_string)?;
         {
@@ -49,14 +127,21 @@ impl CanonicalDb {
         write_txn.commit().map_err(to_string)
     }
 
+    /// Loads the full `canonical_state_slot` table into a `RapidHashMap`.
+    /// Called once at startup by [`FileStore::load_from_disk`].
     pub(super) fn load_state_index(&self) -> Result<RapidHashMap<u64, Bytes32>, String> {
         self.load_slot_index(STATE_SLOT_TABLE)
     }
 
+    /// Loads the full `canonical_block_slot` table into a `RapidHashMap`.
+    /// Called once at startup by [`FileStore::load_from_disk`].
     pub(super) fn load_block_index(&self) -> Result<RapidHashMap<u64, Bytes32>, String> {
         self.load_slot_index(BLOCK_SLOT_TABLE)
     }
 
+    /// Generic slot-index loader. Opens a read txn, iterates every row in the
+    /// B-tree, and builds a `slot → Bytes32` hashmap. Cost is proportional
+    /// to the number of canonical rows (one B-tree scan).
     fn load_slot_index(
         &self,
         table_def: TableDefinition<'static, u64, &'static [u8]>,
@@ -66,12 +151,12 @@ impl CanonicalDb {
         let mut out = RapidHashMap::default();
         for row in table.iter().map_err(to_string)? {
             let (slot, root_bytes) = row.map_err(to_string)?;
-            let root = bytes_to_root(root_bytes.value())?;
-            out.insert(slot.value(), root);
+            out.insert(slot.value(), bytes_to_root(root_bytes.value())?);
         }
         Ok(out)
     }
 
+    /// Replaces the entire `canonical_state_slot` table with `index`.
     pub(super) fn persist_state_index(
         &self,
         index: &RapidHashMap<u64, Bytes32>,
@@ -79,6 +164,7 @@ impl CanonicalDb {
         self.persist_slot_index(STATE_SLOT_TABLE, index)
     }
 
+    /// Replaces the entire `canonical_block_slot` table with `index`.
     pub(super) fn persist_block_index(
         &self,
         index: &RapidHashMap<u64, Bytes32>,
@@ -86,6 +172,9 @@ impl CanonicalDb {
         self.persist_slot_index(BLOCK_SLOT_TABLE, index)
     }
 
+    /// Destructive rewrite of a slot index table: clears all existing rows
+    /// via [`clear_u64_table`] (repeated `pop_first`), then inserts every
+    /// entry from the in-memory hashmap. Single write txn for atomicity.
     fn persist_slot_index(
         &self,
         table_def: TableDefinition<'static, u64, &'static [u8]>,
@@ -104,27 +193,40 @@ impl CanonicalDb {
         write_txn.commit().map_err(to_string)
     }
 
+    /// Reads fork-choice metadata from `canonical_meta`.
+    ///
+    /// Returns `(head, finalized, justified)` as optional roots. A missing
+    /// key yields `None` for that position (normal for a fresh DB).
     pub(super) fn load_meta(
         &self,
     ) -> Result<(Option<Bytes32>, Option<Bytes32>, Option<Bytes32>), String> {
         let read_txn = self.db.begin_read().map_err(to_string)?;
         let table = read_txn.open_table(META_TABLE).map_err(to_string)?;
 
-        let head = match table.get("head").map_err(to_string)? {
-            Some(v) => Some(bytes_to_root(v.value())?),
-            None => None,
-        };
-        let finalized = match table.get("finalized").map_err(to_string)? {
-            Some(v) => Some(bytes_to_root(v.value())?),
-            None => None,
-        };
-        let justified = match table.get("justified").map_err(to_string)? {
-            Some(v) => Some(bytes_to_root(v.value())?),
-            None => None,
-        };
+        let head = table
+            .get("head")
+            .map_err(to_string)?
+            .map(|v| bytes_to_root(v.value()))
+            .transpose()?;
+        let finalized = table
+            .get("finalized")
+            .map_err(to_string)?
+            .map(|v| bytes_to_root(v.value()))
+            .transpose()?;
+        let justified = table
+            .get("justified")
+            .map_err(to_string)?
+            .map(|v| bytes_to_root(v.value()))
+            .transpose()?;
         Ok((head, finalized, justified))
     }
 
+    /// Atomic full-snapshot write: clears and rewrites both slot index tables
+    /// and upserts all three metadata keys in a single write transaction.
+    ///
+    /// Called by [`FileStore::flush_canonical`] when dirty flags are set.
+    /// This is the "full rewrite" path — every canonical row is written,
+    /// not just deltas.
     pub(super) fn persist_snapshot(
         &self,
         state_index: &RapidHashMap<u64, Bytes32>,
@@ -161,6 +263,17 @@ impl CanonicalDb {
         write_txn.commit().map_err(to_string)
     }
 
+    /// Atomic delta write for the hot `put_signed_block` path.
+    ///
+    /// Unlike [`persist_snapshot`] this does **not** clear-and-rewrite the
+    /// slot tables. Instead it:
+    /// 1. Inserts the three blobs (state, block, signed block) by root.
+    /// 2. Upserts only the changed slot→root rows (`state_upserts`,
+    ///    `block_upserts`) — the new block plus any promoted pending entries.
+    /// 3. Upserts metadata (head, finalized, justified).
+    ///
+    /// All writes happen in a single `begin_write` → `commit` so either
+    /// everything lands on disk or nothing does.
     pub(super) fn persist_signed_block_bundle(
         &self,
         block_root: Bytes32,
@@ -220,39 +333,68 @@ impl CanonicalDb {
         write_txn.commit().map_err(to_string)
     }
 
-    pub(super) fn load_state_blob(&self, root: Bytes32) -> Result<Option<Vec<u8>>, String> {
-        self.load_blob(STATE_BLOB_TABLE, root)
+    /// Zero-copy state blob decode: reads from redb mmap and decodes via `f`
+    /// without any intermediate heap allocation.
+    pub(super) fn with_state_blob<T>(
+        &self,
+        root: Bytes32,
+        f: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        self.with_blob(STATE_BLOB_TABLE, root, f)
     }
 
-    pub(super) fn load_block_blob(&self, root: Bytes32) -> Result<Option<Vec<u8>>, String> {
-        self.load_blob(BLOCK_BLOB_TABLE, root)
+    /// Zero-copy block blob decode.
+    pub(super) fn with_block_blob<T>(
+        &self,
+        root: Bytes32,
+        f: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        self.with_blob(BLOCK_BLOB_TABLE, root, f)
     }
 
-    pub(super) fn load_signed_block_blob(&self, root: Bytes32) -> Result<Option<Vec<u8>>, String> {
-        self.load_blob(SIGNED_BLOCK_BLOB_TABLE, root)
+    /// Zero-copy signed-block blob decode.
+    pub(super) fn with_signed_block_blob<T>(
+        &self,
+        root: Bytes32,
+        f: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        self.with_blob(SIGNED_BLOCK_BLOB_TABLE, root, f)
     }
 
+    /// Writes a state blob (already LEANSTRG-wrapped) keyed by state root.
+    /// Used by [`FileStore::put_state`] for individual state persistence.
     pub(super) fn persist_state_blob(&self, root: Bytes32, encoded: &[u8]) -> Result<(), String> {
         self.persist_blob(STATE_BLOB_TABLE, root, encoded)
     }
 
+    /// Writes a block blob (already LEANSTRG-wrapped) keyed by block root.
+    /// Used by [`FileStore::put_block`] for individual block persistence.
     pub(super) fn persist_block_blob(&self, root: Bytes32, encoded: &[u8]) -> Result<(), String> {
         self.persist_blob(BLOCK_BLOB_TABLE, root, encoded)
     }
 
-    fn load_blob(
+    /// Zero-copy blob read: opens a read txn, looks up the key, and passes
+    /// the raw mmap `&[u8]` directly to `f` — no `.to_vec()`, no heap alloc.
+    /// The closure runs while the redb read guard is alive.
+    #[inline]
+    fn with_blob<T>(
         &self,
         table_def: TableDefinition<'static, &'static [u8], &'static [u8]>,
         root: Bytes32,
-    ) -> Result<Option<Vec<u8>>, String> {
+        f: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, String> {
         let read_txn = self.db.begin_read().map_err(to_string)?;
         let table = read_txn.open_table(table_def).map_err(to_string)?;
-        Ok(table
-            .get(root.as_array().as_slice())
-            .map_err(to_string)?
-            .map(|value| value.value().to_vec()))
+        match table.get(root.as_array().as_slice()).map_err(to_string)? {
+            Some(guard) => Ok(f(guard.value())),
+            None => Ok(None),
+        }
     }
 
+    /// Generic single-blob write: `begin_write` → `insert` → `commit`.
+    ///
+    /// Used for individual `put_state` / `put_block` calls (not the hot
+    /// `put_signed_block` path which uses [`persist_signed_block_bundle`]).
     fn persist_blob(
         &self,
         table_def: TableDefinition<'static, &'static [u8], &'static [u8]>,
@@ -270,6 +412,8 @@ impl CanonicalDb {
     }
 }
 
+/// Converts a raw `&[u8]` from redb into a `Bytes32`. Rejects non-32-byte slices.
+#[inline]
 fn bytes_to_root(raw: &[u8]) -> Result<Bytes32, String> {
     if raw.len() != 32 {
         return Err("canonical db root length must be 32".to_string());
@@ -279,16 +423,22 @@ fn bytes_to_root(raw: &[u8]) -> Result<Bytes32, String> {
     Ok(Bytes32::from(out))
 }
 
+/// Adapter to convert any `Display` error into `String` for `map_err`.
 #[inline]
 fn to_string<E: core::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
+/// Removes all rows from a `u64`-keyed table by draining via `pop_first`.
+///
+/// redb has no `TRUNCATE`-equivalent, so this pops one row at a time.
+/// Cost is `O(n)` in the number of existing rows.
 fn clear_u64_table(table: &mut redb::Table<'_, u64, &'static [u8]>) -> Result<(), String> {
     while table.pop_first().map_err(to_string)?.is_some() {}
     Ok(())
 }
 
+/// Inserts a metadata key if `value` is `Some`, removes it if `None`.
 fn upsert_or_remove_meta(
     table: &mut redb::Table<'_, &'static str, &'static [u8]>,
     key: &'static str,

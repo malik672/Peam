@@ -1,9 +1,9 @@
-use lean_eth::slot::{
+use peam::slot::{
     INTERVALS_PER_SLOT, SLOT_DURATION_MILLIS, SLOT_DURATION_SECS, SLOT_INTERVAL_MILLIS, Slot,
     interval_index_from_unix_millis, is_justifiable_after, justified_index_after,
     next_slot_boundary_delay, slot_index_from_unix_millis, slot_index_from_unix_secs,
 };
-use lean_eth::types::uint::Uint64;
+use peam::types::uint::Uint64;
 
 #[test]
 fn justified_index_after_basic() {

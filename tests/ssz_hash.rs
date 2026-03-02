@@ -1,5 +1,5 @@
-use lean_eth::ssz::hash::{merkleize_tree_root, merkleize_unsafe};
-use lean_eth::types::bytes::Bytes32;
+use peam::ssz::hash::{merkleize_tree_root, merkleize_unsafe};
+use peam::types::bytes::Bytes32;
 
 #[test]
 fn merkleize_tree_root_matches_merkleize_unsafe_for_5_fields() {

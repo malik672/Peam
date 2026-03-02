@@ -1,5 +1,5 @@
 [package]
-name = "lean_eth"
+name = "peam"
 version = "0.1.0"
 edition = "2024"
 
@@ -14,15 +14,25 @@ libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux"
 futures = "0.3"
 async-trait = "0.1"
 libp2p-swarm-derive = "0.35.1"
-leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "73bedc26ed961b110df7ac2e234dc11361a4bf25", optional = true }
-ssz = { package = "ethereum_ssz", version = "0.10.1", optional = true }
-
-[features]
-default = []
-pq_crypto = ["leansig", "ssz"]
+leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "73bedc26ed961b110df7ac2e234dc11361a4bf25" }
+lean-multisig = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "e4474138487eeb1ed7c2e1013674fe80ac9f3165" }
+ssz = { package = "ethereum_ssz", version = "0.10.1" }
+rand = { version = "0.9" }
 
 [patch."https://github.com/leanEthereum/fiat-shamir.git"]
 fiat-shamir = { path = "./fiat-shamir" }
+
+[patch."https://github.com/leanEthereum/multilinear-toolkit.git"]
+multilinear-toolkit = { path = "../ream/vendor/multilinear-toolkit" }
+
+[patch."https://github.com/leanEthereum/leanMultisig.git"]
+lean-multisig = { path = "../ream/vendor/leanMultisig" }
+
+[patch."https://github.com/TomWambsgans/whir-p3"]
+whir-p3 = { path = "./whir-p3" }
+
+[patch."https://github.com/TomWambsgans/whir-p3.git"]
+whir-p3 = { path = "./whir-p3" }
 
 [build-dependencies]
 sha2 = "0.10"
@@ -64,4 +74,16 @@ harness = false
 
 [[bench]]
 name = "index_text_strategy"
+harness = false
+
+[[bench]]
+name = "pq_signature_baseline"
+harness = false
+
+[[bench]]
+name = "proposal_head_pending"
+harness = false
+
+[[bench]]
+name = "verify_signed_block_gather"
 harness = false

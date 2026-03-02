@@ -2,9 +2,15 @@ use std::fs;
 use std::path::Path;
 
 use crate::containers::config::Config;
-use crate::containers::state::State;
+use crate::containers::state::{State, Validators};
+use crate::containers::validator::{Validator, ValidatorIndex};
 use crate::ssz::SszFixedLen;
+use crate::types::bytes::Bytes52;
 use crate::types::uint::Uint64;
+use crate::unsafe_vec::write_at;
+
+/// Default validator-set size used when config does not specify `validator_count`.
+pub const DEFAULT_VALIDATOR_COUNT: usize = 5;
 
 /// Runtime settings for a [`Node`], parsed from the config file.
 ///
@@ -27,6 +33,8 @@ use crate::types::uint::Uint64;
 /// | `topic_validators`          | block + attestation validators               |
 /// | `max_gossip_bytes`          | `2_000_000`                                  |
 /// | `max_reqresp_bytes`         | `4_000_000`                                  |
+/// | `validator_count`           | `5`                                          |
+/// | `local_validator_index`     | `0`                                          |
 /// | `storage_dir`               | `None` (resolved to `data_dir/store`)        |
 #[derive(Clone, Debug)]
 pub struct NodeSettings {
@@ -58,6 +66,10 @@ pub struct NodeSettings {
     pub max_gossip_bytes: usize,
     /// Maximum byte size of a request/response message.
     pub max_reqresp_bytes: usize,
+    /// Number of validators used when building genesis.
+    pub validator_count: usize,
+    /// Local validator index used for runtime signing/proposing in devnet mode.
+    pub local_validator_index: u64,
     /// Optional override for the block store directory.
     /// Relative paths are resolved against `data_dir`; `None` defaults to
     /// `data_dir/store`.
@@ -172,6 +184,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             ],
             max_gossip_bytes: 2_000_000,
             max_reqresp_bytes: 4_000_000,
+            validator_count: DEFAULT_VALIDATOR_COUNT,
+            local_validator_index: 0,
             storage_dir: None,
         };
         return Ok((config, settings));
@@ -194,6 +208,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut topic_validators: Vec<(String, crate::networking::GossipValidatorKind)> = Vec::new();
     let mut max_gossip_bytes: Option<usize> = None;
     let mut max_reqresp_bytes: Option<usize> = None;
+    let mut validator_count: Option<usize> = None;
+    let mut local_validator_index: Option<u64> = None;
     let mut storage_dir: Option<String> = None;
 
     for line in text.lines() {
@@ -309,6 +325,20 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     .parse::<usize>()
                     .map_err(|err| format!("Invalid max_reqresp_bytes {value}: {err}"))?,
             );
+        } else if key == "validator_count" {
+            let parsed = value
+                .parse::<usize>()
+                .map_err(|err| format!("Invalid validator_count {value}: {err}"))?;
+            if parsed == 0 {
+                return Err("Invalid validator_count 0: must be > 0".to_string());
+            }
+            validator_count = Some(parsed);
+        } else if key == "local_validator_index" {
+            local_validator_index = Some(
+                value
+                    .parse::<u64>()
+                    .map_err(|err| format!("Invalid local_validator_index {value}: {err}"))?,
+            );
         } else if key == "storage_dir" {
             if !value.is_empty() {
                 storage_dir = Some(value.to_string());
@@ -354,6 +384,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             ],
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
+            local_validator_index: local_validator_index.unwrap_or(0),
             storage_dir,
         }
     } else {
@@ -372,6 +404,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             topic_validators,
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
+            local_validator_index: local_validator_index.unwrap_or(0),
             storage_dir,
         }
     };
@@ -380,9 +414,49 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
 
 /// Construct a genesis [`State`] from the given chain [`Config`].
 ///
-/// Delegates to [`State::generate_genesis_empty`], which produces an empty
-/// validator set with all checkpoints at slot 0.
+/// Builds a genesis state using the default validator count.
 #[inline]
 pub fn build_genesis(config: Config) -> Result<State, String> {
-    Ok(State::generate_genesis_empty(config.genesis_time))
+    build_genesis_with_validator_count(config, DEFAULT_VALIDATOR_COUNT)
+}
+
+/// Builds a genesis state using `validator_count` deterministic validators.
+#[inline]
+pub fn build_genesis_with_validator_count(
+    config: Config,
+    validator_count: usize,
+) -> Result<State, String> {
+    if validator_count == 0 {
+        return Err("validator_count must be > 0".to_string());
+    }
+    let validators = build_devnet_validators(validator_count);
+    Ok(State::generate_genesis(config.genesis_time, validators))
+}
+
+#[inline]
+fn build_devnet_validators(validator_count: usize) -> Validators {
+    let mut validators = Vec::with_capacity(validator_count);
+    // SAFETY:
+    // - capacity is pre-allocated to `validator_count`.
+    // - each slot in [0, validator_count) is written exactly once below.
+    unsafe { validators.set_len(validator_count) };
+    for i in 0..validator_count {
+        let mut pubkey = [0u8; 52];
+        // Deterministic placeholder key material for local devnet topology.
+        pubkey[0] = 0xD1;
+        pubkey[1] = i as u8;
+        // SAFETY: `i < validator_count`, so index is in-bounds of initialized len.
+        unsafe {
+            write_at(
+                &mut validators,
+                i,
+                Validator {
+                    pubkey: Bytes52::from(pubkey),
+                    index: ValidatorIndex(Uint64(i as u64)),
+                    balance: Uint64(0),
+                },
+            )
+        };
+    }
+    Validators::new(validators).expect("devnet validator set")
 }

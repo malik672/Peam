@@ -2,6 +2,14 @@ use crate::ssz::hash::{BYTES_PER_CHUNK, chunkify_fixed, merkleize_with_limit, mi
 use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode};
 use crate::types::bytes::Bytes32;
 
+/// Variable-length bitfield bounded by `LIMIT` bits. Used for attestation
+/// aggregation bits.
+///
+/// Backed by packed `Vec<u8>` with the bit count tracked in `len`.
+/// SSZ wire format appends a sentinel 1-bit after the last data bit to
+/// encode the length. hash_tree_root merkleizes the packed bytes (without
+/// sentinel) to `ceil(LIMIT / 256)` chunk leaves, then mixes in `len`.
+///
 /// Safety: callers must validate bit lengths and limits before construction/decoding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BitList<const LIMIT: usize> {
@@ -84,7 +92,10 @@ impl<const LIMIT: usize> BitList<LIMIT> {
     }
 }
 
-/// Safety: callers must validate bit lengths before construction/decoding.
+/// Fixed-length bitfield of exactly `LENGTH` bits. Unlike `BitList`, no sentinel
+/// bit is used on the wire — the byte length is always `ceil(LENGTH / 8)`.
+/// hash_tree_root merkleizes the packed bytes to `ceil(LENGTH / 256)` chunk leaves
+/// (no mix-in-length since the size is fixed).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BitVector<const LENGTH: usize> {
     pub data: Vec<u8>,
@@ -170,6 +181,7 @@ impl<const LIMIT: usize> SszDecode for BitList<LIMIT> {
 }
 
 impl<const LIMIT: usize> HashTreeRoot for BitList<LIMIT> {
+    #[inline]
     fn hash_tree_root(&self) -> [u8; 32] {
         let packed = self.data.clone();
         let chunks = chunkify_fixed(&packed);
