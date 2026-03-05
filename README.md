@@ -12,6 +12,25 @@ cargo build
 cargo test
 ```
 
+## Docker
+Build from the monorepo root (`../`) so patched path dependencies are available in build context.
+
+```bash
+# from repo root
+make docker-build-peam
+```
+
+Default image tags:
+- `ghcr.io/leanethereum/peam:latest`
+- `ghcr.io/leanethereum/peam:latest-devnet2`
+
+For multi-arch push with OCI labels (`org.opencontainers.*`):
+
+```bash
+# from repo root
+make docker-buildx-push-peam
+```
+
 ## Devnet status
 - Currently devenet 2
 

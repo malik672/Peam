@@ -1,0 +1,1326 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "lean_current_slot or lean_state_slot",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Slot",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "lean_head_slot",
+          "refId": "A"
+        }
+      ],
+      "title": "Head Slot",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "lean_justified_slot or lean_latest_justified_slot",
+          "refId": "A"
+        }
+      ],
+      "title": "Justified Slot",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "lean_finalized_slot or lean_latest_finalized_slot",
+          "refId": "A"
+        }
+      ],
+      "title": "Finalized Slot",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "lean_head_slot",
+          "legendFormat": "head",
+          "refId": "A"
+        },
+        {
+          "expr": "lean_justified_slot or lean_latest_justified_slot",
+          "legendFormat": "justified",
+          "refId": "B"
+        },
+        {
+          "expr": "lean_finalized_slot or lean_latest_finalized_slot",
+          "legendFormat": "finalized",
+          "refId": "C"
+        }
+      ],
+      "title": "Head / Justified / Finalized",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(lean_state_transition_time_seconds_bucket[5m])) or histogram_quantile(0.99, rate(lean_state_transition_time_bucket[5m]))",
+          "legendFormat": "state_transition_p99",
+          "refId": "A"
+        }
+      ],
+      "title": "State Transition p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(lean_pq_sig_attestation_signing_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_signing_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "attestation_sign_avg",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(lean_pq_sig_attestation_verification_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_verification_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "attestation_verify_avg",
+          "refId": "B"
+        }
+      ],
+      "title": "PQ Signature Avg Time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "lean_connected_peers or libp2p_peers",
+          "legendFormat": "peers",
+          "refId": "A"
+        },
+        {
+          "expr": "lean_sync_target_slot",
+          "legendFormat": "sync_target",
+          "refId": "B"
+        },
+        {
+          "expr": "lean_sync_pending_depth",
+          "legendFormat": "sync_pending_depth",
+          "refId": "C"
+        }
+      ],
+      "title": "Network / Sync",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(lean_node_info)",
+          "legendFormat": "lean_node_info",
+          "refId": "A"
+        },
+        {
+          "expr": "max(lean_node_start_time_seconds)",
+          "legendFormat": "lean_node_start_time_seconds",
+          "refId": "B"
+        },
+        {
+          "expr": "max(lean_head_slot)",
+          "legendFormat": "lean_head_slot",
+          "refId": "C"
+        },
+        {
+          "expr": "max(lean_current_slot)",
+          "legendFormat": "lean_current_slot",
+          "refId": "D"
+        },
+        {
+          "expr": "max(lean_safe_target_slot)",
+          "legendFormat": "lean_safe_target_slot",
+          "refId": "E"
+        },
+        {
+          "expr": "max(lean_latest_justified_slot)",
+          "legendFormat": "lean_latest_justified_slot",
+          "refId": "F"
+        },
+        {
+          "expr": "max(lean_latest_finalized_slot)",
+          "legendFormat": "lean_latest_finalized_slot",
+          "refId": "G"
+        },
+        {
+          "expr": "max(lean_validators_count)",
+          "legendFormat": "lean_validators_count",
+          "refId": "H"
+        }
+      ],
+      "title": "Spec 42: Core Node/Slot Gauges",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(lean_connected_peers)",
+          "legendFormat": "lean_connected_peers",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(lean_peer_connection_events_total)",
+          "legendFormat": "lean_peer_connection_events_total",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(lean_peer_disconnection_events_total)",
+          "legendFormat": "lean_peer_disconnection_events_total",
+          "refId": "C"
+        },
+        {
+          "expr": "max(lean_attestation_committee_subnet)",
+          "legendFormat": "lean_attestation_committee_subnet",
+          "refId": "D"
+        },
+        {
+          "expr": "max(lean_attestation_committee_count)",
+          "legendFormat": "lean_attestation_committee_count",
+          "refId": "E"
+        },
+        {
+          "expr": "max(lean_is_aggregator)",
+          "legendFormat": "lean_is_aggregator",
+          "refId": "F"
+        }
+      ],
+      "title": "Spec 42: Network + Validator",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(lean_pq_sig_attestation_signatures_total)",
+          "legendFormat": "lean_pq_sig_attestation_signatures_total",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(lean_pq_sig_attestation_signatures_valid_total)",
+          "legendFormat": "lean_pq_sig_attestation_signatures_valid_total",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(lean_pq_sig_attestation_signatures_invalid_total)",
+          "legendFormat": "lean_pq_sig_attestation_signatures_invalid_total",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(lean_pq_sig_aggregated_signatures_total)",
+          "legendFormat": "lean_pq_sig_aggregated_signatures_total",
+          "refId": "D"
+        },
+        {
+          "expr": "sum(lean_pq_sig_aggregated_signatures_valid_total)",
+          "legendFormat": "lean_pq_sig_aggregated_signatures_valid_total",
+          "refId": "E"
+        },
+        {
+          "expr": "sum(lean_pq_sig_aggregated_signatures_invalid_total)",
+          "legendFormat": "lean_pq_sig_aggregated_signatures_invalid_total",
+          "refId": "F"
+        },
+        {
+          "expr": "sum(lean_pq_sig_attestations_in_aggregated_signatures_total)",
+          "legendFormat": "lean_pq_sig_attestations_in_aggregated_signatures_total",
+          "refId": "G"
+        }
+      ],
+      "title": "Spec 42: PQ Counters",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(lean_pq_sig_attestation_signing_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_signing_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_pq_sig_attestation_signing_time_seconds",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(lean_pq_sig_attestation_verification_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_verification_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_pq_sig_attestation_verification_time_seconds",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(lean_pq_sig_aggregated_signatures_building_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_aggregated_signatures_building_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_pq_sig_aggregated_signatures_building_time_seconds",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(lean_pq_sig_aggregated_signatures_verification_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_aggregated_signatures_verification_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_pq_sig_aggregated_signatures_verification_time_seconds",
+          "refId": "D"
+        }
+      ],
+      "title": "Spec 42: PQ Timing (Avg 5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(lean_attestations_valid_total)",
+          "legendFormat": "lean_attestations_valid_total",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(lean_attestations_invalid_total)",
+          "legendFormat": "lean_attestations_invalid_total",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(lean_fork_choice_reorgs_total)",
+          "legendFormat": "lean_fork_choice_reorgs_total",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(lean_fork_choice_reorg_depth_bucket[5m]))",
+          "legendFormat": "lean_fork_choice_reorg_depth",
+          "refId": "D"
+        },
+        {
+          "expr": "max(lean_gossip_signatures)",
+          "legendFormat": "lean_gossip_signatures",
+          "refId": "E"
+        },
+        {
+          "expr": "max(lean_latest_new_aggregated_payloads)",
+          "legendFormat": "lean_latest_new_aggregated_payloads",
+          "refId": "F"
+        },
+        {
+          "expr": "max(lean_latest_known_aggregated_payloads)",
+          "legendFormat": "lean_latest_known_aggregated_payloads",
+          "refId": "G"
+        },
+        {
+          "expr": "sum(lean_finalizations_total)",
+          "legendFormat": "lean_finalizations_total",
+          "refId": "H"
+        },
+        {
+          "expr": "sum(lean_state_transition_slots_processed_total)",
+          "legendFormat": "lean_state_transition_slots_processed_total",
+          "refId": "I"
+        },
+        {
+          "expr": "sum(lean_state_transition_attestations_processed_total)",
+          "legendFormat": "lean_state_transition_attestations_processed_total",
+          "refId": "J"
+        }
+      ],
+      "title": "Spec 42: Fork Choice + ST Counters",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(lean_fork_choice_block_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_fork_choice_block_processing_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_fork_choice_block_processing_time_seconds",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(lean_attestation_validation_time_seconds_sum[5m]) / clamp_min(rate(lean_attestation_validation_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_attestation_validation_time_seconds",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(lean_committee_signatures_aggregation_time_seconds_sum[5m]) / clamp_min(rate(lean_committee_signatures_aggregation_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_committee_signatures_aggregation_time_seconds",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(lean_state_transition_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_state_transition_time_seconds",
+          "refId": "D"
+        },
+        {
+          "expr": "rate(lean_state_transition_slots_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_slots_processing_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_state_transition_slots_processing_time_seconds",
+          "refId": "E"
+        },
+        {
+          "expr": "rate(lean_state_transition_block_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_block_processing_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_state_transition_block_processing_time_seconds",
+          "refId": "F"
+        },
+        {
+          "expr": "rate(lean_state_transition_attestations_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_attestations_processing_time_seconds_count[5m]), 1e-9)",
+          "legendFormat": "lean_state_transition_attestations_processing_time_seconds",
+          "refId": "G"
+        }
+      ],
+      "title": "Spec 42: Fork Choice + ST Timing (Avg 5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 47
+      },
+      "id": 15,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.99, rate(lean_fork_choice_block_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Fork Choice Block Processing Time",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 47
+      },
+      "id": 16,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.99, rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation Processing Time",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 47
+      },
+      "id": 17,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.99, rate(lean_state_transition_block_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Block Processing Time",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 47
+      },
+      "id": 18,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.99, rate(lean_attestation_validation_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation Validation Time",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 53
+      },
+      "id": 19,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.50, rate(lean_fork_choice_block_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Fork Choice Block Processing p50",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 53
+      },
+      "id": 20,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.50, rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation Processing p50",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 53
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.50, rate(lean_state_transition_block_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Block Processing p50",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 53
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.50, rate(lean_attestation_validation_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation Validation p50",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 58
+      },
+      "id": 23,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.95, rate(lean_fork_choice_block_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Fork Choice Block Processing p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 58
+      },
+      "id": 24,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.95, rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation Processing p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 58
+      },
+      "id": 25,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.95, rate(lean_state_transition_block_processing_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Block Processing p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "peam-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 58
+      },
+      "id": 26,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "1000 * histogram_quantile(0.95, rate(lean_attestation_validation_time_seconds_bucket[5m]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Attestation Validation p95",
+      "type": "stat"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "peam",
+    "devnet2",
+    "lean"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Peam Devnet Metrics",
+  "uid": "peam-devnet-metrics",
+  "version": 4,
+  "weekStart": ""
+}

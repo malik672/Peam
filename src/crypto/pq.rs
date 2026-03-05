@@ -230,7 +230,6 @@ pub fn verify_aggregate_signature(
         .map_err(|err| format!("failed to verify aggregated signatures: {err}"))
 }
 
-
 /// Verifies an SSZ-encoded leanMultisig aggregated signature proof.
 pub fn verify_aggregate_signature_no_check(
     public_keys: &[Bytes52],

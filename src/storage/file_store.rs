@@ -36,6 +36,7 @@
 //! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use super::canonical_db::CanonicalDb;
 use super::pending::PendingSlotCache;
@@ -302,6 +303,76 @@ impl FileStore {
         let encoded = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         self.canonical_db.persist_block_blob(root, &encoded)
     }
+
+    #[inline]
+    fn put_signed_block_inner(
+        &mut self,
+        root: Bytes32,
+        signed: SignedBlockWithAttestation,
+        state: &mut State,
+        metrics: Option<&crate::metrics::MetricsRegistry>,
+    ) -> Result<(), String> {
+        let import_start = metrics.map(|_| Instant::now());
+        let result = (|| {
+            if let Some(metrics) = metrics {
+                state.process_signed_block_with_metrics(&signed, metrics)?;
+            } else {
+                state.process_signed_block(&signed)?;
+            }
+
+            let block = signed.message.block.clone();
+            let slot = block.slot.0.0;
+            let state_root = block.state_root;
+            let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
+            let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
+            let state_blob = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
+
+            self.head = Some(root);
+            self.justified = Some(state.latest_justified.root);
+            self.finalized = Some(state.latest_finalized.root);
+            self.finalized_slot = Some(state.latest_finalized.slot.0.0);
+            self.set_meta_dirty();
+
+            let fin_slot = state.latest_finalized.slot.0.0;
+            let block_canonical = self.index_block_slot(slot, root, state_root);
+            self.index_state_slot(slot, state_root);
+            let promoted = self.promote_finalized_slot_in_memory(fin_slot);
+
+            let mut state_upserts = Vec::with_capacity(1 + promoted.len());
+            let mut block_upserts =
+                Vec::with_capacity(usize::from(block_canonical) + promoted.len());
+            state_upserts.push((slot, state_root));
+            if block_canonical {
+                block_upserts.push((slot, root));
+            }
+            for entry in &promoted {
+                state_upserts.push((entry.slot, entry.state_root));
+                block_upserts.push((entry.slot, entry.block_root));
+            }
+
+            self.canonical_db.persist_signed_block_bundle(
+                root,
+                &block_blob,
+                &signed_blob,
+                state_root,
+                &state_blob,
+                &state_upserts,
+                &block_upserts,
+                self.head,
+                self.finalized,
+                self.justified,
+            )?;
+            self.index_dirty = false;
+            self.meta_dirty = false;
+            Ok(())
+        })();
+
+        if let (Some(metrics), Some(start)) = (metrics, import_start) {
+            metrics.block_import_end_to_end_time.observe_duration(start);
+        }
+
+        result
+    }
 }
 
 /// Best-effort flush on shutdown. Persists any dirty indexes/metadata that
@@ -376,57 +447,7 @@ impl Store for FileStore {
         signed: SignedBlockWithAttestation,
         state: &mut State,
     ) -> Result<(), String> {
-        // Phase 1: state transition (may fail, no side effects on store yet).
-        state.process_signed_block(&signed)?;
-
-        // Phase 2: SSZ encode + blob envelope wrapping.
-        let block = signed.message.block.clone();
-        let slot = block.slot.0.0;
-        let state_root = block.state_root;
-        let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
-        let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
-        let state_blob = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
-
-        // Phase 3: update in-memory indexes and metadata.
-        self.head = Some(root);
-        self.justified = Some(state.latest_justified.root);
-        self.finalized = Some(state.latest_finalized.root);
-        self.finalized_slot = Some(state.latest_finalized.slot.0.0);
-        self.set_meta_dirty();
-
-        let fin_slot = state.latest_finalized.slot.0.0;
-        let block_canonical = self.index_block_slot(slot, root, state_root);
-        self.index_state_slot(slot, state_root);
-        let promoted = self.promote_finalized_slot_in_memory(fin_slot);
-
-        // Phase 4: build delta upserts (only rows changed this call).
-        let mut state_upserts = Vec::with_capacity(1 + promoted.len());
-        let mut block_upserts = Vec::with_capacity(usize::from(block_canonical) + promoted.len());
-        state_upserts.push((slot, state_root));
-        if block_canonical {
-            block_upserts.push((slot, root));
-        }
-        for entry in &promoted {
-            state_upserts.push((entry.slot, entry.state_root));
-            block_upserts.push((entry.slot, entry.block_root));
-        }
-
-        // Phase 5: single atomic redb write transaction.
-        self.canonical_db.persist_signed_block_bundle(
-            root,
-            &block_blob,
-            &signed_blob,
-            state_root,
-            &state_blob,
-            &state_upserts,
-            &block_upserts,
-            self.head,
-            self.finalized,
-            self.justified,
-        )?;
-        self.index_dirty = false;
-        self.meta_dirty = false;
-        Ok(())
+        self.put_signed_block_inner(root, signed, state, None)
     }
 
     /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
@@ -481,5 +502,15 @@ impl Store for FileStore {
         self.justified = Some(root);
         self.set_meta_dirty();
         let _ = self.flush_canonical();
+    }
+
+    fn put_signed_block_with_metrics(
+        &mut self,
+        root: Bytes32,
+        signed: SignedBlockWithAttestation,
+        state: &mut State,
+        metrics: &crate::metrics::MetricsRegistry,
+    ) -> Result<(), String> {
+        self.put_signed_block_inner(root, signed, state, Some(metrics))
     }
 }

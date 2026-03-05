@@ -3,7 +3,7 @@ use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Target slot duration for devnet-0.
+/// Target slot duration.
 pub const SLOT_DURATION_SECS: u64 = 4;
 /// Target slot duration in milliseconds.
 pub const SLOT_DURATION_MILLIS: u128 = (SLOT_DURATION_SECS as u128) * 1_000;
@@ -130,6 +130,7 @@ pub fn interval_index_from_unix_millis(genesis_time_secs: u64, unix_now_millis: 
     (in_slot / SLOT_INTERVAL_MILLIS) as u64
 }
 
+#[inline]
 pub fn is_justifiable_after(candidate_slot: Slot, finalized_slot: Slot) -> Result<bool, String> {
     if candidate_slot < finalized_slot {
         return Err("candidate slot must be >= finalized slot".to_string());

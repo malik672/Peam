@@ -115,6 +115,22 @@ fn build_block_with_attestations_for_slot(
     block
 }
 
+fn apply_state_transition_for_test(state: &mut State, block: &Block) -> Result<(), String> {
+    state.process_slots(block.slot)?;
+
+    let header = block.header();
+    state.process_block_header(header)?;
+    state.process_block_body(&block.body, header.body_root)?;
+
+    let computed_root = Bytes32::from(state.hash_tree_root());
+    if computed_root != block.state_root {
+        return Err("block state root does not match computed state root".to_string());
+    }
+    state.latest_block_header.state_root = computed_root;
+
+    Ok(())
+}
+
 #[test]
 fn lean_spec_process_first_block_after_genesis() {
     let v = Validator {
@@ -127,7 +143,7 @@ fn lean_spec_process_first_block_after_genesis() {
 
     let block = build_block_for_slot(&state, 1, 0);
 
-    state.state_transition(&block).expect("transition");
+    apply_state_transition_for_test(&mut state, &block).expect("transition");
 
     assert_eq!(state.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(1)));
@@ -147,7 +163,7 @@ fn lean_spec_linear_chain_multiple_blocks() {
 
     for slot in 1..=5u64 {
         let block = build_block_for_slot(&state, slot, 0);
-        state.state_transition(&block).expect("transition");
+        apply_state_transition_for_test(&mut state, &block).expect("transition");
     }
 
     assert_eq!(state.slot, Slot(Uint64(5)));
@@ -166,7 +182,7 @@ fn lean_spec_blocks_with_gaps() {
     let slots = [1u64, 4u64, 8u64];
     for slot in slots {
         let block = build_block_for_slot(&state, slot, 0);
-        state.state_transition(&block).expect("transition");
+        apply_state_transition_for_test(&mut state, &block).expect("transition");
     }
 
     assert_eq!(state.slot, Slot(Uint64(8)));
@@ -186,7 +202,7 @@ fn lean_spec_block_at_large_slot_number() {
     let mut state = State::generate_genesis(Uint64(0), validators);
 
     let block = build_block_for_slot(&state, 100, 0);
-    state.state_transition(&block).expect("transition");
+    apply_state_transition_for_test(&mut state, &block).expect("transition");
 
     assert_eq!(state.slot, Slot(Uint64(100)));
 }
@@ -209,7 +225,7 @@ fn lean_spec_block_with_invalid_proposer() {
     let mut block = build_block_for_slot(&state, 1, 1);
     block.proposer_index = ValidatorIndex(Uint64(0)); // wrong: expected 1
 
-    let err = state.state_transition(&block).unwrap_err();
+    let err = apply_state_transition_for_test(&mut state, &block).unwrap_err();
     assert!(err.contains("proposer"));
 }
 
@@ -226,7 +242,7 @@ fn lean_spec_block_with_invalid_parent_root() {
     let mut block = build_block_for_slot(&state, 1, 0);
     block.parent_root = Bytes32::from([0xDEu8; 32]);
 
-    let err = state.state_transition(&block).unwrap_err();
+    let err = apply_state_transition_for_test(&mut state, &block).unwrap_err();
     assert!(err.contains("parent root"));
 }
 
@@ -526,7 +542,7 @@ fn process_block_header_pushes_historical_hashes() {
 }
 
 #[test]
-fn first_post_genesis_block_keeps_seeded_justified_and_finalized_root() {
+fn first_post_genesis_block_keeps_genesis_justified_and_finalized_root() {
     let v = Validator {
         pubkey: Bytes52::from([0x02u8; 52]),
         index: ValidatorIndex(Uint64(0)),
@@ -552,6 +568,7 @@ fn first_post_genesis_block_keeps_seeded_justified_and_finalized_root() {
     };
     state.process_block_header(header).expect("process header");
 
+    // Strict parent-root validation does not rewrite genesis checkpoints on first import.
     assert_eq!(state.latest_justified.root, seeded_root);
     assert_eq!(state.latest_finalized.root, seeded_root);
 }
@@ -655,6 +672,199 @@ fn attestations_with_zero_validators_do_not_justify() {
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
     assert_eq!(state.justified_slots.len(), 0);
+}
+
+#[test]
+fn attestations_accumulate_votes_across_calls_for_justification_and_finalization() {
+    let v0 = Validator {
+        pubkey: Bytes52::from([0x11u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let v1 = Validator {
+        pubkey: Bytes52::from([0x22u8; 52]),
+        index: ValidatorIndex(Uint64(1)),
+        balance: Uint64(0),
+    };
+    let v2 = Validator {
+        pubkey: Bytes52::from([0x33u8; 52]),
+        index: ValidatorIndex(Uint64(2)),
+        balance: Uint64(0),
+    };
+    let validators: Validators = SszList::new(vec![v0, v1, v2]).expect("validators");
+    let mut state = State::generate_genesis(Uint64(0), validators);
+
+    state.process_slots(Slot(Uint64(1))).expect("process slots");
+    let body = BlockBody {
+        attestations: Attestations::new(vec![]).expect("attestations"),
+    };
+    let header_1 = BlockHeader {
+        slot: Slot(Uint64(1)),
+        proposer_index: ValidatorIndex(Uint64(1)),
+        parent_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+        state_root: Bytes32::zero(),
+        body_root: Bytes32::from(body.hash_tree_root()),
+    };
+    state
+        .process_block_header(header_1)
+        .expect("process header slot 1");
+
+    let target_1 = Checkpoint {
+        root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+        slot: Slot(Uint64(1)),
+    };
+    let source_0 = state.latest_justified;
+    let att_1a = Attestation {
+        aggregation_bits: BitList::new(vec![true, false, false]).expect("bits"),
+        data: AttestationData {
+            slot: Slot(Uint64(1)),
+            head: target_1,
+            target: target_1,
+            source: source_0,
+        },
+    };
+    state
+        .process_attestations(&Attestations::new(vec![att_1a]).expect("attestations"))
+        .expect("process first vote for slot 1");
+
+    assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
+    assert_eq!(state.justifications_roots.data.len(), 1);
+
+    let att_1b = Attestation {
+        aggregation_bits: BitList::new(vec![false, true, false]).expect("bits"),
+        data: AttestationData {
+            slot: Slot(Uint64(1)),
+            head: target_1,
+            target: target_1,
+            source: source_0,
+        },
+    };
+    state
+        .process_attestations(&Attestations::new(vec![att_1b]).expect("attestations"))
+        .expect("process second vote for slot 1");
+
+    assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
+    assert_eq!(state.justifications_roots.data.len(), 0);
+
+    state.process_slots(Slot(Uint64(2))).expect("process slots");
+    let header_2 = BlockHeader {
+        slot: Slot(Uint64(2)),
+        proposer_index: ValidatorIndex(Uint64(2)),
+        parent_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+        state_root: Bytes32::zero(),
+        body_root: Bytes32::from(body.hash_tree_root()),
+    };
+    state
+        .process_block_header(header_2)
+        .expect("process header slot 2");
+
+    let target_2 = Checkpoint {
+        root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+        slot: Slot(Uint64(2)),
+    };
+    let source_1 = state.latest_justified;
+    let att_2a = Attestation {
+        aggregation_bits: BitList::new(vec![true, false, false]).expect("bits"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: target_2,
+            target: target_2,
+            source: source_1,
+        },
+    };
+    let att_2b = Attestation {
+        aggregation_bits: BitList::new(vec![false, true, false]).expect("bits"),
+        data: AttestationData {
+            slot: Slot(Uint64(2)),
+            head: target_2,
+            target: target_2,
+            source: source_1,
+        },
+    };
+
+    state
+        .process_attestations(&Attestations::new(vec![att_2a]).expect("attestations"))
+        .expect("process first vote for slot 2");
+    assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
+
+    state
+        .process_attestations(&Attestations::new(vec![att_2b]).expect("attestations"))
+        .expect("process second vote for slot 2");
+
+    assert_eq!(state.latest_justified.slot, Slot(Uint64(2)));
+    assert_eq!(state.latest_finalized.slot, Slot(Uint64(1)));
+}
+
+#[test]
+fn finalizes_when_target_is_next_valid_justifiable_slot_not_adjacent_slot() {
+    let v0 = Validator {
+        pubkey: Bytes52::from([0x41u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let v1 = Validator {
+        pubkey: Bytes52::from([0x42u8; 52]),
+        index: ValidatorIndex(Uint64(1)),
+        balance: Uint64(0),
+    };
+    let v2 = Validator {
+        pubkey: Bytes52::from([0x43u8; 52]),
+        index: ValidatorIndex(Uint64(2)),
+        balance: Uint64(0),
+    };
+    let validators: Validators = SszList::new(vec![v0, v1, v2]).expect("validators");
+    let mut state = State::generate_genesis(Uint64(0), validators);
+
+    let body = BlockBody {
+        attestations: Attestations::new(vec![]).expect("attestations"),
+    };
+
+    for slot in 1..=9u64 {
+        state
+            .process_slots(Slot(Uint64(slot)))
+            .expect("process slots");
+        let header = BlockHeader {
+            slot: Slot(Uint64(slot)),
+            proposer_index: ValidatorIndex(Uint64(slot % 3)),
+            parent_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+            state_root: Bytes32::zero(),
+            body_root: Bytes32::from(body.hash_tree_root()),
+        };
+        state.process_block_header(header).expect("process header");
+    }
+
+    let source_slot = Slot(Uint64(6));
+    let source_root = state.historical_block_hashes.data[6];
+    state.justified_slots.len = 6;
+    state.justified_slots.data = vec![0u8; 1];
+    state.justified_slots.data[0] |= 1u8 << 5;
+
+    let target_slot = Slot(Uint64(9));
+    let target_root = Bytes32::from(state.latest_block_header.hash_tree_root());
+    let att = Attestation {
+        aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
+        data: AttestationData {
+            slot: target_slot,
+            head: Checkpoint {
+                root: target_root,
+                slot: target_slot,
+            },
+            target: Checkpoint {
+                root: target_root,
+                slot: target_slot,
+            },
+            source: Checkpoint {
+                root: source_root,
+                slot: source_slot,
+            },
+        },
+    };
+    state
+        .process_attestations(&Attestations::new(vec![att]).expect("attestations"))
+        .expect("process attestations");
+
+    assert_eq!(state.latest_justified.slot, Slot(Uint64(9)));
+    assert_eq!(state.latest_finalized.slot, Slot(Uint64(6)));
 }
 
 #[test]
@@ -791,7 +1001,7 @@ fn state_transition_processes_slots_then_block() {
         .expect("process body");
     block.state_root = Bytes32::from(post.hash_tree_root());
 
-    state.state_transition(&block).expect("transition");
+    apply_state_transition_for_test(&mut state, &block).expect("transition");
     assert_eq!(state.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(1)));
 }

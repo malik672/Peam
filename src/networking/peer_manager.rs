@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use super::events::{EventBus, NetworkEvent};
+use crate::metrics::MetricsRegistry;
 
 /// Cheaply-cloneable peer registry and scorer.
 ///
@@ -34,53 +35,76 @@ struct InnerPeerManager {
     events: EventBus,
     /// Connected peer count, updated atomically for sync access from metrics.
     peer_count: AtomicUsize,
+    /// Optional shared metrics registry for connection counters.
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl PeerManager {
-    /// Creates a new [`PeerManager`] that emits events on `events`.
-    pub fn new(events: EventBus) -> Self {
+    #[inline]
+    fn build(events: EventBus, metrics: Option<Arc<MetricsRegistry>>) -> Self {
         Self {
             inner: Arc::new(InnerPeerManager {
                 peers: Mutex::new(HashSet::new()),
                 scores: Mutex::new(HashMap::new()),
                 events,
                 peer_count: AtomicUsize::new(0),
+                metrics,
             }),
         }
+    }
+
+    /// Creates a new [`PeerManager`] that emits events on `events`.
+    pub fn new(events: EventBus) -> Self {
+        Self::build(events, None)
+    }
+
+    /// Creates a new [`PeerManager`] with a shared metrics registry.
+    pub fn with_metrics(events: EventBus, metrics: Arc<MetricsRegistry>) -> Self {
+        Self::build(events, Some(metrics))
     }
 
     /// Registers `peer_id` as connected, initialising its score to 0.
     ///
     /// If the peer is already connected this is a no-op.
-    pub async fn connect(&self, peer_id: String) {
+    /// `inbound` indicates whether the connection was initiated by the remote peer.
+    pub async fn connect(&self, peer_id: String, inbound: bool) {
         let mut peers = self.inner.peers.lock().await;
         if peers.insert(peer_id.clone()) {
             self.inner.peer_count.store(peers.len(), Ordering::Relaxed);
-            info!("peer_connected={peer_id}");
+            info!("peer_connected={peer_id} inbound={inbound}");
             self.inner
                 .scores
                 .lock()
                 .await
                 .entry(peer_id.clone())
                 .or_insert(0);
-            self.inner
-                .events
-                .emit(NetworkEvent::PeerConnected { peer_id });
+            if let Some(metrics) = &self.inner.metrics {
+                if inbound {
+                    metrics.peer_connection_inbound.inc();
+                } else {
+                    metrics.peer_connection_outbound.inc();
+                }
+            }
         }
     }
 
     /// Removes `peer_id` from the registry and its score entry.
     ///
     /// If the peer is not currently connected this is a no-op.
-    pub async fn disconnect(&self, peer_id: &str) {
+    /// `inbound` indicates whether the original connection was inbound.
+    pub async fn disconnect(&self, peer_id: &str, inbound: bool) {
         let mut peers = self.inner.peers.lock().await;
         if peers.remove(peer_id) {
             self.inner.peer_count.store(peers.len(), Ordering::Relaxed);
             self.inner.scores.lock().await.remove(peer_id);
-            info!("peer_disconnected={peer_id}");
-            self.inner.events.emit(NetworkEvent::PeerDisconnected {
-                peer_id: peer_id.to_string(),
-            });
+            info!("peer_disconnected={peer_id} inbound={inbound}");
+            if let Some(metrics) = &self.inner.metrics {
+                if inbound {
+                    metrics.peer_disconnection_inbound.inc();
+                } else {
+                    metrics.peer_disconnection_outbound.inc();
+                }
+            }
         }
     }
 
@@ -153,6 +177,7 @@ impl PeerManager {
             });
             self.inner.events.emit(NetworkEvent::PeerDisconnected {
                 peer_id: peer_id.clone(),
+                inbound: false,
             });
             banned.push(peer_id);
         }
@@ -174,6 +199,12 @@ impl PeerManager {
     pub async fn list(&self) -> Vec<String> {
         let peers = self.inner.peers.lock().await;
         peers.iter().cloned().collect()
+    }
+
+    /// Returns whether `peer_id` is currently tracked as connected.
+    pub async fn is_connected(&self, peer_id: &str) -> bool {
+        let peers = self.inner.peers.lock().await;
+        peers.contains(peer_id)
     }
 
     /// Returns the current connected peer count without async locking.

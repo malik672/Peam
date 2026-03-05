@@ -20,7 +20,10 @@ fn make_validator_pubkeys() -> Vec<Bytes52> {
     out
 }
 
-fn make_attestation_bits(count: usize, density_per_mille: u16) -> Vec<BitList<VALIDATOR_REGISTRY_LIMIT>> {
+fn make_attestation_bits(
+    count: usize,
+    density_per_mille: u16,
+) -> Vec<BitList<VALIDATOR_REGISTRY_LIMIT>> {
     let mut out = Vec::with_capacity(count);
     let mut seed = 0xA5A5_5A5A_DEAD_BEEFu64;
     let byte_len = VALIDATOR_REGISTRY_LIMIT.div_ceil(8);
@@ -51,7 +54,10 @@ fn old_set_bits(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
     out
 }
 
-fn old_collect_all(attestations: &[BitList<VALIDATOR_REGISTRY_LIMIT>], validators: &[Bytes52]) -> usize {
+fn old_collect_all(
+    attestations: &[BitList<VALIDATOR_REGISTRY_LIMIT>],
+    validators: &[Bytes52],
+) -> usize {
     let mut total = 0usize;
     for bits in attestations {
         let mut public_keys = Vec::new();
@@ -63,7 +69,10 @@ fn old_collect_all(attestations: &[BitList<VALIDATOR_REGISTRY_LIMIT>], validator
     total
 }
 
-fn new_collect_all(attestations: &[BitList<VALIDATOR_REGISTRY_LIMIT>], validators: &[Bytes52]) -> usize {
+fn new_collect_all(
+    attestations: &[BitList<VALIDATOR_REGISTRY_LIMIT>],
+    validators: &[Bytes52],
+) -> usize {
     let mut total = 0usize;
     let mut public_keys = Vec::new();
     for bits in attestations {
@@ -99,7 +108,10 @@ fn bench_verify_signed_block_gather(c: &mut Criterion) {
         let attestations = make_attestation_bits(att_count, density_per_mille);
 
         group.bench_function(
-            format!("old_set_bits_alloc_att{}_dens{}", att_count, density_per_mille),
+            format!(
+                "old_set_bits_alloc_att{}_dens{}",
+                att_count, density_per_mille
+            ),
             |b| {
                 b.iter(|| {
                     black_box(old_collect_all(
@@ -111,7 +123,10 @@ fn bench_verify_signed_block_gather(c: &mut Criterion) {
         );
 
         group.bench_function(
-            format!("new_byte_scan_reuse_att{}_dens{}", att_count, density_per_mille),
+            format!(
+                "new_byte_scan_reuse_att{}_dens{}",
+                att_count, density_per_mille
+            ),
             |b| {
                 b.iter(|| {
                     black_box(new_collect_all(

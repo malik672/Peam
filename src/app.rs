@@ -12,6 +12,16 @@ use crate::unsafe_vec::write_at;
 /// Default validator-set size used when config does not specify `validator_count`.
 pub const DEFAULT_VALIDATOR_COUNT: usize = 5;
 
+#[inline]
+fn canonicalize_topic(topic: &str) -> String {
+    let topic = topic.trim();
+    if topic.starts_with('/') {
+        topic.to_string()
+    } else {
+        format!("/{topic}")
+    }
+}
+
 /// Runtime settings for a [`Node`], parsed from the config file.
 ///
 /// All fields have defaults applied by [`load_node_settings`] when the
@@ -162,23 +172,23 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             bootnodes: Vec::new(),
             trusted_peers: Vec::new(),
             allowed_topics: vec![
-                "leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
-                ("leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
+                ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
                 (
-                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
             topic_validators: vec![
                 (
-                    "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
                     crate::networking::GossipValidatorKind::Block,
                 ),
                 (
-                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     crate::networking::GossipValidatorKind::Attestation,
                 ),
             ],
@@ -287,7 +297,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                 .split(',')
                 .map(|entry| entry.trim())
                 .filter(|entry| !entry.is_empty())
-                .map(|entry| entry.to_string())
+                .map(canonicalize_topic)
                 .collect::<Vec<_>>();
         } else if key == "topic_scores" {
             topic_scores = value
@@ -295,7 +305,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                 .filter_map(|entry| {
                     let (topic, score) = entry.trim().split_once(':')?;
                     let score = score.trim().parse::<i64>().ok()?;
-                    Some((topic.trim().to_string(), score))
+                    Some((canonicalize_topic(topic), score))
                 })
                 .collect();
         } else if key == "topic_validators" {
@@ -310,7 +320,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                         "exit" => crate::networking::GossipValidatorKind::VoluntaryExit,
                         _ => crate::networking::GossipValidatorKind::None,
                     };
-                    Some((topic.trim().to_string(), kind))
+                    Some((canonicalize_topic(topic), kind))
                 })
                 .collect();
         } else if key == "max_gossip_bytes" {
@@ -362,23 +372,23 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             bootnodes,
             trusted_peers,
             allowed_topics: vec![
-                "leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
-                ("leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
+                ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
                 (
-                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
             topic_validators: vec![
                 (
-                    "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
                     crate::networking::GossipValidatorKind::Block,
                 ),
                 (
-                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     crate::networking::GossipValidatorKind::Attestation,
                 ),
             ],

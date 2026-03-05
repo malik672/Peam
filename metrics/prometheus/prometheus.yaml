@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 4s
+  scrape_timeout: 4s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: "peam"
+    static_configs:
+      - targets:
+          - host.docker.internal:18080
+        labels:
+          instance: peam

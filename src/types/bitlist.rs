@@ -17,6 +17,15 @@ pub struct BitList<const LIMIT: usize> {
     pub len: usize,
 }
 
+impl<const LIMIT: usize> Default for BitList<LIMIT> {
+    fn default() -> Self {
+        Self {
+            data: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
 impl<const LIMIT: usize> BitList<LIMIT> {
     pub fn new(data: Vec<bool>) -> Result<Self, String> {
         let len = data.len();
@@ -34,6 +43,7 @@ impl<const LIMIT: usize> BitList<LIMIT> {
         self.len
     }
 
+    #[inline]
     fn pack_bits_with_terminator(&self) -> Vec<u8> {
         let bit_len = self.len;
         let out_len = (bit_len + 1 + 7) / 8;
@@ -45,6 +55,7 @@ impl<const LIMIT: usize> BitList<LIMIT> {
         out
     }
 
+    #[inline]
     fn unpack_bits_with_terminator(bytes: &[u8]) -> Result<(Vec<u8>, usize), String> {
         fn highest_set_bit(bytes: &[u8]) -> Option<usize> {
             let mut i = bytes.len();

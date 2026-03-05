@@ -8,12 +8,10 @@ use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
 
-/// Drain all pending attestations into the fork-choice store and return the
-/// current proposal head root.
+/// Snapshot pending attestations and return the current proposal head root.
 ///
-/// Takes a write lock on `pending_attestations`, drains the buffer, then takes
-/// a write lock on `fork_choice` and calls
-/// [`ForkChoiceStore::get_proposal_head_with_pending`].
+/// Takes a read lock on `pending_attestations` and evaluates proposal head with
+/// those votes without consuming them.
 ///
 /// Returns `None` if fork-choice has not yet been initialized (i.e. no block
 /// has been imported yet).
@@ -21,13 +19,11 @@ pub fn proposal_head_from_pending(
     fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
     pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
 ) -> Option<Bytes32> {
-    let drained = {
-        let mut pending = pending_attestations
-            .write()
-            .expect("pending attestations lock");
-        std::mem::take(&mut *pending)
-    };
-    let aggregated = aggregate_attestations(drained);
+    let pending_snapshot = pending_attestations
+        .read()
+        .expect("pending attestations lock")
+        .clone();
+    let aggregated = aggregate_attestations(pending_snapshot);
     let mut fc = fork_choice.write().expect("fork choice lock");
     let fc = fc.as_mut()?;
     Some(fc.get_proposal_head_with_pending(aggregated.iter()))

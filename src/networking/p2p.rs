@@ -17,6 +17,7 @@
 //! | `reqresp`    | Typed request/response (status, blocks-by-root) |
 //! | `mdns`       | Local-network peer discovery |
 
+use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +25,8 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use libp2p::core::muxing::StreamMuxerBox;
 use libp2p::gossipsub::{
-    self, Behaviour as Gossipsub, Event as GossipsubEvent, IdentTopic, MessageAuthenticity,
+    self, AllowAllSubscriptionFilter, DataTransform, Event as GossipsubEvent, IdentTopic, Message,
+    MessageAuthenticity, RawMessage, TopicHash,
 };
 use libp2p::identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent};
 use libp2p::identity::Keypair;
@@ -38,16 +40,74 @@ use libp2p::request_response::{
 use libp2p::swarm::{Swarm, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Transport};
 use libp2p_swarm_derive::NetworkBehaviour;
+use snap::raw::{Decoder as RawDecoder, Encoder as RawEncoder, decompress_len};
+use snap::{read::FrameDecoder, write::FrameEncoder};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use super::events::{EventBus, NetworkEvent};
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
 use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
 
-/// Explicit gossipsub protocol id pinned to v1.0.
-const GOSSIPSUB_PROTOCOL_ID_V1_0: &str = "/meshsub/1.0.0";
+/// Ream-compatible snappy transform for gossip payloads.
+#[derive(Clone)]
+pub struct SnappyTransform {
+    max_size_per_message: usize,
+}
+
+impl SnappyTransform {
+    #[inline]
+    fn new(max_size_per_message: usize) -> Self {
+        Self {
+            max_size_per_message,
+        }
+    }
+}
+
+impl DataTransform for SnappyTransform {
+    fn inbound_transform(&self, raw_message: RawMessage) -> Result<Message, std::io::Error> {
+        let len = decompress_len(&raw_message.data)?;
+        if len > self.max_size_per_message {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "gossip message size ({len}) exceeds max ({})",
+                    self.max_size_per_message
+                ),
+            ));
+        }
+        let mut decoder = RawDecoder::new();
+        let data = decoder.decompress_vec(&raw_message.data)?;
+        Ok(Message {
+            source: raw_message.source,
+            data,
+            sequence_number: raw_message.sequence_number,
+            topic: raw_message.topic,
+        })
+    }
+
+    fn outbound_transform(
+        &self,
+        _topic: &TopicHash,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        if data.len() > self.max_size_per_message {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "gossip message size ({}) exceeds max ({})",
+                    data.len(),
+                    self.max_size_per_message
+                ),
+            ));
+        }
+        let mut encoder = RawEncoder::new();
+        encoder.compress_vec(&data).map_err(std::io::Error::other)
+    }
+}
+
+type Gossipsub = gossipsub::Behaviour<SnappyTransform, AllowAllSubscriptionFilter>;
 
 /// Configuration for constructing a [`P2pService`].
 #[derive(Clone)]
@@ -87,7 +147,6 @@ pub struct P2pService {
     signature_verifier: Arc<dyn super::GossipSignatureVerifier>,
     reqresp_handler: Arc<dyn crate::networking::ReqRespHandler>,
     gossip_context: Arc<dyn crate::networking::GossipContext>,
-    gossipsub_topic: String,
     local_peer_id: PeerId,
     listen_addr: Multiaddr,
     max_gossip_bytes: usize,
@@ -98,6 +157,8 @@ pub struct P2pService {
 pub enum P2pCommand {
     /// Publish `payload` to the given gossipsub `topic`.
     Publish { topic: String, payload: Vec<u8> },
+    /// Dial a peer using the provided multiaddr.
+    Dial { addr: Multiaddr },
     /// Send a req/resp `payload` to `peer` using `protocol`.
     SendRequest {
         peer: PeerId,
@@ -112,7 +173,8 @@ pub struct LeanBehaviour {
     gossipsub: Gossipsub,
     identify: Identify,
     ping: Ping,
-    reqresp: RequestResponse<LeanReqRespCodec>,
+    reqresp_status: RequestResponse<LeanReqRespCodec>,
+    reqresp_blocks: RequestResponse<LeanReqRespCodec>,
     mdns: Mdns,
 }
 
@@ -135,31 +197,57 @@ impl AsRef<str> for LeanReqRespProtocol {
 }
 
 #[inline]
-fn encode_reqresp_envelope(protocol: &str, payload: &[u8]) -> Vec<u8> {
-    let proto = protocol.as_bytes();
-    let proto_len = proto.len().min(u16::MAX as usize) as u16;
-    let mut out = Vec::with_capacity(2 + proto_len as usize + payload.len());
-    out.extend_from_slice(&proto_len.to_le_bytes());
-    out.extend_from_slice(&proto[..proto_len as usize]);
-    out.extend_from_slice(payload);
-    out
+fn encode_uvi_len(mut value: usize, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
 }
 
 #[inline]
-fn decode_reqresp_envelope(buf: Vec<u8>, negotiated_protocol: &str) -> (String, Vec<u8>) {
-    if buf.len() < 2 {
-        return (negotiated_protocol.to_string(), buf);
+fn decode_uvi_len(buf: &[u8]) -> std::io::Result<(usize, usize)> {
+    let mut value: usize = 0;
+    let mut shift = 0u32;
+    for (idx, byte) in buf.iter().copied().enumerate() {
+        let low = (byte & 0x7f) as usize;
+        let shifted = low.checked_shl(shift).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid varint length")
+        })?;
+        value = value.checked_add(shifted).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "varint length overflow")
+        })?;
+        if (byte & 0x80) == 0 {
+            return Ok((value, idx + 1));
+        }
+        shift = shift.saturating_add(7);
     }
-    let proto_len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
-    if buf.len() < 2 + proto_len {
-        return (negotiated_protocol.to_string(), buf);
-    }
-    let proto = std::str::from_utf8(&buf[2..(2 + proto_len)]).ok();
-    let payload = buf[(2 + proto_len)..].to_vec();
-    match proto {
-        Some(protocol) => (protocol.to_string(), payload),
-        None => (negotiated_protocol.to_string(), payload),
-    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "incomplete varint length",
+    ))
+}
+
+#[inline]
+fn snappy_frame_compress(payload: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut encoder = FrameEncoder::new(Vec::new());
+    encoder.write_all(payload)?;
+    encoder.flush()?;
+    Ok(encoder.get_ref().clone())
+}
+
+#[inline]
+fn snappy_frame_decompress(payload: &[u8], expected_len: usize) -> std::io::Result<Vec<u8>> {
+    let mut decoder = FrameDecoder::new(Cursor::new(payload));
+    let mut out = vec![0u8; expected_len];
+    decoder.read_exact(&mut out)?;
+    Ok(out)
 }
 
 /// A raw inbound or outbound req/resp request.
@@ -181,16 +269,30 @@ pub struct LeanResponse {
 }
 
 #[inline]
-fn build_gossipsub_config_v1_0_strict() -> gossipsub::Config {
+fn build_gossipsub_config_lean(max_transmit_size: usize) -> gossipsub::Config {
     let mut builder = gossipsub::ConfigBuilder::default();
-    builder.protocol_id(GOSSIPSUB_PROTOCOL_ID_V1_0, gossipsub::Version::V1_0);
-    builder.validation_mode(gossipsub::ValidationMode::Strict);
-    builder.build().expect("valid gossipsub v1.0 config")
+    builder.max_transmit_size(max_transmit_size);
+    builder.heartbeat_interval(Duration::from_millis(700));
+    builder.fanout_ttl(Duration::from_secs(60));
+    builder.mesh_n(8);
+    builder.mesh_n_low(6);
+    builder.mesh_n_high(12);
+    builder.gossip_lazy(6);
+    builder.history_length(6);
+    builder.history_gossip(3);
+    builder.max_messages_per_rpc(Some(500));
+    builder.validate_messages();
+    builder.validation_mode(gossipsub::ValidationMode::Anonymous);
+    builder.allow_self_origin(true);
+    builder.flood_publish(false);
+    builder.build().expect("valid lean gossipsub config")
 }
 
 /// [`RequestResponseCodec`] impl for [`LeanReqRespCodec`].
 ///
-/// All four methods read/write the full payload as a flat byte buffer.
+/// Ream-compatible lean req/resp framing:
+/// - Request: `varint(len) || snappy_frame(ssz_payload)`
+/// - Response: `response_code(1 byte) || varint(len) || snappy_frame(ssz_payload)`
 #[async_trait]
 impl RequestResponseCodec for LeanReqRespCodec {
     type Protocol = LeanReqRespProtocol;
@@ -207,8 +309,13 @@ impl RequestResponseCodec for LeanReqRespCodec {
     {
         let mut buf = Vec::new();
         futures::AsyncReadExt::read_to_end(io, &mut buf).await?;
-        let (protocol, payload) = decode_reqresp_envelope(buf, &protocol.0);
-        Ok(LeanRequest { protocol, payload })
+        let (len, prefix_len) = decode_uvi_len(&buf)?;
+        let compressed = &buf[prefix_len..];
+        let payload = snappy_frame_decompress(compressed, len)?;
+        Ok(LeanRequest {
+            protocol: protocol.0.clone(),
+            payload,
+        })
     }
 
     async fn read_response<T>(
@@ -221,8 +328,48 @@ impl RequestResponseCodec for LeanReqRespCodec {
     {
         let mut buf = Vec::new();
         futures::AsyncReadExt::read_to_end(io, &mut buf).await?;
-        let (protocol, payload) = decode_reqresp_envelope(buf, &protocol.0);
-        Ok(LeanResponse { protocol, payload })
+        if buf.is_empty() {
+            // Some clients signal end-of-stream with a zero-byte chunk.
+            // Treat this as an empty response instead of a transport error.
+            return Ok(LeanResponse {
+                protocol: protocol.0.clone(),
+                payload: Vec::new(),
+            });
+        }
+        let response_code = buf[0];
+        let (len, prefix_len) = decode_uvi_len(&buf[1..]).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "failed to decode response length protocol={} code={} err={err}",
+                    protocol.0, response_code
+                ),
+            )
+        })?;
+        let compressed = &buf[(1 + prefix_len)..];
+        let payload = snappy_frame_decompress(compressed, len).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "failed to decode response payload protocol={} code={} len={} err={err}",
+                    protocol.0, response_code, len
+                ),
+            )
+        })?;
+        if response_code != 0 {
+            let detail = String::from_utf8_lossy(&payload);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "non-success reqresp response code={} protocol={} detail={}",
+                    response_code, protocol.0, detail
+                ),
+            ));
+        }
+        Ok(LeanResponse {
+            protocol: protocol.0.clone(),
+            payload,
+        })
     }
 
     async fn write_request<T>(
@@ -234,7 +381,10 @@ impl RequestResponseCodec for LeanReqRespCodec {
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        let framed = encode_reqresp_envelope(&protocol, &payload);
+        let mut framed = Vec::with_capacity(payload.len() + 16);
+        let _ = protocol;
+        encode_uvi_len(payload.len(), &mut framed);
+        framed.extend_from_slice(&snappy_frame_compress(&payload)?);
         futures::AsyncWriteExt::write_all(io, &framed).await?;
         futures::AsyncWriteExt::close(io).await?;
         Ok(())
@@ -249,7 +399,11 @@ impl RequestResponseCodec for LeanReqRespCodec {
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        let framed = encode_reqresp_envelope(&protocol, &payload);
+        let mut framed = Vec::with_capacity(payload.len() + 17);
+        let _ = protocol;
+        framed.push(0); // ResponseCode::Success
+        encode_uvi_len(payload.len(), &mut framed);
+        framed.extend_from_slice(&snappy_frame_compress(&payload)?);
         futures::AsyncWriteExt::write_all(io, &framed).await?;
         futures::AsyncWriteExt::close(io).await?;
         Ok(())
@@ -259,30 +413,35 @@ impl RequestResponseCodec for LeanReqRespCodec {
 impl P2pService {
     /// Constructs and starts the libp2p swarm.
     ///
-    /// Generates a fresh ephemeral Ed25519 keypair, subscribes to the
+    /// Generates a fresh ephemeral secp256k1 keypair, subscribes to the
     /// configured gossipsub topic, dials all bootnodes, and listens on
     /// `config.listen_addr`.
     pub fn new(config: P2pConfig, events: EventBus, outbound: mpsc::Receiver<P2pCommand>) -> Self {
-        let keypair = Keypair::generate_ed25519();
+        let keypair = Keypair::generate_secp256k1();
         let peer_id = PeerId::from(keypair.public());
 
-        let gossipsub = Gossipsub::new(
-            MessageAuthenticity::Signed(keypair.clone()),
-            build_gossipsub_config_v1_0_strict(),
+        let gossipsub = Gossipsub::new_with_transform(
+            MessageAuthenticity::Anonymous,
+            build_gossipsub_config_lean(config.max_gossip_bytes),
+            None,
+            SnappyTransform::new(config.max_gossip_bytes),
         )
         .expect("gossipsub");
         let identify = Identify::new(IdentifyConfig::new(
-            "/peam/1.0.0".to_string(),
+            "eth2/1.0.0".to_string(),
             keypair.public(),
         ));
         let ping = Ping::new(PingConfig::new().with_interval(Duration::from_secs(10)));
-        let reqresp_protocols = [
-            LeanSupportedProtocol::StatusV1.protocol_id(),
-            LeanSupportedProtocol::BlocksByRootV1.protocol_id(),
-        ]
-        .into_iter()
-        .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
-        let reqresp = RequestResponse::new(reqresp_protocols, RequestResponseConfig::default());
+        let reqresp_status_protocols = [LeanSupportedProtocol::StatusV1.protocol_id()]
+            .into_iter()
+            .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
+        let reqresp_blocks_protocols = [LeanSupportedProtocol::BlocksByRootV1.protocol_id()]
+            .into_iter()
+            .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
+        let reqresp_status =
+            RequestResponse::new(reqresp_status_protocols, RequestResponseConfig::default());
+        let reqresp_blocks =
+            RequestResponse::new(reqresp_blocks_protocols, RequestResponseConfig::default());
 
         // Local discovery for dev/test networks (LAN scope).
         let mdns = Mdns::new(MdnsConfig::default(), peer_id).expect("mdns");
@@ -290,7 +449,8 @@ impl P2pService {
             gossipsub,
             identify,
             ping,
-            reqresp,
+            reqresp_status,
+            reqresp_blocks,
             mdns,
         };
         let mut topics = std::collections::HashSet::new();
@@ -311,12 +471,15 @@ impl P2pService {
             transport,
             behaviour,
             peer_id,
-            libp2p::swarm::Config::with_tokio_executor(),
+            libp2p::swarm::Config::with_tokio_executor()
+                .with_idle_connection_timeout(Duration::from_secs(120)),
         );
         swarm.listen_on(config.listen_addr.clone()).expect("listen");
 
         for addr in config.bootnodes {
-            let _ = swarm.dial(addr);
+            if let Err(err) = swarm.dial(addr.clone()) {
+                tracing::warn!("initial_dial_failed addr={addr} err={err}");
+            }
         }
 
         let allowed_topics = config.allowed_topics.iter().cloned().collect();
@@ -325,7 +488,6 @@ impl P2pService {
         let signature_verifier = config.signature_verifier;
         let reqresp_handler = config.reqresp_handler;
         let gossip_context = config.gossip_context;
-        let gossipsub_topic = config.gossipsub_topic;
         let max_gossip_bytes = config.max_gossip_bytes;
         let max_reqresp_bytes = config.max_reqresp_bytes;
         info!("p2p_started peer_id={peer_id}");
@@ -339,7 +501,6 @@ impl P2pService {
             signature_verifier,
             reqresp_handler,
             gossip_context,
-            gossipsub_topic,
             local_peer_id: peer_id,
             listen_addr: config.listen_addr,
             max_gossip_bytes,
@@ -388,16 +549,179 @@ impl P2pService {
                 let topic = IdentTopic::new(topic.clone());
                 let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, payload);
             }
+            P2pCommand::Dial { addr } => {
+                if let Err(err) = self.swarm.dial(addr.clone()) {
+                    tracing::warn!("dial_command_failed addr={addr} err={err}");
+                }
+            }
             P2pCommand::SendRequest {
                 peer,
                 protocol,
                 payload,
             } => {
-                // Send a req/resp request to a specific peer.
-                self.swarm
-                    .behaviour_mut()
-                    .reqresp
-                    .send_request(&peer, LeanRequest { protocol, payload });
+                // Send a req/resp request to a specific peer using the matching protocol behaviour.
+                let kind = LeanSupportedProtocol::parse_protocol_id(&protocol);
+                let request = LeanRequest {
+                    protocol: protocol.clone(),
+                    payload,
+                };
+                match kind {
+                    Some(LeanSupportedProtocol::StatusV1) => {
+                        self.swarm
+                            .behaviour_mut()
+                            .reqresp_status
+                            .send_request(&peer, request);
+                    }
+                    Some(LeanSupportedProtocol::BlocksByRootV1) => {
+                        self.swarm
+                            .behaviour_mut()
+                            .reqresp_blocks
+                            .send_request(&peer, request);
+                    }
+                    None => {
+                        warn!(
+                            "reqresp_send_request_unknown_protocol peer={} protocol={}",
+                            peer, protocol
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_reqresp_event(
+        &mut self,
+        event: RequestResponseEvent<LeanRequest, LeanResponse>,
+        use_blocks_behaviour: bool,
+    ) {
+        match event {
+            RequestResponseEvent::Message { peer, message, .. } => match message {
+                RequestResponseMessage::Request {
+                    request, channel, ..
+                } => {
+                    // Inbound req/resp request.
+                    let LeanRequest { protocol, payload } = request;
+                    if payload.len() > self.max_reqresp_bytes {
+                        self.events.emit(NetworkEvent::PeerScored {
+                            peer_id: peer.to_string(),
+                            score: -25,
+                        });
+                        return;
+                    }
+                    let response_payload = match LeanSupportedProtocol::parse_protocol_id(&protocol)
+                        .and_then(|kind| LeanRequestMessage::decode_ssz(kind, &payload).ok())
+                    {
+                        Some(request) => self
+                            .reqresp_handler
+                            .on_request(request)
+                            .map(|response| response.encode_ssz())
+                            .unwrap_or_default(),
+                        None => {
+                            warn!(
+                                "reqresp_request_decode_failed peer={} protocol={} bytes={}",
+                                peer,
+                                protocol,
+                                payload.len()
+                            );
+                            Vec::new()
+                        }
+                    };
+                    self.events.emit(NetworkEvent::ReqRespRequest {
+                        peer_id: peer.to_string(),
+                        protocol: protocol.clone(),
+                        payload: payload.clone(),
+                    });
+
+                    let send_result = if use_blocks_behaviour {
+                        self.swarm.behaviour_mut().reqresp_blocks.send_response(
+                            channel,
+                            LeanResponse {
+                                protocol,
+                                payload: response_payload,
+                            },
+                        )
+                    } else {
+                        self.swarm.behaviour_mut().reqresp_status.send_response(
+                            channel,
+                            LeanResponse {
+                                protocol,
+                                payload: response_payload,
+                            },
+                        )
+                    };
+
+                    if let Err(err) = send_result {
+                        warn!("reqresp_send_response_failed peer={} err={:?}", peer, err);
+                    }
+                }
+                RequestResponseMessage::Response { response, .. } => {
+                    // Inbound req/resp response.
+                    let LeanResponse { protocol, payload } = response;
+                    if payload.is_empty() {
+                        debug!("reqresp_response_eos peer={} protocol={}", peer, protocol);
+                        return;
+                    }
+                    if payload.len() > self.max_reqresp_bytes {
+                        self.events.emit(NetworkEvent::PeerScored {
+                            peer_id: peer.to_string(),
+                            score: -25,
+                        });
+                        return;
+                    }
+                    debug!(
+                        "reqresp_response_in peer={} protocol={} bytes={}",
+                        peer,
+                        protocol,
+                        payload.len()
+                    );
+                    self.events.emit(NetworkEvent::ReqRespResponse {
+                        peer_id: peer.to_string(),
+                        protocol,
+                        payload,
+                    });
+                    self.events.emit(NetworkEvent::PeerScored {
+                        peer_id: peer.to_string(),
+                        score: 1,
+                    });
+                }
+            },
+            RequestResponseEvent::OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                warn!(
+                    "reqresp_outbound_failure peer={} request_id={request_id:?} err={error}",
+                    peer
+                );
+                self.events.emit(NetworkEvent::PeerScored {
+                    peer_id: peer.to_string(),
+                    score: -10,
+                });
+            }
+            RequestResponseEvent::InboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                warn!(
+                    "reqresp_inbound_failure peer={} request_id={request_id:?} err={error}",
+                    peer
+                );
+                self.events.emit(NetworkEvent::PeerScored {
+                    peer_id: peer.to_string(),
+                    score: -10,
+                });
+            }
+            RequestResponseEvent::ResponseSent {
+                peer, request_id, ..
+            } => {
+                debug!(
+                    "reqresp_response_sent peer={} request_id={request_id:?}",
+                    peer
+                );
             }
         }
     }
@@ -416,17 +740,39 @@ impl P2pService {
     /// - Ping failure: emit `PeerDisconnected`
     fn on_swarm_event(&mut self, event: SwarmEvent<LeanBehaviourEvent>) {
         match event {
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                // Track peer connection and send a hello for basic liveness.
-                self.events.emit(NetworkEvent::PeerConnected {
-                    peer_id: peer_id.to_string(),
-                });
-                let topic = IdentTopic::new(self.gossipsub_topic.clone());
-                let _ = self
-                    .swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .publish(topic, b"hello".to_vec());
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                num_established,
+                endpoint,
+                ..
+            } => {
+                // Mark connected on first established connection for this peer.
+                if num_established.get() == 1 {
+                    let inbound = endpoint.is_listener();
+                    self.events.emit(NetworkEvent::PeerConnected {
+                        peer_id: peer_id.to_string(),
+                        inbound,
+                    });
+                }
+            }
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                endpoint,
+                cause,
+                num_established,
+                ..
+            } => {
+                info!(
+                    "connection_closed peer_id={peer_id} endpoint={endpoint:?} cause={cause:?} remaining_connections={num_established}"
+                );
+                // Emit disconnected only when the last active connection closes.
+                if num_established == 0 {
+                    let inbound = endpoint.is_listener();
+                    self.events.emit(NetworkEvent::PeerDisconnected {
+                        peer_id: peer_id.to_string(),
+                        inbound,
+                    });
+                }
             }
             SwarmEvent::Behaviour(LeanBehaviourEvent::Gossipsub(GossipsubEvent::Message {
                 message,
@@ -451,6 +797,9 @@ impl P2pService {
                     valid,
                 });
                 if !valid {
+                    tracing::warn!(
+                        "gossip dropped: unknown topic={topic} peer={propagation_source}"
+                    );
                     self.events.emit(NetworkEvent::PeerScored {
                         peer_id: propagation_source.to_string(),
                         score: -5,
@@ -466,6 +815,9 @@ impl P2pService {
                 let payload_valid =
                     super::validate_gossip(validator, &message.data, &self.signature_verifier);
                 if !payload_valid {
+                    tracing::warn!(
+                        "gossip dropped: payload validation failed topic={topic} peer={propagation_source}"
+                    );
                     self.events.emit(NetworkEvent::PeerScored {
                         peer_id: propagation_source.to_string(),
                         score: -10,
@@ -484,7 +836,7 @@ impl P2pService {
                                 peer_id: propagation_source.to_string(),
                                 score: -1,
                             });
-                            info!("gossip_ignore topic={topic} reason={reason}");
+                            tracing::warn!("gossip_ignore topic={topic} reason={reason}");
                             return;
                         }
                         ValidationResult::Reject(reason) => {
@@ -492,7 +844,7 @@ impl P2pService {
                                 peer_id: propagation_source.to_string(),
                                 score: -25,
                             });
-                            info!("gossip_reject topic={topic} reason={reason}");
+                            tracing::warn!("gossip_reject topic={topic} reason={reason}");
                             return;
                         }
                     }
@@ -506,7 +858,7 @@ impl P2pService {
                                 peer_id: propagation_source.to_string(),
                                 score: -1,
                             });
-                            info!("gossip_ignore topic={topic} reason={reason}");
+                            tracing::warn!("gossip_ignore topic={topic} reason={reason}");
                             return;
                         }
                         ValidationResult::Reject(reason) => {
@@ -514,7 +866,7 @@ impl P2pService {
                                 peer_id: propagation_source.to_string(),
                                 score: -25,
                             });
-                            info!("gossip_reject topic={topic} reason={reason}");
+                            tracing::warn!("gossip_reject topic={topic} reason={reason}");
                             return;
                         }
                     }
@@ -532,7 +884,9 @@ impl P2pService {
             SwarmEvent::Behaviour(LeanBehaviourEvent::Mdns(MdnsEvent::Discovered(peers))) => {
                 for (_peer_id, addr) in peers {
                     // Attempt to connect to newly discovered peers.
-                    let _ = self.swarm.dial(addr.clone());
+                    if let Err(err) = self.swarm.dial(addr.clone()) {
+                        tracing::warn!("mdns_dial_failed addr={addr} err={err}");
+                    }
                 }
             }
             SwarmEvent::Behaviour(LeanBehaviourEvent::Mdns(MdnsEvent::Expired(_))) => {}
@@ -542,72 +896,26 @@ impl P2pService {
             })) => {
                 self.events.emit(NetworkEvent::PeerConnected {
                     peer_id: peer_id.to_string(),
+                    inbound: true,
                 });
             }
             SwarmEvent::Behaviour(LeanBehaviourEvent::Ping(PingEvent { peer, result, .. })) => {
                 if result.is_err() {
-                    self.events.emit(NetworkEvent::PeerDisconnected {
-                        peer_id: peer.to_string(),
-                    });
+                    tracing::warn!("ping_failed peer_id={peer} err={:?}", result.err());
                 }
             }
-            SwarmEvent::Behaviour(LeanBehaviourEvent::Reqresp(RequestResponseEvent::Message {
-                peer,
-                message,
-            })) => {
-                match message {
-                    RequestResponseMessage::Request {
-                        request, channel, ..
-                    } => {
-                        // Inbound req/resp request.
-                        let LeanRequest { protocol, payload } = request;
-                        if payload.len() > self.max_reqresp_bytes {
-                            self.events.emit(NetworkEvent::PeerScored {
-                                peer_id: peer.to_string(),
-                                score: -25,
-                            });
-                            return;
-                        }
-                        let message = LeanSupportedProtocol::parse_protocol_id(&protocol)
-                            .and_then(|kind| LeanRequestMessage::decode_ssz(kind, &payload).ok());
-                        self.events.emit(NetworkEvent::ReqRespRequest {
-                            peer_id: peer.to_string(),
-                            protocol: protocol.clone(),
-                            payload: payload.clone(),
-                        });
-                        let response_payload = message
-                            .and_then(|req| self.reqresp_handler.on_request(req))
-                            .map(|resp| resp.encode_ssz())
-                            .unwrap_or_else(|| payload.clone());
-                        let _ = self.swarm.behaviour_mut().reqresp.send_response(
-                            channel,
-                            LeanResponse {
-                                protocol,
-                                payload: response_payload,
-                            },
-                        );
-                    }
-                    RequestResponseMessage::Response { response, .. } => {
-                        // Inbound req/resp response.
-                        let LeanResponse { protocol, payload } = response;
-                        if payload.len() > self.max_reqresp_bytes {
-                            self.events.emit(NetworkEvent::PeerScored {
-                                peer_id: peer.to_string(),
-                                score: -25,
-                            });
-                            return;
-                        }
-                        self.events.emit(NetworkEvent::ReqRespResponse {
-                            peer_id: peer.to_string(),
-                            protocol,
-                            payload,
-                        });
-                        self.events.emit(NetworkEvent::PeerScored {
-                            peer_id: peer.to_string(),
-                            score: 1,
-                        });
-                    }
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                if let Some(peer_id) = peer_id {
+                    tracing::warn!("outgoing_connection_error peer_id={peer_id} err={error}");
+                } else {
+                    tracing::warn!("outgoing_connection_error err={error}");
                 }
+            }
+            SwarmEvent::Behaviour(LeanBehaviourEvent::ReqrespStatus(event)) => {
+                self.handle_reqresp_event(event, false);
+            }
+            SwarmEvent::Behaviour(LeanBehaviourEvent::ReqrespBlocks(event)) => {
+                self.handle_reqresp_event(event, true);
             }
             _ => {}
         }
@@ -619,16 +927,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gossipsub_config_is_pinned_to_v1_0_and_strict_validation() {
-        let config = build_gossipsub_config_v1_0_strict();
-        let dbg = format!("{config:?}");
-        assert_eq!(GOSSIPSUB_PROTOCOL_ID_V1_0, "/meshsub/1.0.0");
-        assert!(dbg.contains(GOSSIPSUB_PROTOCOL_ID_V1_0));
-        assert!(!dbg.contains("/meshsub/1.1.0"));
-        assert!(!dbg.contains("/meshsub/1.2.0"));
+    fn gossipsub_config_uses_anonymous_validation() {
+        let config = build_gossipsub_config_lean(2_000_000);
         assert!(matches!(
             config.validation_mode(),
-            gossipsub::ValidationMode::Strict
+            gossipsub::ValidationMode::Anonymous
         ));
+        assert_eq!(config.max_transmit_size(), 2_000_000);
+    }
+
+    #[test]
+    fn reqresp_request_framing_roundtrip() {
+        let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut frame = Vec::new();
+        encode_uvi_len(payload.len(), &mut frame);
+        frame.extend_from_slice(&snappy_frame_compress(&payload).expect("compress"));
+
+        let (len, prefix_len) = decode_uvi_len(&frame).expect("decode varint");
+        assert_eq!(len, payload.len());
+        let decoded =
+            snappy_frame_decompress(&frame[prefix_len..], len).expect("decompress request");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn reqresp_response_framing_roundtrip() {
+        let payload = vec![42u8; 32];
+        let mut frame = Vec::new();
+        frame.push(0);
+        encode_uvi_len(payload.len(), &mut frame);
+        frame.extend_from_slice(&snappy_frame_compress(&payload).expect("compress"));
+
+        assert_eq!(frame[0], 0);
+        let (len, prefix_len) = decode_uvi_len(&frame[1..]).expect("decode varint");
+        assert_eq!(len, payload.len());
+        let decoded =
+            snappy_frame_decompress(&frame[(1 + prefix_len)..], len).expect("decompress response");
+        assert_eq!(decoded, payload);
     }
 }

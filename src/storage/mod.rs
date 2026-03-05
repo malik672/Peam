@@ -26,6 +26,7 @@ use rapidhash::RapidHashMap;
 
 use crate::containers::block::{Block, SignedBlockWithAttestation};
 use crate::containers::state::State;
+use crate::metrics::MetricsRegistry;
 use crate::types::bytes::Bytes32;
 
 mod canonical_db;
@@ -120,6 +121,17 @@ pub trait Store {
     fn head(&self) -> Option<Bytes32>;
     /// Sets the head root.
     fn set_head(&mut self, root: Bytes32);
+    /// Like [`put_signed_block`] but uses the metrics-instrumented state
+    /// transition. Default implementation falls back to the non-metrics path.
+    fn put_signed_block_with_metrics(
+        &mut self,
+        root: Bytes32,
+        signed: SignedBlockWithAttestation,
+        state: &mut State,
+        _metrics: &MetricsRegistry,
+    ) -> Result<(), String> {
+        self.put_signed_block(root, signed, state)
+    }
 }
 
 /// A fully in-memory [`Store`].

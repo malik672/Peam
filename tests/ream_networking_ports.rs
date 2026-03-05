@@ -11,6 +11,7 @@ use peam::containers::checkpoint::Checkpoint;
 use peam::containers::req_resp::{BlocksByRootRequest, MAX_BLOCKS_PER_ROOT_REQUEST, Status};
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::crypto::pq::{key_gen_for_devnet_validator, sign_message};
 use peam::networking::gossipsub::context::StateGossipContext;
 use peam::networking::{
     LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent, NetworkEventBus,
@@ -20,7 +21,7 @@ use peam::slot::Slot;
 use peam::ssz::HashTreeRoot;
 use peam::storage::{MemoryStore, Store};
 use peam::types::bitlist::BitList;
-use peam::types::bytes::{Bytes32, Bytes52, Bytes3112};
+use peam::types::bytes::Bytes32;
 use peam::types::collections::SszList;
 use peam::types::uint::Uint64;
 use std::sync::{Arc, RwLock};
@@ -37,8 +38,9 @@ fn empty_state() -> Arc<RwLock<State>> {
 }
 
 fn single_validator_state() -> Arc<RwLock<State>> {
+    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
     let validators = Validators::new(vec![Validator {
-        pubkey: Bytes52::from([0x01; 52]),
+        pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     }])
@@ -94,6 +96,15 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
         },
     };
 
+    let (_, secret_key) = key_gen_for_devnet_validator(0).expect("validator key");
+    let proposer_message = proposer_attestation.data.hash_tree_root();
+    let proposer_signature = sign_message(
+        &secret_key,
+        proposer_attestation.data.slot.0.0 as u32,
+        &proposer_message,
+    )
+    .expect("proposer signature");
+
     SignedBlockWithAttestation {
         message: BlockWithAttestation {
             block,
@@ -101,7 +112,7 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
         },
         signature: BlockSignatures {
             attestation_signatures: SszList::new(vec![]).expect("attestation signatures"),
-            proposer_signature: Bytes3112::zero(),
+            proposer_signature,
         },
     }
 }

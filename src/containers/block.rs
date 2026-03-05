@@ -1,4 +1,6 @@
-use crate::containers::attestation::{AggregatedSignatureProof, Attestation};
+use crate::containers::attestation::{
+    AggregatedSignatureProof, Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT,
+};
 use crate::containers::validator::ValidatorIndex;
 use crate::slot::Slot;
 use crate::ssz::hash::{hash_nodes, merkleize_tree_root};
@@ -196,6 +198,74 @@ fn single_set_bit(
         }
     }
     found
+}
+
+#[inline]
+fn proposer_attestation_from_ream_parts(
+    validator_id: u64,
+    data: AttestationData,
+) -> Result<Attestation, String> {
+    let index = validator_id as usize;
+    if index >= VALIDATOR_REGISTRY_LIMIT {
+        return Err(format!(
+            "proposer validator index {index} exceeds registry limit {VALIDATOR_REGISTRY_LIMIT}"
+        ));
+    }
+    let bit_len = index + 1;
+    let byte_len = bit_len.div_ceil(8);
+    let mut bits = vec![0u8; byte_len];
+    bits[index / 8] |= 1u8 << (index % 8);
+    Ok(Attestation {
+        aggregation_bits: BitList {
+            data: bits,
+            len: bit_len,
+        },
+        data,
+    })
+}
+
+#[inline]
+fn decode_ream_block_with_attestation(
+    bytes: &[u8],
+    checked: bool,
+) -> Result<BlockWithAttestation, String> {
+    // REAM devnet2 layout:
+    // [off_block: u32][validator_id: u64][attestation_data: 128 bytes][block bytes]
+    let proposer_fixed_len = 8 + AttestationData::fixed_len();
+    let fixed_len = 4 + proposer_fixed_len;
+    if bytes.len() < fixed_len {
+        return Err("BlockWithAttestation (ream) missing fixed section".to_string());
+    }
+    let mut buf = [0u8; 4];
+    buf.copy_from_slice(&bytes[0..4]);
+    let off_block = u32::from_le_bytes(buf) as usize;
+    if checked && (off_block != fixed_len || off_block > bytes.len()) {
+        return Err("BlockWithAttestation (ream) offset is invalid".to_string());
+    }
+    if off_block < fixed_len || off_block > bytes.len() {
+        return Err("BlockWithAttestation (ream) offset is out of bounds".to_string());
+    }
+    let validator_id = u64::from_le_bytes(
+        bytes[4..12]
+            .try_into()
+            .map_err(|_| "BlockWithAttestation (ream) validator_id missing".to_string())?,
+    );
+    let attestation_data = if checked {
+        AttestationData::decode_ssz_checked(&bytes[12..(12 + AttestationData::fixed_len())])?
+    } else {
+        AttestationData::decode_ssz(&bytes[12..(12 + AttestationData::fixed_len())])?
+    };
+    let proposer_attestation =
+        proposer_attestation_from_ream_parts(validator_id, attestation_data)?;
+    let block = if checked {
+        Block::decode_ssz_checked(&bytes[off_block..])?
+    } else {
+        Block::decode_ssz(&bytes[off_block..])?
+    };
+    Ok(BlockWithAttestation {
+        block,
+        proposer_attestation,
+    })
 }
 
 /// SSZ serialization for [`BlockHeader`] — fixed 112-byte encoding.
@@ -476,17 +546,23 @@ impl SszEncode for BlockWithAttestation {
 /// SSZ deserialization for [`BlockWithAttestation`] — trusts that offsets are valid.
 impl SszDecode for BlockWithAttestation {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < 8 {
+            return Err("BlockWithAttestation missing offset table".to_string());
+        }
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&bytes[0..4]);
         let off_block = u32::from_le_bytes(buf) as usize;
         buf.copy_from_slice(&bytes[4..8]);
         let off_proposer = u32::from_le_bytes(buf) as usize;
-        let block = Block::decode_ssz(&bytes[off_block..off_proposer])?;
-        let proposer_attestation = Attestation::decode_ssz(&bytes[off_proposer..])?;
-        Ok(Self {
-            block,
-            proposer_attestation,
-        })
+        if off_block <= off_proposer && off_proposer <= bytes.len() {
+            let block = Block::decode_ssz(&bytes[off_block..off_proposer])?;
+            let proposer_attestation = Attestation::decode_ssz(&bytes[off_proposer..])?;
+            return Ok(Self {
+                block,
+                proposer_attestation,
+            });
+        }
+        decode_ream_block_with_attestation(bytes, false)
     }
 }
 
@@ -505,7 +581,7 @@ impl BlockWithAttestation {
         buf.copy_from_slice(&bytes[4..8]);
         let off_proposer = u32::from_le_bytes(buf) as usize;
         if off_block != 8 || off_proposer < off_block || off_proposer > bytes.len() {
-            return Err("BlockWithAttestation offsets are invalid".to_string());
+            return decode_ream_block_with_attestation(bytes, true);
         }
         let block = Block::decode_ssz_checked(&bytes[off_block..off_proposer])?;
         let proposer_attestation = Attestation::decode_ssz_checked(&bytes[off_proposer..])?;

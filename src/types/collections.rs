@@ -73,6 +73,12 @@ impl<T, const LENGTH: usize> SszVector<T, LENGTH> {
     }
 }
 
+impl<T, const LIMIT: usize> Default for SszList<T, LIMIT> {
+    fn default() -> Self {
+        Self { data: Vec::new() }
+    }
+}
+
 impl<T, const LIMIT: usize> SszList<T, LIMIT> {
     pub fn new(data: Vec<T>) -> Result<Self, String> {
         Ok(Self { data })

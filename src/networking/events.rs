@@ -12,9 +12,9 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
     /// A new peer connection was established.
-    PeerConnected { peer_id: String },
+    PeerConnected { peer_id: String, inbound: bool },
     /// An existing peer connection was closed.
-    PeerDisconnected { peer_id: String },
+    PeerDisconnected { peer_id: String, inbound: bool },
     /// A peer was banned and removed.
     PeerBanned { peer_id: String, reason: String },
     /// A gossipsub message was received from the network.

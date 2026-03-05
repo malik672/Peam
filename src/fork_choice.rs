@@ -4,9 +4,13 @@ use crate::containers::attestation::Attestation;
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
+use crate::slot::Slot;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
+use crate::types::uint::Uint64;
+
+const JUSTIFICATION_LOOKBACK_SLOTS: u64 = 3;
 
 /// The store is initialized from an anchor block and its post-state (typically the genesis
 /// block or a finalized checkpoint), then updated incrementally as blocks and attestations
@@ -366,6 +370,110 @@ impl ForkChoiceStore {
     #[inline]
     pub fn validator_count(&self) -> usize {
         self.validator_count
+    }
+
+    #[inline]
+    pub fn safe_target_slot(&self) -> u64 {
+        self.blocks
+            .get(&self.safe_target)
+            .map(|b| b.message.block.slot.0.0)
+            .unwrap_or(self.head_slot)
+    }
+
+    #[inline]
+    pub fn gossip_signatures_count(&self) -> usize {
+        self.latest_new_votes.len()
+    }
+
+    #[inline]
+    pub fn latest_votes_count(&self) -> usize {
+        self.latest_votes.len()
+    }
+
+    /// Returns a `(root, slot)` checkpoint for `root` if the block exists in the store.
+    #[inline]
+    pub fn checkpoint_for_root(&self, root: Bytes32) -> Option<Checkpoint> {
+        let block = self.blocks.get(&root)?;
+        Some(Checkpoint {
+            root,
+            slot: Slot(Uint64(block.message.block.slot.0.0)),
+        })
+    }
+
+    /// Computes an attestation target checkpoint from the current head/safe-target view.
+    ///
+    /// Mirrors the Ream devnet-2 strategy:
+    /// - start from head,
+    /// - walk back at most `JUSTIFICATION_LOOKBACK_SLOTS` while above safe-target slot,
+    /// - then walk back until slot is justifiable after `finalized_slot`.
+    #[inline]
+    pub fn attestation_target(&self, finalized_slot: Slot) -> Option<Checkpoint> {
+        let mut target_root = self.head;
+        let safe_slot = self
+            .blocks
+            .get(&self.safe_target)
+            .map(|b| b.message.block.slot.0.0)
+            .unwrap_or(self.head_slot);
+
+        for _ in 0..JUSTIFICATION_LOOKBACK_SLOTS {
+            let target_slot = self.blocks.get(&target_root)?.message.block.slot.0.0;
+            if target_slot <= safe_slot {
+                break;
+            }
+            let parent = *self.parents.get(&target_root)?;
+            if parent == Bytes32::zero() {
+                break;
+            }
+            target_root = parent;
+        }
+
+        loop {
+            let target_slot = self.blocks.get(&target_root)?.message.block.slot.0.0;
+            let target = Slot(Uint64(target_slot));
+            match crate::slot::is_justifiable_after(target, finalized_slot) {
+                Ok(true) => break,
+                Ok(false) => {
+                    let parent = *self.parents.get(&target_root)?;
+                    if parent == Bytes32::zero() {
+                        break;
+                    }
+                    target_root = parent;
+                }
+                Err(_) => return None,
+            }
+        }
+
+        self.checkpoint_for_root(target_root)
+    }
+
+    /// Walk from `old_head` and `new_head` to their common ancestor and return
+    /// the depth of the reorg (distance from old head to common ancestor).
+    pub fn reorg_depth(&self, old_head: Bytes32, new_head: Bytes32) -> u64 {
+        let mut ancestors_of_new: std::collections::HashSet<Bytes32> =
+            std::collections::HashSet::new();
+        let mut node = new_head;
+        ancestors_of_new.insert(node);
+        loop {
+            match self.parents.get(&node) {
+                Some(parent) if *parent != Bytes32::zero() => {
+                    ancestors_of_new.insert(*parent);
+                    node = *parent;
+                }
+                _ => break,
+            }
+        }
+        let mut depth = 0u64;
+        node = old_head;
+        while !ancestors_of_new.contains(&node) {
+            match self.parents.get(&node) {
+                Some(parent) if *parent != Bytes32::zero() => {
+                    depth += 1;
+                    node = *parent;
+                }
+                _ => break,
+            }
+        }
+        depth
     }
 }
 

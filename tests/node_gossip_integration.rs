@@ -8,13 +8,15 @@ use peam::containers::checkpoint::Checkpoint;
 use peam::containers::gossip::{GossipAttestation, GossipBlock};
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::crypto::pq::{key_gen_for_devnet_validator, sign_message};
+use peam::metrics::MetricsRegistry;
 use peam::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopicKind};
 use peam::node::handle_gossip_event;
 use peam::slot::Slot;
 use peam::ssz::{HashTreeRoot, SszEncode};
 use peam::storage::MemoryStore;
 use peam::types::bitlist::BitList;
-use peam::types::bytes::{Bytes32, Bytes52, Bytes3112};
+use peam::types::bytes::{Bytes32, Bytes3112};
 use peam::types::collections::SszList;
 use peam::types::uint::Uint64;
 
@@ -59,13 +61,22 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
             },
         },
     };
+    let (_, secret_key) = key_gen_for_devnet_validator(0).expect("validator key");
+    let proposer_message = proposer_attestation.data.hash_tree_root();
+    let proposer_signature = sign_message(
+        &secret_key,
+        proposer_attestation.data.slot.0.0 as u32,
+        &proposer_message,
+    )
+    .expect("proposer signature");
+
     let message = BlockWithAttestation {
         block,
         proposer_attestation,
     };
     let signature = BlockSignatures {
         attestation_signatures: SszList::new(vec![]).expect("attestation sigs"),
-        proposer_signature: Bytes3112::zero(),
+        proposer_signature,
     };
     let root = Bytes32::from(message.block.hash_tree_root());
     (
@@ -78,8 +89,9 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
 fn gossip_block_updates_fork_choice_head() {
+    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -88,6 +100,7 @@ fn gossip_block_updates_fork_choice_head() {
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
     let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+    let metrics = Arc::new(MetricsRegistry::new());
 
     let (signed, _post, root) = {
         let s = state.read().expect("state lock");
@@ -108,6 +121,7 @@ fn gossip_block_updates_fork_choice_head() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &metrics,
     );
     let fc = fork_choice.read().expect("fork choice lock");
     let fc = fc.as_ref().expect("fork choice");
@@ -117,8 +131,9 @@ fn gossip_block_updates_fork_choice_head() {
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
 fn gossip_attestation_updates_fork_choice_votes() {
+    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -127,6 +142,7 @@ fn gossip_attestation_updates_fork_choice_votes() {
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
     let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+    let metrics = Arc::new(MetricsRegistry::new());
 
     let (signed, _post, root) = {
         let s = state.read().expect("state lock");
@@ -147,6 +163,7 @@ fn gossip_attestation_updates_fork_choice_votes() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &metrics,
     );
 
     let signed_att = SignedAttestation {
@@ -185,6 +202,7 @@ fn gossip_attestation_updates_fork_choice_votes() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &metrics,
     );
     let fc = fork_choice.read().expect("fork choice lock");
     let fc = fc.as_ref().expect("fork choice");

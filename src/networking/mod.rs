@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::networking::events::EventBus;
 
@@ -67,6 +67,7 @@ pub struct Networking {
     reqresp_task: JoinHandle<()>,
     discovery_task: JoinHandle<()>,
     p2p_task: JoinHandle<()>,
+    peer_event_task: JoinHandle<()>,
     score_decay_task: JoinHandle<()>,
 }
 
@@ -83,7 +84,6 @@ impl Networking {
         let discovery = Discovery::new(std::time::Duration::from_secs(
             config.discovery_interval_secs,
         ));
-        let discovery_peers = peers.clone();
         let discovery_runner = discovery.clone();
         let inbound_gossip_limiter = RateLimiter::new(std::time::Duration::from_secs(1), 256);
         let inbound_reqresp_limiter = RateLimiter::new(std::time::Duration::from_secs(1), 128);
@@ -186,22 +186,24 @@ impl Networking {
             .listen_addr
             .parse()
             .unwrap_or_else(|_| "/ip4/0.0.0.0/udp/9000/quic-v1".parse().unwrap());
-        let mut bootnodes = config
-            .bootnodes
-            .iter()
-            .filter_map(|addr| addr.parse().ok())
-            .collect::<Vec<_>>();
-        bootnodes.extend(
-            config
-                .trusted_peers
-                .iter()
-                .filter_map(|addr| addr.parse().ok()),
-        );
+        let mut bootnodes = Vec::new();
+        for addr in &config.bootnodes {
+            match addr.parse() {
+                Ok(parsed) => bootnodes.push(parsed),
+                Err(err) => warn!("invalid_bootnode_multiaddr addr={addr} err={err}"),
+            }
+        }
+        for addr in &config.trusted_peers {
+            match addr.parse() {
+                Ok(parsed) => bootnodes.push(parsed),
+                Err(err) => warn!("invalid_trusted_peer_multiaddr addr={addr} err={err}"),
+            }
+        }
         let gossipsub_topic = config
             .allowed_topics
             .first()
             .cloned()
-            .unwrap_or_else(|| "leanconsensus/devnet2/block/ssz_snappy".to_string());
+            .unwrap_or_else(|| "/leanconsensus/devnet2/block/ssz_snappy".to_string());
         let p2p_config = P2pConfig {
             listen_addr,
             bootnodes,
@@ -221,6 +223,25 @@ impl Networking {
             p2p_service.run().await;
         });
 
+        // Keep PeerManager in sync with actual swarm connection lifecycle.
+        let peers_for_events = peers.clone();
+        let mut peer_events_rx = events.subscribe();
+        let peer_event_task = tokio::spawn(async move {
+            loop {
+                match peer_events_rx.recv().await {
+                    Ok(NetworkEvent::PeerConnected { peer_id, inbound }) => {
+                        peers_for_events.connect(peer_id, inbound).await;
+                    }
+                    Ok(NetworkEvent::PeerDisconnected { peer_id, inbound }) => {
+                        peers_for_events.disconnect(&peer_id, inbound).await;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         let score_decay_interval = std::time::Duration::from_secs(config.score_decay_interval_secs);
         let score_decay_amount = config.score_decay_amount;
         let ban_threshold = config.ban_threshold;
@@ -237,8 +258,12 @@ impl Networking {
         });
 
         // Periodic discovery loop (bootnodes + mDNS).
+        let discovery_p2p_tx = p2p_tx.clone();
+        let discovery_peers = peers.clone();
         let discovery_task = tokio::spawn(async move {
-            discovery_runner.run(discovery_peers).await;
+            discovery_runner
+                .run(discovery_p2p_tx, discovery_peers)
+                .await;
         });
 
         Self {
@@ -252,6 +277,7 @@ impl Networking {
             reqresp_task,
             discovery_task,
             p2p_task,
+            peer_event_task,
             score_decay_task,
         }
     }
@@ -267,6 +293,7 @@ impl Networking {
         self.reqresp_task.abort();
         self.discovery_task.abort();
         self.p2p_task.abort();
+        self.peer_event_task.abort();
         self.score_decay_task.abort();
     }
 
@@ -353,23 +380,23 @@ impl Default for NetworkingConfig {
             trusted_peers: Vec::new(),
             listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
             allowed_topics: vec![
-                "leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
-                ("leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
+                ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
                 (
-                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
             topic_validators: vec![
                 (
-                    "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
                     GossipValidatorKind::Block,
                 ),
                 (
-                    "leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     GossipValidatorKind::Attestation,
                 ),
             ],

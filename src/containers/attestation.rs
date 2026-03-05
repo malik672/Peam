@@ -104,6 +104,7 @@ pub struct AggregatedSignatureProof {
 
 /// SSZ serialization for [`AttestationData`] — 128-byte fixed encoding.
 impl SszEncode for AttestationData {
+    #[inline]
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 40 * 3);
         unsafe { out.set_len(8 + 40 * 3) };
@@ -117,6 +118,7 @@ impl SszEncode for AttestationData {
 
 /// SSZ deserialization for [`AttestationData`] — trusts that `bytes` is exactly 128 bytes.
 impl SszDecode for AttestationData {
+    #[inline]
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let slot = Slot::decode_ssz(&bytes[0..8])?;
         let head = Checkpoint::decode_ssz(&bytes[8..48])?;
@@ -158,8 +160,10 @@ impl HashTreeRoot for AttestationData {
         let head_root = Bytes32::from(self.head.hash_tree_root());
         let target_root = Bytes32::from(self.target.hash_tree_root());
         let source_root = Bytes32::from(self.source.hash_tree_root());
-        let root = merkleize_tree_root_3(&[slot_root, head_root, target_root]);
-        let root = hash_nodes(&root, &source_root);
+        // Container root for 4 fields: hash(hash(slot, head), hash(target, source)).
+        let left = hash_nodes(&slot_root, &head_root);
+        let right = hash_nodes(&target_root, &source_root);
+        let root = hash_nodes(&left, &right);
         *root.as_ref()
     }
 }

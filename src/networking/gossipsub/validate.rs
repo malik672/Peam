@@ -111,15 +111,15 @@ fn validate_subnet_attestation_basic(
 /// Validates attestation data fields.
 ///
 /// Checks:
-/// - `target.slot >= source.slot`
+/// - `target.slot > source.slot`
 /// - if `max_slot` is provided: `data.slot <= max_slot`
 fn validate_attestation_fields(
     attestation: &AttestationData,
     max_slot: Option<u64>,
 ) -> ValidationResult {
     let data = attestation;
-    if data.target.slot < data.source.slot {
-        return ValidationResult::Reject("attestation target below source".to_string());
+    if data.target.slot <= data.source.slot {
+        return ValidationResult::Reject("attestation target not above source".to_string());
     }
     if data.head.slot < data.target.slot {
         return ValidationResult::Reject("attestation head below target".to_string());
@@ -188,8 +188,8 @@ fn validate_attestation_with_context(
     context: &dyn GossipContext,
 ) -> ValidationResult {
     let msg = &attestation.message;
-    if msg.target.slot < msg.source.slot {
-        return ValidationResult::Reject("attestation target below source".to_string());
+    if msg.target.slot <= msg.source.slot {
+        return ValidationResult::Reject("attestation target not above source".to_string());
     }
     if msg.head.slot < msg.target.slot {
         return ValidationResult::Reject("attestation head below target".to_string());

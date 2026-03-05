@@ -6,6 +6,7 @@ pub use gossip::handle_gossip_event;
 pub use head::proposal_head_from_pending;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::oneshot;
@@ -17,16 +18,14 @@ use crate::containers::attestation::Attestation;
 use crate::containers::config::Config;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
-use crate::metrics::spawn_metrics_server;
-use crate::networking::{
-    Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
-};
+use crate::metrics::{MetricsRegistry, spawn_metrics_server};
+use crate::networking::{Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler};
 use crate::ssz::HashTreeRoot;
 use crate::storage::FileStore;
 
 use tasks::{
-    apply_devnet_pq_validator_pubkeys, spawn_consensus_lifecycle_task, spawn_signed_attestation_task,
-    spawn_strict_slot_clock,
+    apply_devnet_pq_validator_pubkeys, spawn_block_production_task, spawn_consensus_lifecycle_task,
+    spawn_signed_attestation_task, spawn_status_sync_task, spawn_strict_slot_clock,
 };
 
 /// Filesystem paths used to initialize a [`Node`].
@@ -61,6 +60,8 @@ pub struct Node {
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     /// Attestations received since the last proposal head query.
     pending_attestations: Arc<RwLock<Vec<Attestation>>>,
+    /// Aggregated attestations staged by lifecycle for block production.
+    pending_block_attestations: Arc<RwLock<Vec<Attestation>>>,
     /// Root data directory for this node instance.
     data_dir: PathBuf,
     /// Resolved path to the block store directory.
@@ -79,6 +80,18 @@ pub struct Node {
     lifecycle_task: Option<JoinHandle<()>>,
     /// Handle to the local signed-attestation publishing task.
     signing_task: Option<JoinHandle<()>>,
+    /// Handle to the local block-production task.
+    block_task: Option<JoinHandle<()>>,
+    /// Handle to the status/backfill sync task.
+    sync_task: Option<JoinHandle<()>>,
+    /// True while the node is actively catching up from peers.
+    is_syncing: Arc<AtomicBool>,
+    /// Peer-reported head slot currently targeted by the sync loop.
+    sync_target_slot: Arc<AtomicU64>,
+    /// Number of backfill blocks buffered before import.
+    sync_pending_depth: Arc<AtomicU64>,
+    /// Shared metrics registry for all spec-defined Prometheus metrics.
+    metrics: Arc<MetricsRegistry>,
 }
 
 impl Node {
@@ -114,13 +127,16 @@ impl Node {
         let store = Arc::new(RwLock::new(FileStore::open(&store_dir)?));
         let fork_choice = Arc::new(RwLock::new(None));
         let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+        let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let metrics = Arc::new(MetricsRegistry::new());
         Ok(Self {
             config,
             state,
             store,
             fork_choice,
             pending_attestations,
+            pending_block_attestations,
             data_dir: node_config.data_dir,
             store_dir,
             networking: None,
@@ -130,6 +146,12 @@ impl Node {
             metrics_task: None,
             lifecycle_task: None,
             signing_task: None,
+            block_task: None,
+            sync_task: None,
+            is_syncing: Arc::new(AtomicBool::new(false)),
+            sync_target_slot: Arc::new(AtomicU64::new(0)),
+            sync_pending_depth: Arc::new(AtomicU64::new(0)),
+            metrics,
         })
     }
 
@@ -157,10 +179,9 @@ impl Node {
         let state_root = self.state.read().expect("state lock").hash_tree_root();
         info!("state_root={:?}", state_root);
 
-        let signature_verifier = {
-            let state = self.state.read().expect("state lock");
-            verifier_from_validators(&state.validators.data)
-        };
+        // Devnet interop default: do structural/context validation for gossip,
+        // then enforce structure again at block import.
+        let signature_verifier = Arc::new(crate::networking::NoopGossipVerifier);
         let reqresp_handler = Arc::new(StoreReqRespHandler::new(
             self.state.clone(),
             self.store.clone(),
@@ -201,6 +222,7 @@ impl Node {
             let store = self.store.clone();
             let fork_choice = self.fork_choice.clone();
             let pending_attestations = self.pending_attestations.clone();
+            let metrics = self.metrics.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok(event) = rx.recv().await else { continue };
@@ -213,13 +235,51 @@ impl Node {
                             &store,
                             &fork_choice,
                             &pending_attestations,
+                            &metrics,
                         );
                     }
                 }
             });
+
+            let sync_rx = networking.events.subscribe();
+            self.sync_task = Some(spawn_status_sync_task(
+                networking.p2p_sender(),
+                networking.peers.clone(),
+                sync_rx,
+                self.state.clone(),
+                self.store.clone(),
+                self.fork_choice.clone(),
+                self.is_syncing.clone(),
+                self.sync_target_slot.clone(),
+                self.sync_pending_depth.clone(),
+                self.metrics.clone(),
+            ));
         }
 
         if let Some(networking) = &self.networking {
+            let maybe_block_topic = self
+                .settings
+                .allowed_topics
+                .iter()
+                .find(|topic| topic.contains("block"))
+                .cloned();
+            if let Some(block_topic) = maybe_block_topic {
+                self.block_task = spawn_block_production_task(
+                    self.config.genesis_time.0,
+                    self.settings.local_validator_index as usize,
+                    block_topic,
+                    networking.p2p_sender(),
+                    self.is_syncing.clone(),
+                    self.state.clone(),
+                    self.store.clone(),
+                    self.fork_choice.clone(),
+                    self.pending_block_attestations.clone(),
+                    self.metrics.clone(),
+                );
+            } else {
+                warn!("no block topic configured; local block production disabled");
+            }
+
             let maybe_att_topic = self
                 .settings
                 .allowed_topics
@@ -232,9 +292,11 @@ impl Node {
                     self.settings.local_validator_index as usize,
                     attestation_topic,
                     networking.p2p_sender(),
+                    self.is_syncing.clone(),
                     self.state.clone(),
                     self.fork_choice.clone(),
                     self.pending_attestations.clone(),
+                    self.metrics.clone(),
                 );
             } else {
                 warn!("no attestation topic configured; local signing task disabled");
@@ -245,6 +307,8 @@ impl Node {
             self.config.genesis_time.0,
             self.fork_choice.clone(),
             self.pending_attestations.clone(),
+            self.pending_block_attestations.clone(),
+            self.metrics.clone(),
         ));
 
         if self.settings.metrics {
@@ -257,6 +321,10 @@ impl Node {
                 self.store.clone(),
                 self.fork_choice.clone(),
                 self.networking.as_ref().map(|n| n.peers.clone()),
+                self.is_syncing.clone(),
+                self.sync_target_slot.clone(),
+                self.sync_pending_depth.clone(),
+                self.metrics.clone(),
                 bind,
             ));
         }
@@ -280,6 +348,12 @@ impl Node {
             task.abort();
         }
         if let Some(task) = self.signing_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.block_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.sync_task.take() {
             task.abort();
         }
         info!("node stopped");

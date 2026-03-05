@@ -13,3 +13,18 @@ The `storage_open/*cold*` Criterion benchmarks intentionally include this startu
 ## Practical Interpretation
 
 If cold benchmark regresses but steady-state read/write is stable or better, that usually means startup work increased, not runtime path cost.
+
+## Justification Votes Representation
+
+Current vote-root count is small, so a linear `Vec` scan is acceptable in practice today.
+However, this may not hold as scenarios scale.
+
+Tradeoff:
+- `Vec` only: deterministic order and no re-sort cost on encode, but O(n) lookup/update per attestation by `target.root`.
+- Hash map only: fast lookup/update, but requires sorting for deterministic encode order.
+
+Recommended structure for scale:
+- Ordered storage for deterministic encoding (`Vec<Bytes32>` + parallel `Vec<JustificationVotes>`).
+- Fast index map for updates (`RapidHashMap<Bytes32, usize>`).
+
+This keeps deterministic serialization while avoiding per-attestation linear scans as root count grows.

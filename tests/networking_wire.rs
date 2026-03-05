@@ -159,8 +159,15 @@ fn reqresp_protocol_roundtrip() {
         let parsed = LeanSupportedProtocol::parse_protocol_id(&id).expect("parse");
         assert_eq!(parsed, proto);
     }
-    assert!(LeanSupportedProtocol::parse_protocol_id("/peam/reqresp/status/2").is_none());
-    assert!(LeanSupportedProtocol::parse_protocol_id("/other/reqresp/status/1").is_none());
+    assert!(
+        LeanSupportedProtocol::parse_protocol_id("/leanconsensus/req/status/2/ssz_snappy")
+            .is_none()
+    );
+    assert!(LeanSupportedProtocol::parse_protocol_id("/other/req/status/1/ssz_snappy").is_none());
+    assert_eq!(
+        LeanSupportedProtocol::parse_protocol_id("/peam/reqresp/status/1"),
+        Some(LeanSupportedProtocol::StatusV1)
+    );
 }
 
 #[test]

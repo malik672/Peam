@@ -1,4 +1,4 @@
-//! Beacon-chain state representation and transition logic.
+//! state representation and transition logic.
 //!
 //! This module defines [`State`], the core consensus state object, together with
 //! all state-transition functions: slot processing, block-header application,
@@ -18,12 +18,18 @@
 //! Variable fields follow in order: `historical_block_hashes`, `justified_slots`,
 //! `validators`, `balances`, `justifications_roots`, `justifications_validators`.
 
+use rapidhash::RapidHashMap;
+
+use std::time::Instant;
+
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::block::{Attestations, Block, BlockHeader};
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::config::Config;
+use crate::containers::state_metrics::{NoopTransitionMetricsSink, TransitionMetricsSink};
 use crate::containers::validator::Validator;
 use crate::crypto::pq;
+use crate::metrics::MetricsRegistry;
 use crate::slot::{self, Slot};
 use crate::ssz::hash::merkleize_tree_root_11;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode};
@@ -155,7 +161,6 @@ impl State {
     pub fn generate_genesis_empty(genesis_time: Uint64) -> State {
         let validators = Validators::new(vec![]).expect("empty validators");
         let empty_body_root = Bytes32::from(EMPTY_BLOCK_BODY_ROOT_BYTES);
-        let balances = SszList::new(vec![]).expect("balances list");
         let latest_block_header = BlockHeader {
             slot: Slot(Uint64(0)),
             proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
@@ -163,34 +168,31 @@ impl State {
             state_root: Bytes32::zero(),
             body_root: empty_body_root,
         };
-        let genesis_root = Bytes32::from(GENESIS_BLOCK_HEADER_ROOT_BYTES);
-
         State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
             latest_block_header,
             latest_justified: Checkpoint {
-                root: genesis_root,
+                root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
             latest_finalized: Checkpoint {
-                root: genesis_root,
+                root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
-
-            // Defaults for these lists.
-            historical_block_hashes: SszList::new(vec![]).expect("historical list"),
-            justified_slots: BitList::new(vec![]).expect("justified slots"),
+            historical_block_hashes: SszList::default(),
+            justified_slots: BitList::default(),
             validators,
-            balances,
-            justifications_roots: SszList::new(vec![]).expect("justifications roots"),
-            justifications_validators: BitList::new(vec![]).expect("justifications validators"),
+            balances: SszList::default(),
+            justifications_roots: SszList::default(),
+            justifications_validators: BitList::default(),
         }
     }
 
     /// Generic genesis constructor for tests, fixtures, and custom validator sets.
     ///
     /// Initializes balances to zero for each entry in `validators`.
+    #[inline]
     pub fn generate_genesis(genesis_time: Uint64, validators: Validators) -> State {
         let empty_body_root = Bytes32::from(EMPTY_BLOCK_BODY_ROOT_BYTES);
         let num_validators = validators.data.len();
@@ -207,35 +209,32 @@ impl State {
             state_root: Bytes32::zero(),
             body_root: empty_body_root,
         };
-        let genesis_root = Bytes32::from(GENESIS_BLOCK_HEADER_ROOT_BYTES);
-
         State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
             latest_block_header,
             latest_justified: Checkpoint {
-                root: genesis_root,
+                root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
             latest_finalized: Checkpoint {
-                root: genesis_root,
+                root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
 
-            // Defaults for these lists.
-            historical_block_hashes: SszList::new(vec![]).expect("historical list"),
-            justified_slots: BitList::new(vec![]).expect("justified slots"),
+            historical_block_hashes: SszList::default(),
+            justified_slots: BitList::default(),
             validators,
             balances,
-            justifications_roots: SszList::new(vec![]).expect("justifications roots"),
-            justifications_validators: BitList::new(vec![]).expect("justifications validators"),
+            justifications_roots: SszList::default(),
+            justifications_validators: BitList::default(),
         }
     }
 
-    /// Advances state from `self.slot` up to (but not past) `target_slot`.
+    /// Advances state from `self.slot` to `target_slot`.
     ///
-    /// For each slot step, if `latest_block_header.state_root` is still zero it is
-    /// filled with the current [`hash_tree_root`] before the counter advances.
+    /// If `latest_block_header.state_root` is still zero, it is filled once from
+    /// the current [`hash_tree_root`] before the slot jump.
     ///
     /// # Errors
     ///
@@ -246,13 +245,12 @@ impl State {
             return Err("target slot must be in the future".to_string());
         }
 
-        while self.slot < target_slot {
-            if self.latest_block_header.state_root == Bytes32::zero() {
-                let root = self.hash_tree_root();
-                self.latest_block_header.state_root = Bytes32::from(root);
-            }
-            self.slot = Slot(Uint64(self.slot.0.0 + 1));
+        if self.latest_block_header.state_root == Bytes32::zero() {
+            let root = self.hash_tree_root();
+            self.latest_block_header.state_root = Bytes32::from(root);
         }
+
+        self.slot = Slot(Uint64(target_slot.0.0));
 
         Ok(())
     }
@@ -340,18 +338,6 @@ impl State {
         self.process_block_body(&block.body, header.body_root)
     }
 
-    /// Applies a full block (header + body) assuming the slot has already been
-    /// advanced to match.
-    ///
-    /// Used internally by [`state_transition`], which drives slot advancement
-    /// separately via [`process_slots`].
-    #[inline]
-    fn process_block_assuming_slot(&mut self, block: &Block) -> Result<(), String> {
-        let header = block.header();
-        self.process_block_header_assuming_slot(header)?;
-        self.process_block_body(&block.body, header.body_root)
-    }
-
     /// Validates the block body root and processes all included attestations.
     ///
     /// # Errors
@@ -372,28 +358,50 @@ impl State {
         Ok(())
     }
 
-    /// Executes a complete state transition for `block`, including post-state root check.
-    ///
-    /// Steps:
-    /// 1. [`process_slots`] — advance to `block.slot`
-    /// 2. [`process_block_assuming_slot`] — apply header and body
-    /// 3. Compute `HashTreeRoot(self)` and verify it equals `block.state_root`
-    /// 4. Write the verified root back into `latest_block_header.state_root`
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if slot advancement, block processing, or the post-state root
-    /// check fails.
     #[inline]
-    pub fn state_transition(&mut self, block: &Block) -> Result<(), String> {
+    fn state_transition_inner<M: TransitionMetricsSink>(
+        &mut self,
+        block: &Block,
+        metrics: &M,
+    ) -> Result<(), String> {
+        let total_start = Instant::now();
+        let old_finalized = self.latest_finalized;
+
+        let slots_start = Instant::now();
+        let slots_before = self.slot.0.0;
         self.process_slots(block.slot)?;
-        self.process_block_assuming_slot(block)?;
+        let slots_after = self.slot.0.0;
+        metrics.observe_slots_processing_time(slots_start);
+        let advanced_slots = slots_after - slots_before;
+        metrics.add_slots_processed(advanced_slots);
+
+        let block_start = Instant::now();
+        let header = block.header();
+        self.process_block_header_assuming_slot(header)?;
+
+        let body_root = block.body.hash_tree_root();
+        if header.body_root != Bytes32::from(body_root) {
+            return Err("block body root does not match header".to_string());
+        }
+
+        let att_start = Instant::now();
+        let att_count = block.body.attestations.data.len();
+        self.process_attestations(&block.body.attestations)?;
+        metrics.observe_attestations_processing_time(att_start);
+        metrics.add_attestations_processed(att_count as u64);
+        metrics.observe_block_processing_time(block_start);
+
         let computed_root = Bytes32::from(self.hash_tree_root());
         if computed_root != block.state_root {
-            return Err("post-state root does not match block.state_root".to_string());
+            return Err("block state root does not match computed state root".to_string());
         }
-        // Promote the staged header root immediately after successful verification.
         self.latest_block_header.state_root = computed_root;
+
+        if self.latest_finalized.slot > old_finalized.slot {
+            metrics.inc_finalizations_success();
+        }
+        metrics.observe_state_transition_time(total_start);
+
         Ok(())
     }
 
@@ -405,11 +413,12 @@ impl State {
     /// - target slot must be after source slot
     /// - target slot must be justifiable (per [`slot::is_justifiable_after`])
     /// - source slot must already be justified
-    /// - supermajority threshold: `3 * participants >= 2 * total_validators`
+    /// - votes are accumulated per `target.root` across attestations, and
+    ///   supermajority is checked as `3 * votes_for_root >= 2 * total_validators`
     ///
     /// When all checks pass, the attestation's target becomes `latest_justified`
-    /// and its slot is recorded in [`justified_slots`]. If target immediately
-    /// follows source, the source is also finalized.
+    /// and its slot is recorded in [`justified_slots`]. If target is the next
+    /// valid justifiable slot after source, the source is also finalized.
     ///
     /// # Errors
     ///
@@ -422,11 +431,16 @@ impl State {
         if total_validators == 0 {
             return Ok(());
         }
+        let mut justification_votes: Option<RapidHashMap<Bytes32, JustificationVotes>> = None;
+        let latest_header_root = Bytes32::from(self.latest_block_header.hash_tree_root());
+        let historical_root_slots = build_historical_root_slots(&self.historical_block_hashes.data);
+
         for att in attestations.data.iter() {
+            let finalized_slot = self.latest_finalized.slot;
             if att.data.slot > self.slot {
                 continue;
             }
-            if att.data.target.slot < att.data.source.slot {
+            if att.data.target.slot <= att.data.source.slot {
                 continue;
             }
             if att.data.head.slot < att.data.target.slot {
@@ -435,62 +449,89 @@ impl State {
             if att.data.slot < att.data.head.slot {
                 continue;
             }
-            if !is_known_chain_root(self, &att.data.head.root)
-                || !is_known_chain_root(self, &att.data.source.root)
-                || !is_known_chain_root(self, &att.data.target.root)
-            {
-                continue;
-            }
-            if !slot::is_justifiable_after(att.data.target.slot, self.latest_finalized.slot)? {
-                continue;
-            }
-            if is_slot_justified(
-                &self.justified_slots,
-                self.latest_finalized.slot,
-                att.data.target.slot,
+            if !is_known_chain_root(
+                self,
+                &att.data.head.root,
+                latest_header_root,
+                &historical_root_slots,
+            ) || !is_known_chain_root(
+                self,
+                &att.data.source.root,
+                latest_header_root,
+                &historical_root_slots,
+            ) || !is_known_chain_root(
+                self,
+                &att.data.target.root,
+                latest_header_root,
+                &historical_root_slots,
             ) {
                 continue;
             }
-            if !is_slot_justified(
-                &self.justified_slots,
-                self.latest_finalized.slot,
-                att.data.source.slot,
-            ) {
+            if !slot::is_justifiable_after(att.data.target.slot, finalized_slot)? {
                 continue;
             }
-            let participants = set_bits(&att.aggregation_bits);
-            if participants.is_empty() {
+            if is_slot_justified(&self.justified_slots, finalized_slot, att.data.target.slot) {
                 continue;
             }
-            if 3 * participants.len() < 2 * total_validators {
+            if !is_slot_justified(&self.justified_slots, finalized_slot, att.data.source.slot) {
                 continue;
             }
+            if !has_any_set_bit(&att.aggregation_bits) {
+                continue;
+            }
+
+            let votes_map = justification_votes
+                .get_or_insert_with(|| decode_justification_votes(self, total_validators));
+            let votes = votes_map
+                .entry(att.data.target.root)
+                .or_insert_with(|| JustificationVotes::new(total_validators));
+            merge_participant_votes_from_bits(votes, &att.aggregation_bits, total_validators);
+            if 3 * votes.count < 2 * total_validators {
+                continue;
+            }
+
             self.latest_justified = att.data.target.clone();
             set_justified_slot(
                 &mut self.justified_slots,
-                self.latest_finalized.slot,
+                finalized_slot,
                 att.data.target.slot,
             )?;
+            votes_map.remove(&att.data.target.root);
 
-            // Minimal finalization rule: finalize the source if it immediately precedes target.
-            if att.data.target.slot.0.0 == att.data.source.slot.0.0 + 1
-                && att.data.source.slot > self.latest_finalized.slot
+            // Finalize the source if target is the next valid justifiable slot
+            // after source (not necessarily numerically adjacent).
+            if is_next_valid_justifiable_slot(
+                att.data.source.slot,
+                att.data.target.slot,
+                finalized_slot,
+            ) && att.data.source.slot > self.latest_finalized.slot
             {
                 let old_finalized = self.latest_finalized.slot;
                 self.latest_finalized = att.data.source.clone();
+                // Invariant: source.slot > old_finalized, so delta is strictly positive.
                 let delta = (self.latest_finalized.slot.0.0 - old_finalized.0.0) as usize;
                 shift_justified_window(&mut self.justified_slots, delta);
+                let finalized_slot = self.latest_finalized.slot;
+                votes_map.retain(|root, _| {
+                    chain_root_slot(self, *root, latest_header_root, &historical_root_slots)
+                        .is_some_and(|slot| slot > finalized_slot)
+                });
             }
+        }
+        if let Some(votes) = justification_votes {
+            encode_justification_votes(self, votes, total_validators)?;
         }
         Ok(())
     }
 
     /// Imports a signed block using the canonical post-quantum verifier.
+    #[inline]
     pub fn process_signed_block(
         &mut self,
         signed: &SignedBlockWithAttestation,
     ) -> Result<(), String> {
-        let verifier = PqSignatureVerifier;
+        // Devnet interop default: enforce structure, defer cryptographic checks.
+        let verifier = StructuralSignatureVerifier;
         self.process_signed_block_with_verifier(signed, &verifier)
     }
 
@@ -499,20 +540,50 @@ impl State {
     /// Steps:
     /// 1. [`SignedBlockWithAttestation::validate_basic`] — structural pre-checks
     /// 2. `verifier.verify_signed_block` — signature / participant verification
-    /// 3. [`state_transition`] — full state transition with post-state root check
+    /// 3. internal state transition — full transition with post-state root check
     ///
     /// # Errors
     ///
     /// Returns `Err` if any step fails.
+    #[inline]
     pub fn process_signed_block_with_verifier<V: SignatureVerifier>(
         &mut self,
         signed: &SignedBlockWithAttestation,
         verifier: &V,
     ) -> Result<(), String> {
+        self.process_signed_block_with_verifier_and_sink(
+            signed,
+            verifier,
+            &NoopTransitionMetricsSink,
+        )
+    }
+
+    /// Like [`process_signed_block`] but records sub-step timings in the
+    /// provided [`MetricsRegistry`].
+    #[inline]
+    pub fn process_signed_block_with_metrics(
+        &mut self,
+        signed: &SignedBlockWithAttestation,
+        metrics: &MetricsRegistry,
+    ) -> Result<(), String> {
+        let verifier = StructuralSignatureVerifier;
+        self.process_signed_block_with_verifier_and_sink(signed, &verifier, metrics)
+    }
+
+    #[inline]
+    fn process_signed_block_with_verifier_and_sink<
+        V: SignatureVerifier,
+        M: TransitionMetricsSink,
+    >(
+        &mut self,
+        signed: &SignedBlockWithAttestation,
+        verifier: &V,
+        metrics: &M,
+    ) -> Result<(), String> {
         signed.validate_basic()?;
         let block = &signed.message.block;
         verifier.verify_signed_block(signed, self)?;
-        self.state_transition(block)
+        self.state_transition_inner(block, metrics)
     }
 }
 
@@ -562,6 +633,7 @@ impl SignatureVerifier for NoopSignatureVerifier {
 pub struct StructuralSignatureVerifier;
 
 impl SignatureVerifier for StructuralSignatureVerifier {
+    #[inline]
     fn verify_signed_block(
         &self,
         signed: &SignedBlockWithAttestation,
@@ -573,13 +645,6 @@ impl SignatureVerifier for StructuralSignatureVerifier {
             return Err("proposer index out of range".to_string());
         }
 
-        for att in block.body.attestations.data.iter() {
-            for idx in set_bits(&att.aggregation_bits) {
-                if idx >= validators_len {
-                    return Err("validator index out of range".to_string());
-                }
-            }
-        }
         for (att, proof) in block
             .body
             .attestations
@@ -587,6 +652,9 @@ impl SignatureVerifier for StructuralSignatureVerifier {
             .iter()
             .zip(signed.signature.attestation_signatures.data.iter())
         {
+            if has_out_of_range_set_bit(&att.aggregation_bits, validators_len) {
+                return Err("validator index out of range".to_string());
+            }
             if proof.participants != att.aggregation_bits {
                 return Err(
                     "attestation signature participants do not match aggregation bits".to_string(),
@@ -595,11 +663,9 @@ impl SignatureVerifier for StructuralSignatureVerifier {
         }
 
         let proposer_attestation = &signed.message.proposer_attestation;
-        let proposer_bits = set_bits(&proposer_attestation.aggregation_bits);
-        if proposer_bits.len() != 1 {
-            return Err("proposer attestation must have exactly one participant".to_string());
-        }
-        if proposer_bits[0] != (block.proposer_index.0).0 as usize {
+        let proposer_idx = single_set_bit_index(&proposer_attestation.aggregation_bits)
+            .ok_or_else(|| "proposer attestation must have exactly one participant".to_string())?;
+        if proposer_idx != (block.proposer_index.0).0 as usize {
             return Err("proposer attestation does not match proposer index".to_string());
         }
 
@@ -612,14 +678,12 @@ impl SignatureVerifier for StructuralSignatureVerifier {
 pub struct PqSignatureVerifier;
 
 impl SignatureVerifier for PqSignatureVerifier {
+    #[inline]
     fn verify_signed_block(
         &self,
         signed: &SignedBlockWithAttestation,
         state: &State,
     ) -> Result<(), String> {
-        static PQ_AGG_VERIFIER_INIT: std::sync::Once = std::sync::Once::new();
-        PQ_AGG_VERIFIER_INIT.call_once(pq::setup_aggregate_verifier);
-
         let block = &signed.message.block;
         let attestations = &block.body.attestations.data;
         let proofs = &signed.signature.attestation_signatures.data;
@@ -629,6 +693,10 @@ impl SignatureVerifier for PqSignatureVerifier {
                 proofs.len(),
                 attestations.len()
             ));
+        }
+        if !proofs.is_empty() {
+            static PQ_AGG_VERIFIER_INIT: std::sync::Once = std::sync::Once::new();
+            PQ_AGG_VERIFIER_INIT.call_once(pq::setup_aggregate_verifier);
         }
 
         let validators = &state.validators.data;
@@ -686,38 +754,294 @@ impl SignatureVerifier for PqSignatureVerifier {
     }
 }
 
-/// Returns the indices of all set bits in `bits`, in ascending order.
 #[inline]
-fn set_bits<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
-    let mut out = Vec::new();
+fn has_out_of_range_set_bit<const LIMIT: usize>(bits: &BitList<LIMIT>, upper_bound: usize) -> bool {
     let len = bits.len();
-    for i in 0..len {
-        let byte = bits.data[i / 8];
-        if (byte & (1u8 << (i % 8))) != 0 {
-            out.push(i);
+    if len == 0 || upper_bound >= len {
+        return false;
+    }
+    let start_byte = upper_bound / 8;
+    let start_bit = upper_bound % 8;
+
+    if let Some(&byte) = bits.data.get(start_byte) {
+        let byte_start = start_byte * 8;
+        let valid_bits = (len - byte_start).min(8);
+        let valid_mask = if valid_bits == 8 {
+            u8::MAX
+        } else {
+            (1u8 << valid_bits) - 1
+        };
+        let out_of_range_mask = valid_mask & (u8::MAX << start_bit);
+        if (byte & out_of_range_mask) != 0 {
+            return true;
         }
+    }
+
+    for (byte_idx, &byte) in bits.data.iter().enumerate().skip(start_byte + 1) {
+        let byte_start = byte_idx * 8;
+        if byte_start >= len {
+            break;
+        }
+        let valid_bits = (len - byte_start).min(8);
+        let valid_mask = if valid_bits == 8 {
+            u8::MAX
+        } else {
+            (1u8 << valid_bits) - 1
+        };
+        if (byte & valid_mask) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline]
+fn single_set_bit_index<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Option<usize> {
+    let len = bits.len();
+    let mut found: Option<usize> = None;
+    for (byte_idx, &byte) in bits.data.iter().enumerate() {
+        let mut remaining = byte;
+        while remaining != 0 {
+            let bit = remaining.trailing_zeros() as usize;
+            let idx = byte_idx * 8 + bit;
+            if idx >= len {
+                break;
+            }
+            if found.replace(idx).is_some() {
+                return None;
+            }
+            remaining &= remaining - 1;
+        }
+    }
+    found
+}
+
+#[derive(Clone, Debug)]
+struct JustificationVotes {
+    bits: Vec<u8>,
+    count: usize,
+}
+
+impl JustificationVotes {
+    #[inline]
+    fn new(validator_count: usize) -> Self {
+        Self {
+            bits: vec![0u8; validator_count.div_ceil(8)],
+            count: 0,
+        }
+    }
+}
+
+#[inline]
+fn has_any_set_bit<const LIMIT: usize>(bits: &BitList<LIMIT>) -> bool {
+    let len = bits.len();
+    if len == 0 {
+        return false;
+    }
+    let full_bytes = len / 8;
+    if bits.data.iter().take(full_bytes).any(|&byte| byte != 0) {
+        return true;
+    }
+    let remainder = len % 8;
+    if remainder == 0 {
+        return false;
+    }
+    let mask = (1u8 << remainder) - 1;
+    bits.data
+        .get(full_bytes)
+        .is_some_and(|byte| (byte & mask) != 0)
+}
+
+#[inline]
+fn merge_participant_votes_from_bits<const LIMIT: usize>(
+    votes: &mut JustificationVotes,
+    participants: &BitList<LIMIT>,
+    validator_count: usize,
+) {
+    // Caller invariant: validator_count > 0 and participants has at least one set bit.
+    let max_bits = participants.len().min(validator_count);
+    let full_bytes = max_bits / 8;
+    for byte_idx in 0..full_bytes {
+        let mut new_bits = participants.data.get(byte_idx).copied().unwrap_or(0u8);
+        new_bits &= !votes.bits[byte_idx];
+        votes.bits[byte_idx] |= new_bits;
+        votes.count += new_bits.count_ones() as usize;
+    }
+
+    let remainder = max_bits % 8;
+    if remainder == 0 {
+        return;
+    }
+    let mask = (1u8 << remainder) - 1;
+    let mut new_bits = participants.data.get(full_bytes).copied().unwrap_or(0u8) & mask;
+    new_bits &= !votes.bits[full_bytes];
+    votes.bits[full_bytes] |= new_bits;
+    votes.count += new_bits.count_ones() as usize;
+}
+#[inline]
+fn bit_is_set(data: &[u8], len_bits: usize, index: usize) -> bool {
+    if index >= len_bits {
+        return false;
+    }
+    let byte = index / 8;
+    let bit = index % 8;
+    if byte >= data.len() {
+        return false;
+    }
+    (data[byte] & (1u8 << bit)) != 0
+}
+
+#[inline]
+fn set_bit(data: &mut [u8], index: usize) {
+    let byte = index / 8;
+    let bit = index % 8;
+    if byte < data.len() {
+        data[byte] |= 1u8 << bit;
+    }
+}
+
+#[inline]
+fn decode_justification_votes(
+    state: &State,
+    validator_count: usize,
+) -> RapidHashMap<Bytes32, JustificationVotes> {
+    let mut out = RapidHashMap::default();
+    if validator_count == 0 || state.justifications_roots.data.is_empty() {
+        return out;
+    }
+    let byte_count = validator_count.div_ceil(8);
+    let byte_aligned = validator_count % 8 == 0;
+    for (root_idx, root) in state.justifications_roots.data.iter().copied().enumerate() {
+        let mut votes = JustificationVotes::new(validator_count);
+        if byte_aligned {
+            let base_byte = root_idx * byte_count;
+            let end_byte = base_byte + byte_count;
+            if end_byte <= state.justifications_validators.data.len() {
+                votes
+                    .bits
+                    .copy_from_slice(&state.justifications_validators.data[base_byte..end_byte]);
+                votes.count = votes.bits.iter().map(|b| b.count_ones() as usize).sum();
+            }
+        } else {
+            let base = root_idx * validator_count;
+            for validator_id in 0..validator_count {
+                let flat_idx = base + validator_id;
+                if bit_is_set(
+                    &state.justifications_validators.data,
+                    state.justifications_validators.len,
+                    flat_idx,
+                ) {
+                    let byte = validator_id / 8;
+                    let bit = validator_id % 8;
+                    votes.bits[byte] |= 1u8 << bit;
+                    votes.count += 1;
+                }
+            }
+        }
+        out.insert(root, votes);
     }
     out
 }
 
 #[inline]
-fn is_known_chain_root(state: &State, root: &Bytes32) -> bool {
+fn encode_justification_votes(
+    state: &mut State,
+    votes: RapidHashMap<Bytes32, JustificationVotes>,
+    validator_count: usize,
+) -> Result<(), String> {
+    let mut roots = votes.keys().copied().collect::<Vec<_>>();
+    roots.sort_unstable_by_key(|root| root.as_array());
+    let flat_len = roots
+        .len()
+        .checked_mul(validator_count)
+        .ok_or_else(|| "justification vote bitmap overflow".to_string())?;
+    if flat_len > JUSTIFICATION_VALIDATORS_LIMIT {
+        return Err("justification vote bitmap exceeds limit".to_string());
+    }
+    let byte_count = validator_count.div_ceil(8);
+    let byte_aligned = validator_count % 8 == 0;
+    let mut flat_data = vec![0u8; flat_len.div_ceil(8)];
+    for (root_idx, root) in roots.iter().enumerate() {
+        if let Some(root_votes) = votes.get(root) {
+            if byte_aligned {
+                let dst_start = root_idx * byte_count;
+                flat_data[dst_start..dst_start + byte_count]
+                    .copy_from_slice(&root_votes.bits[..byte_count]);
+            } else {
+                for validator_id in 0..validator_count {
+                    if bit_is_set(&root_votes.bits, validator_count, validator_id) {
+                        let flat_idx = root_idx * validator_count + validator_id;
+                        set_bit(&mut flat_data, flat_idx);
+                    }
+                }
+            }
+        }
+    }
+    state.justifications_roots = SszList::new(roots).expect("justifications roots");
+    state.justifications_validators = BitList {
+        data: flat_data,
+        len: flat_len,
+    };
+    Ok(())
+}
+
+#[inline]
+fn chain_root_slot(
+    state: &State,
+    root: Bytes32,
+    latest_header_root: Bytes32,
+    historical_root_slots: &RapidHashMap<Bytes32, Slot>,
+) -> Option<Slot> {
+    if root == Bytes32::zero() {
+        return Some(Slot(Uint64(0)));
+    }
+    if root == state.latest_finalized.root {
+        return Some(state.latest_finalized.slot);
+    }
+    if root == state.latest_justified.root {
+        return Some(state.latest_justified.slot);
+    }
+    if root == latest_header_root {
+        return Some(state.latest_block_header.slot);
+    }
+    historical_root_slots.get(&root).copied()
+}
+
+#[inline]
+fn is_known_chain_root(
+    state: &State,
+    root: &Bytes32,
+    latest_header_root: Bytes32,
+    historical_root_slots: &RapidHashMap<Bytes32, Slot>,
+) -> bool {
     if *root == Bytes32::zero() {
         return true;
     }
     if *root == state.latest_justified.root
         || *root == state.latest_finalized.root
-        || *root == Bytes32::from(state.latest_block_header.hash_tree_root())
+        || *root == latest_header_root
     {
         return true;
     }
-    state.historical_block_hashes.data.iter().any(|v| v == root)
+    historical_root_slots.contains_key(root)
+}
+
+#[inline]
+fn build_historical_root_slots(historical_roots: &[Bytes32]) -> RapidHashMap<Bytes32, Slot> {
+    let mut out = RapidHashMap::default();
+    for (slot_idx, root) in historical_roots.iter().copied().enumerate() {
+        if root != Bytes32::zero() {
+            out.insert(root, Slot(Uint64(slot_idx as u64)));
+        }
+    }
+    out
 }
 
 /// Returns `true` if `slot` is recorded as justified in the sliding window.
 ///
 /// Slots at or below `finalized` are considered implicitly justified.
 /// For slots above `finalized`, checks bit `slot - finalized - 1` in `justified`.
+#[inline]
 fn is_slot_justified(justified: &JustifiedSlots, finalized: Slot, slot: Slot) -> bool {
     if slot <= finalized {
         return true;
@@ -741,14 +1065,13 @@ fn is_slot_justified(justified: &JustifiedSlots, finalized: Slot, slot: Slot) ->
 /// # Errors
 ///
 /// Returns `Err` if `slot - finalized - 1 >= HISTORICAL_ROOTS_LIMIT`.
+#[inline]
 fn set_justified_slot(
     justified: &mut JustifiedSlots,
     finalized: Slot,
     slot: Slot,
 ) -> Result<(), String> {
-    if slot <= finalized {
-        return Ok(());
-    }
+    // Caller invariant (process_attestations): slot is strictly after finalized.
     let idx = (slot.0.0 - finalized.0.0 - 1) as usize;
     if idx >= HISTORICAL_ROOTS_LIMIT {
         return Err("justified slot exceeds limit".to_string());
@@ -767,15 +1090,28 @@ fn set_justified_slot(
     Ok(())
 }
 
+#[inline]
+fn is_next_valid_justifiable_slot(source: Slot, target: Slot, finalized: Slot) -> bool {
+    if target <= source {
+        return false;
+    }
+    for raw_slot in (source.0.0 + 1)..target.0.0 {
+        let slot = Slot(Uint64(raw_slot));
+        if slot::is_justifiable_after(slot, finalized).unwrap_or(false) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Shifts the justified-slot window left by `delta` positions, discarding entries
 /// that have fallen below the new finalization point.
 ///
 /// After a finality advance of `delta` slots, bits `[delta, len)` are moved to
 /// `[0, len - delta)`. If `delta >= len`, the window is cleared entirely.
+#[inline]
 fn shift_justified_window(justified: &mut JustifiedSlots, delta: usize) {
-    if delta == 0 || justified.len() == 0 {
-        return;
-    }
+    // Caller invariant: delta is strictly positive.
     if delta >= justified.len() {
         justified.len = 0;
         justified.data.clear();
@@ -808,6 +1144,7 @@ fn shift_justified_window(justified: &mut JustifiedSlots, delta: usize) {
 /// Uses `unsafe` pointer writes via [`write_bytes_at`] for performance; callers
 /// must not mutate the returned buffer while it is in use.
 impl SszEncode for State {
+    #[inline]
     fn encode_ssz(&self) -> Vec<u8> {
         let fixed_len = 8 + 8 + 112 + 40 + 40;
         let offsets_len = 4 * 6;
@@ -931,6 +1268,7 @@ impl SszEncode for State {
 /// For untrusted input use [`State::decode_ssz_checked`], which validates the
 /// fixed-section length and all field offsets before decoding.
 impl SszDecode for State {
+    #[inline]
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let _fixed_len = 8 + 8 + 112 + 40 + 40 + (4 * 6);
         let config = Config::decode_ssz(&bytes[0..8])?;
@@ -990,6 +1328,7 @@ impl State {
     ///
     /// Returns `Err` if any length or offset check fails, or if an inner
     /// `decode_ssz_checked` call fails.
+    #[inline]
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         let fixed_len = 8 + 8 + 112 + 40 + 40 + (4 * 6);
         if bytes.len() < fixed_len {
@@ -1057,6 +1396,7 @@ impl State {
 /// Hashes all 11 fields individually and merklizes them with a balanced
 /// 11-leaf tree via [`merkleize_tree_root_11`].
 impl HashTreeRoot for State {
+    #[inline]
     fn hash_tree_root(&self) -> [u8; 32] {
         let field_roots = [
             Bytes32::from(self.config.hash_tree_root()),

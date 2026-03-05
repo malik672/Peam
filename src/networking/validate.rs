@@ -21,6 +21,7 @@ use crate::crypto;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::{Bytes52, Bytes3112};
+use tracing::warn;
 
 /// Discriminant for selecting the gossip validator to run on a topic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -147,7 +148,7 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
         if participants.is_empty() {
             return false;
         }
-        let root = attestation.hash_tree_root();
+        let root = attestation.data.hash_tree_root();
         let epoch = attestation.data.slot.0.0 as u32;
         crypto::pq::verify_aggregate_signature(
             &participants,
@@ -223,19 +224,32 @@ pub fn validate_gossip(
         GossipValidatorKind::Block => {
             // Full block validation: SSZ decode + proposer + attestation signatures.
             let Ok(block) = GossipBlock::decode_ssz_checked(payload) else {
+                warn!("gossip block decode failed");
                 return false;
             };
             let message = &block.block.message;
             let block_body = &message.block.body;
             let proposer_attestation = &message.proposer_attestation;
             if proposer_attestation.data.slot != message.block.slot {
+                warn!(
+                    "gossip block rejected: proposer attestation slot mismatch att_slot={} block_slot={}",
+                    proposer_attestation.data.slot.0.0, message.block.slot.0.0
+                );
                 return false;
             }
             let proposer_bits = set_bits(&proposer_attestation.aggregation_bits);
             if proposer_bits.len() != 1 {
+                warn!(
+                    "gossip block rejected: proposer aggregation bits count={} expected=1",
+                    proposer_bits.len()
+                );
                 return false;
             }
             if proposer_bits[0] != message.block.proposer_index.0.0 as usize {
+                warn!(
+                    "gossip block rejected: proposer bit index={} proposer_index={}",
+                    proposer_bits[0], message.block.proposer_index.0.0
+                );
                 return false;
             }
             if !verifier.verify_block_signature(
@@ -243,18 +257,38 @@ pub fn validate_gossip(
                 message,
                 &block.block.signature.proposer_signature,
             ) {
+                warn!(
+                    "gossip block rejected: proposer signature invalid slot={} proposer={}",
+                    message.block.slot.0.0, message.block.proposer_index.0.0
+                );
                 return false;
             }
             let proofs = &block.block.signature.attestation_signatures;
             if block_body.attestations.data.len() != proofs.data.len() {
+                warn!(
+                    "gossip block rejected: attestation/proof length mismatch attestations={} proofs={}",
+                    block_body.attestations.data.len(),
+                    proofs.data.len()
+                );
                 return false;
             }
-            for (attestation, proof) in block_body.attestations.data.iter().zip(proofs.data.iter())
+            for (idx, (attestation, proof)) in block_body
+                .attestations
+                .data
+                .iter()
+                .zip(proofs.data.iter())
+                .enumerate()
             {
                 if proof.participants != attestation.aggregation_bits {
+                    warn!(
+                        "gossip block rejected: attestation proof participants mismatch at index={idx}"
+                    );
                     return false;
                 }
                 if !verifier.verify_attestation_signature(attestation, proof) {
+                    warn!(
+                        "gossip block rejected: attestation aggregate signature invalid at index={idx}"
+                    );
                     return false;
                 }
             }
@@ -264,9 +298,18 @@ pub fn validate_gossip(
         GossipValidatorKind::Attestation => {
             // Attestation gossip is a signed attestation (single validator).
             let Ok(attestation) = GossipAttestation::decode_ssz_checked(payload) else {
+                warn!("gossip attestation decode failed");
                 return false;
             };
-            verifier.verify_signed_attestation_signature(&attestation.attestation)
+            let ok = verifier.verify_signed_attestation_signature(&attestation.attestation);
+            if !ok {
+                warn!(
+                    "gossip attestation rejected: signature invalid validator={} slot={}",
+                    attestation.attestation.validator_id.0,
+                    attestation.attestation.message.slot.0.0
+                );
+            }
+            ok
         }
         GossipValidatorKind::VoluntaryExit => VoluntaryExit::decode_ssz_checked(payload).is_ok(),
     }
