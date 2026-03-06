@@ -21,6 +21,7 @@
 use rapidhash::RapidHashMap;
 
 use std::time::Instant;
+use tracing::warn;
 
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::block::{Attestations, Block, BlockHeader};
@@ -242,6 +243,11 @@ impl State {
     #[inline]
     pub fn process_slots(&mut self, target_slot: Slot) -> Result<(), String> {
         if self.slot >= target_slot {
+            warn!(
+                "process_slots_rejected current_slot={} target_slot={}",
+                self.slot.0.0,
+                target_slot.0.0
+            );
             return Err("target slot must be in the future".to_string());
         }
 
@@ -285,6 +291,11 @@ impl State {
     #[inline]
     fn process_block_header_assuming_slot(&mut self, block: BlockHeader) -> Result<(), String> {
         if block.slot <= self.latest_block_header.slot {
+            warn!(
+                "block_header_rejected_non_monotonic block_slot={} latest_header_slot={}",
+                block.slot.0.0,
+                self.latest_block_header.slot.0.0
+            );
             return Err("block slot not greater than latest header slot".to_string());
         }
 
@@ -293,11 +304,24 @@ impl State {
             .proposer_index
             .is_proposer_for(self.slot, num_validators)
         {
+            warn!(
+                "block_header_rejected_wrong_proposer slot={} proposer_index={} validators={}",
+                self.slot.0.0,
+                block.proposer_index.0.0,
+                num_validators
+            );
             return Err("block proposer index does not match expected proposer".to_string());
         }
 
         let expected_parent = self.latest_block_header.hash_tree_root();
         if block.parent_root != Bytes32::from(expected_parent) {
+            warn!(
+                "block_header_rejected_parent_mismatch block_slot={} block_parent={:?} expected_parent={:?} latest_header_slot={}",
+                block.slot.0.0,
+                block.parent_root,
+                Bytes32::from(expected_parent),
+                self.latest_block_header.slot.0.0
+            );
             return Err("block parent root does not match latest header root".to_string());
         }
 
@@ -351,7 +375,13 @@ impl State {
         expected_root: Bytes32,
     ) -> Result<(), String> {
         let body_root = body.hash_tree_root();
-        if expected_root != Bytes32::from(body_root) {
+        let computed_body_root = Bytes32::from(body_root);
+        if expected_root != computed_body_root {
+            warn!(
+                "block_body_root_mismatch expected={:?} computed={:?}",
+                expected_root,
+                computed_body_root
+            );
             return Err("block body root does not match header".to_string());
         }
         self.process_attestations(&body.attestations)?;
@@ -381,6 +411,12 @@ impl State {
 
         let body_root = block.body.hash_tree_root();
         if header.body_root != Bytes32::from(body_root) {
+            warn!(
+                "state_transition_body_root_mismatch slot={} header_body_root={:?} computed_body_root={:?}",
+                block.slot.0.0,
+                header.body_root,
+                Bytes32::from(body_root)
+            );
             return Err("block body root does not match header".to_string());
         }
 
@@ -393,6 +429,12 @@ impl State {
 
         let computed_root = Bytes32::from(self.hash_tree_root());
         if computed_root != block.state_root {
+            warn!(
+                "state_root_mismatch slot={} computed_state_root={:?} block_state_root={:?}",
+                block.slot.0.0,
+                computed_root,
+                block.state_root
+            );
             return Err("block state root does not match computed state root".to_string());
         }
         self.latest_block_header.state_root = computed_root;
@@ -580,10 +622,38 @@ impl State {
         verifier: &V,
         metrics: &M,
     ) -> Result<(), String> {
-        signed.validate_basic()?;
         let block = &signed.message.block;
-        verifier.verify_signed_block(signed, self)?;
-        self.state_transition_inner(block, metrics)
+        if let Err(err) = signed.validate_basic() {
+            warn!(
+                "signed_block_validate_basic_failed slot={} proposer_index={} err={}",
+                block.slot.0.0,
+                block.proposer_index.0.0,
+                err
+            );
+            return Err(err);
+        }
+        if let Err(err) = verifier.verify_signed_block(signed, self) {
+            warn!(
+                "signed_block_verification_failed slot={} proposer_index={} parent_root={:?} err={}",
+                block.slot.0.0,
+                block.proposer_index.0.0,
+                block.parent_root,
+                err
+            );
+            return Err(err);
+        }
+        if let Err(err) = self.state_transition_inner(block, metrics) {
+            warn!(
+                "signed_block_state_transition_failed slot={} proposer_index={} parent_root={:?} state_root={:?} err={}",
+                block.slot.0.0,
+                block.proposer_index.0.0,
+                block.parent_root,
+                block.state_root,
+                err
+            );
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
