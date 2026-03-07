@@ -7,7 +7,7 @@ use leansig::serialization::Serializable;
 use peam::crypto::pq::key_gen_for_devnet_validator;
 
 const DEFAULT_VALIDATORS: usize = 3;
-const DEFAULT_NODE_MAP: &str = "ream_0:0,zeam_0:1,peam_0:2";
+const DEFAULT_NODE_MAP: &str = "peam_0:0,peer1_0:1,peer2_0:2";
 
 #[derive(Clone)]
 struct ValidatorMaterial {
@@ -23,7 +23,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("Example:");
     eprintln!(
-        "  devnet2_registry_gen --out /tmp/devnet --genesis-time 1772472000 --validators 3 --node-map ream_0:0,zeam_0:1,peam_0:2"
+        "  devnet2_registry_gen --out /tmp/devnet --genesis-time 1772472000 --validators 3 --node-map peam_0:0,peer1_0:1,peer2_0:2"
     );
 }
 

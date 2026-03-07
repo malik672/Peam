@@ -4,9 +4,17 @@ global:
   evaluation_interval: 10s
 
 scrape_configs:
-  - job_name: "peam"
+  - job_name: "lean-clients"
     static_configs:
-      - targets:
-          - host.docker.internal:18080
+      - targets: ["host.docker.internal:18080"]
         labels:
           instance: peam
+          client: peam
+      - targets: ["host.docker.internal:18081"]
+        labels:
+          instance: peer1
+          client: peer1
+      - targets: ["host.docker.internal:18082"]
+        labels:
+          instance: peer2
+          client: peer2

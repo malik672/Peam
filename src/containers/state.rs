@@ -530,8 +530,7 @@ impl State {
         &mut self,
         signed: &SignedBlockWithAttestation,
     ) -> Result<(), String> {
-        // Devnet interop default: enforce structure, defer cryptographic checks.
-        let verifier = StructuralSignatureVerifier;
+        let verifier = PqSignatureVerifier;
         self.process_signed_block_with_verifier(signed, &verifier)
     }
 
@@ -566,7 +565,7 @@ impl State {
         signed: &SignedBlockWithAttestation,
         metrics: &MetricsRegistry,
     ) -> Result<(), String> {
-        let verifier = StructuralSignatureVerifier;
+        let verifier = PqSignatureVerifier;
         self.process_signed_block_with_verifier_and_sink(signed, &verifier, metrics)
     }
 
@@ -616,59 +615,6 @@ impl SignatureVerifier for NoopSignatureVerifier {
         _signed: &SignedBlockWithAttestation,
         _state: &State,
     ) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-/// A [`SignatureVerifier`] that enforces structural invariants without
-/// performing cryptographic signature verification.
-///
-/// Checks:
-/// - `proposer_index` is within the validator registry
-/// - all aggregation-bit indices are within the validator registry
-/// - each attestation signature's `participants` field matches
-///   `attestation.aggregation_bits`
-/// - the proposer attestation has exactly one participant, matching
-///   `block.proposer_index`
-pub struct StructuralSignatureVerifier;
-
-impl SignatureVerifier for StructuralSignatureVerifier {
-    #[inline]
-    fn verify_signed_block(
-        &self,
-        signed: &SignedBlockWithAttestation,
-        state: &State,
-    ) -> Result<(), String> {
-        let validators_len = state.validators.data.len();
-        let block = &signed.message.block;
-        if (block.proposer_index.0).0 as usize >= validators_len {
-            return Err("proposer index out of range".to_string());
-        }
-
-        for (att, proof) in block
-            .body
-            .attestations
-            .data
-            .iter()
-            .zip(signed.signature.attestation_signatures.data.iter())
-        {
-            if has_out_of_range_set_bit(&att.aggregation_bits, validators_len) {
-                return Err("validator index out of range".to_string());
-            }
-            if proof.participants != att.aggregation_bits {
-                return Err(
-                    "attestation signature participants do not match aggregation bits".to_string(),
-                );
-            }
-        }
-
-        let proposer_attestation = &signed.message.proposer_attestation;
-        let proposer_idx = single_set_bit_index(&proposer_attestation.aggregation_bits)
-            .ok_or_else(|| "proposer attestation must have exactly one participant".to_string())?;
-        if proposer_idx != (block.proposer_index.0).0 as usize {
-            return Err("proposer attestation does not match proposer index".to_string());
-        }
-
         Ok(())
     }
 }
@@ -752,68 +698,6 @@ impl SignatureVerifier for PqSignatureVerifier {
         )?;
         Ok(())
     }
-}
-
-#[inline]
-fn has_out_of_range_set_bit<const LIMIT: usize>(bits: &BitList<LIMIT>, upper_bound: usize) -> bool {
-    let len = bits.len();
-    if len == 0 || upper_bound >= len {
-        return false;
-    }
-    let start_byte = upper_bound / 8;
-    let start_bit = upper_bound % 8;
-
-    if let Some(&byte) = bits.data.get(start_byte) {
-        let byte_start = start_byte * 8;
-        let valid_bits = (len - byte_start).min(8);
-        let valid_mask = if valid_bits == 8 {
-            u8::MAX
-        } else {
-            (1u8 << valid_bits) - 1
-        };
-        let out_of_range_mask = valid_mask & (u8::MAX << start_bit);
-        if (byte & out_of_range_mask) != 0 {
-            return true;
-        }
-    }
-
-    for (byte_idx, &byte) in bits.data.iter().enumerate().skip(start_byte + 1) {
-        let byte_start = byte_idx * 8;
-        if byte_start >= len {
-            break;
-        }
-        let valid_bits = (len - byte_start).min(8);
-        let valid_mask = if valid_bits == 8 {
-            u8::MAX
-        } else {
-            (1u8 << valid_bits) - 1
-        };
-        if (byte & valid_mask) != 0 {
-            return true;
-        }
-    }
-    false
-}
-
-#[inline]
-fn single_set_bit_index<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Option<usize> {
-    let len = bits.len();
-    let mut found: Option<usize> = None;
-    for (byte_idx, &byte) in bits.data.iter().enumerate() {
-        let mut remaining = byte;
-        while remaining != 0 {
-            let bit = remaining.trailing_zeros() as usize;
-            let idx = byte_idx * 8 + bit;
-            if idx >= len {
-                break;
-            }
-            if found.replace(idx).is_some() {
-                return None;
-            }
-            remaining &= remaining - 1;
-        }
-    }
-    found
 }
 
 #[derive(Clone, Debug)]

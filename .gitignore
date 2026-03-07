@@ -7,4 +7,8 @@ plan.md
 TODO.md
 DEVNET_SPINUP.local.md
 .tmp/
-scripts/
+scripts/*
+!scripts/bench_apples_to_apples.sh
+!scripts/run_interop_node.sh
+!scripts/run_devnet2_3clients.sh
+!scripts/visualizer.sh

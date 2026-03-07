@@ -19,7 +19,9 @@ use crate::containers::config::Config;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::{MetricsRegistry, spawn_metrics_server};
-use crate::networking::{Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler};
+use crate::networking::{
+    Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
+};
 use crate::ssz::HashTreeRoot;
 use crate::storage::FileStore;
 
@@ -179,9 +181,11 @@ impl Node {
         let state_root = self.state.read().expect("state lock").hash_tree_root();
         info!("state_root={:?}", state_root);
 
-        // Devnet interop default: do structural/context validation for gossip,
-        // then enforce structure again at block import.
-        let signature_verifier = Arc::new(crate::networking::NoopGossipVerifier);
+        // Default to PQ verification for gossip signatures when validator keys exist.
+        let signature_verifier = {
+            let state_guard = self.state.read().expect("state lock");
+            verifier_from_validators(&state_guard.validators.data)
+        };
         let reqresp_handler = Arc::new(StoreReqRespHandler::new(
             self.state.clone(),
             self.store.clone(),
