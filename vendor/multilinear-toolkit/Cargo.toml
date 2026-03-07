@@ -1,0 +1,51 @@
+[package]
+name = "multilinear-toolkit"
+version.workspace = true
+edition.workspace = true
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+
+[workspace]
+resolver = "2"
+members = ["backend", "constraints_folder", "sumcheck", "air"]
+
+[workspace.dependencies]
+fiat-shamir = { git = "https://github.com/leanEthereum/fiat-shamir.git", branch = "lean-vm-simple" }
+p3-util = { git = "https://github.com/TomWambsgans/Plonky3.git", branch = "lean-vm-simple" }
+p3-field = { git = "https://github.com/TomWambsgans/Plonky3.git", branch = "lean-vm-simple" }
+p3-matrix = { git = "https://github.com/TomWambsgans/Plonky3.git", branch = "lean-vm-simple" }
+p3-koala-bear = { git = "https://github.com/TomWambsgans/Plonky3.git", branch = "lean-vm-simple" }
+
+rayon = "*"
+rand = "0.9"
+itertools = "*"
+tracing = "*"
+
+# Local dependencies
+backend = { path = "backend" }
+constraints-folder = { path = "constraints_folder" }
+sumcheck = { path = "sumcheck" }
+air = { path = "air" }
+
+[dependencies]
+backend.workspace = true
+constraints-folder.workspace = true
+sumcheck.workspace = true
+p3-field.workspace = true
+p3-util.workspace = true
+fiat-shamir.workspace = true
+air.workspace = true
+rayon.workspace = true
+tracing.workspace = true
+
+# [patch."https://github.com/TomWambsgans/Plonky3.git"]
+# p3-koala-bear = { path = "../Plonky3/koala-bear" }
+# p3-field = { path = "../Plonky3/field" }
+# p3-poseidon2 = { path = "../Plonky3/poseidon2" }
+# p3-matrix = { path = "../Plonky3/matrix" }
+# p3-symmetric = { path = "../Plonky3/symmetric" }
+# p3-dft = { path = "../Plonky3/dft" }
+# p3-challenger = { path = "../Plonky3/challenger" }
+# p3-monty-31 = { path = "../Plonky3/monty-31" }

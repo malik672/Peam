@@ -1,0 +1,619 @@
+use lean_compiler::*;
+use lean_vm::*;
+use utils::poseidon16_permute;
+
+#[test]
+#[should_panic]
+fn test_duplicate_function_name() {
+    let program = r#"
+    fn a() -> 1 {
+        return 0;
+    }
+
+    fn a() -> 1 {
+        return 1;
+    }
+
+    fn main() {
+        a();
+        return;
+    }
+    "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+#[should_panic]
+fn test_duplicate_constant_name() {
+    let program = r#"
+    const A = 1;
+    const A = 0;
+
+    fn main() {
+        return;
+    }
+    "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+#[should_panic]
+fn test_wrong_n_returned_vars_1() {
+    let program = r#"
+    fn main() {
+        a, b = f();
+        return;
+    }
+
+    fn f() -> 1 {
+        return 0;
+    }
+    "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+#[should_panic]
+fn test_wrong_n_returned_vars_2() {
+    let program = r#"
+    fn main() {
+        a = f();
+        return;
+    }
+
+    fn f() -> 1 {
+        return 0, 1;
+    }
+    "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+#[should_panic]
+fn test_no_return() {
+    let program = r#"
+    fn main() {
+        a = f();
+        return;
+    }
+
+    fn f() -> 1 {
+    }
+
+    fn g() -> 1 {
+        return 0;
+    }
+    "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_assumed_return() {
+    let program = r#"
+    fn main() {
+        a = f();
+        return;
+    }
+
+    #![assume_always_returns]
+    fn f() -> 1 {
+        if 1 == 1 {
+            return 0;
+        } else {
+            print(1);
+        }
+    }
+    "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_fibonacci_program() {
+    // a program to check the value of the 30th Fibonacci number (832040)
+    let program = r#"
+    fn main() {
+        fibonacci(0, 1, 0, 30);
+        return;
+    }
+
+    fn fibonacci(a, b, i, n) {
+        if i == n {
+            print(a);
+            return;
+        }
+        fibonacci(b, a + b, i + 1, n);
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_edge_case_0() {
+    let program = r#"
+    fn main() {
+        a = malloc(1);
+        a[0] = 0;
+        for i in 0..1 {
+            x = 1 + a[i];
+        }
+        for i in 0..1 {
+            y = 1 + a[i];
+        }
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_edge_case_1() {
+    let program = r#"
+    fn main() {
+        a = malloc(1);
+        a[0] = 0;
+        assert a[8 - 8] == 0;
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_edge_case_2() {
+    let program = r#"
+    fn main() {
+        for i in 0..5 unroll {
+            x = i;
+            print(x);
+        }
+        for i in 0..3 unroll {
+            x = i;
+            print(x);
+        }
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_decompose_bits() {
+    let program = r#"
+    const A = 2 ** 30 - 1;
+    const B = 2 ** 10 - 1;
+    fn main() {
+        a = decompose_bits(A, B);
+        for i in 0..62  {
+            print(a[i]);
+        }
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_unroll() {
+    // a program to check the value of the 30th Fibonacci number (832040)
+    let program = r#"
+    fn main() {
+        for i in 0..5 unroll {
+            for j in i..2*i unroll {
+                print(i, j);
+            }
+        }
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_rev_unroll() {
+    // a program to check the value of the 30th Fibonacci number (832040)
+    let program = r#"
+    fn main() {
+        print(785 * 78 + 874 - 1);
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_mini_program_0() {
+    let program = r#"
+    fn main() {
+        for i in 0..5 {
+            for j in i..2*i*(2+1) {
+                print(i, j);
+                if i == 4 {
+                    if j == 7 {
+                        break;
+                    }
+                }
+            }
+        }
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_mini_program_1() {
+    let program = r#"
+    const N = 10;
+
+    fn main() {
+        arr = malloc(N);
+        fill_array(arr);
+        print_array(arr);
+        return;
+    }
+
+    fn fill_array(arr) {
+        for i in 0..N {
+            if i == 0 {
+                arr[i] = 10;
+            } else if i == 1 {
+                arr[i] = 20;
+            } else if i == 2 {
+                arr[i] = 30;
+            } else {
+                i_plus_one = i + 1;
+                arr[i] = i_plus_one;
+            }
+        }
+        return;
+    }
+
+    fn print_array(arr) {
+        for i in 0..N {
+            arr_i = arr[i];
+            print(arr_i);
+        }
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_mini_program_2() {
+    let program = r#"
+    fn main() {
+        for i in 0..10 {
+            for j in i..10 {
+                for k in j..10 {
+                    sum, prod = compute_sum_and_product(i, j, k);
+                    if (sum == 10) {
+                        print(i, j, k, prod);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    fn compute_sum_and_product(a, b, c) -> 2 {
+        s1 = a + b;
+        sum = s1 + c;
+        p1 = a * b;
+        product = p1 * c;
+        return sum, product;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_mini_program_3() {
+    let program = r#"
+    fn main() {
+        a = public_input_start;
+        b = a + 8;
+        c = malloc(2*8);
+        poseidon16(a, b, c, 0);
+
+        for i in 0..8 {
+            cc = c[i];
+            print(cc);
+        }
+        for i in 0..8 {
+            dd = c[i+8];
+            print(dd);
+        }
+        return;
+    }
+   "#;
+    let public_input: [F; 16] = (0..16).map(F::new).collect::<Vec<F>>().try_into().unwrap();
+    compile_and_run(program.to_string(), (&public_input, &[]), false);
+
+    let _ = dbg!(poseidon16_permute(public_input));
+}
+
+#[test]
+fn test_inlined() {
+    let program = r#"
+    fn main() {
+        x = 1;
+        y = 2;
+        i, j, k = func_1(x, y);
+        assert i == 2;
+        assert j == 3;
+        assert k == 2130706432;
+
+        g = malloc(8);
+        h = malloc(8);
+        for i in 0..8 {
+            g[i] = i;
+        }
+        for i in 0..8 unroll {
+            h[i] = i;
+        }
+        assert_eq_1(g, h);
+        assert_eq_2(g, h);
+        assert_eq_3(g, h);
+        assert_eq_4(g, h);
+        assert_eq_5(g, h);
+        return;
+    }
+
+    fn func_1(a, b) inline -> 3 {
+        x = a * b;
+        y = a + b;
+        return x, y, a - b;
+    }
+
+    fn assert_eq_1(x, y) {
+        x_ptr = x;
+        y_ptr = y;
+        for i in 0..4 unroll {
+            assert x_ptr[i] == y_ptr[i];
+        }
+        for i in 4..8 {
+            assert x_ptr[i] == y_ptr[i];
+        }
+        return;
+    }
+
+    fn assert_eq_2(x, y) inline {
+        x_ptr = x;
+        y_ptr = y;
+        for i in 0..4 unroll {
+            assert x_ptr[i] == y_ptr[i];
+        }
+        for i in 4..8 {
+            assert x_ptr[i] == y_ptr[i];
+        }
+        return;
+    }
+    fn assert_eq_3(x, y) inline {
+        u = x + 7;
+        assert_eq_1(u-7, y * 7 / 7);
+        return;
+    }
+    fn assert_eq_4(x, y) {
+        dot_product_ee(x, pointer_to_one_vector, y, 1);
+        dot_product_ee(x + 3, pointer_to_one_vector, y + 3, 1);
+        return;
+    }
+    fn assert_eq_5(x, y) inline {
+        dot_product_ee(x, pointer_to_one_vector, y, 1);
+        dot_product_ee(x + 3, pointer_to_one_vector, y + 3, 1);
+        return;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_inlined_2() {
+    let program = r#"
+    fn main() {
+        b = is_one();
+        c = b;
+        return;
+    }
+
+    fn is_one() inline -> 1 {
+        if 1 {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_match() {
+    let program = r#"
+    fn main() {
+        for x in 0..3 unroll {
+            func_match(x);
+        }
+        for x in 0..2 unroll {
+            match x {
+                0 => {
+                    y = 10 * (x + 8);
+                    z = 10 * y;
+                    print(z);
+                }
+                1 => {
+                    y = 10 * x;
+                    z = func_2(y);
+                    print(z);
+                }
+            }
+        }
+        return;
+    }
+
+    fn func_match(x) inline {
+        match x {
+            0 => {
+                print(41);
+            }
+            1 => {
+                y = func_1(x);
+                print(y + 1);
+            }
+            2 => {
+                y = 10 * x;
+                print(y);
+            }
+        }
+        return;
+    }
+
+    fn func_1(x) -> 1 {
+        return x * x * x * x;
+    }
+
+    fn func_2(x) inline -> 1 {
+        return x * x * x * x * x * x;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_match_shrink() {
+    let program = r#"
+    fn main() {
+        match 1 {
+            0 => {
+                y = 90;
+            }
+            1 => {
+                y = 10;
+                z = func_2(y);
+            }
+        }
+        return;
+    }
+
+    fn func_2(x) inline -> 1 {
+        return x * x;
+    }
+   "#;
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+// #[test]
+// fn inline_bug_mre() {
+//     let program = r#"
+//     fn main() {
+//         boolean(0);
+//         return;
+//     }
+
+//     fn boolean(a) inline -> 1 {
+//         if a == 0 {
+//             return 0;
+//         }
+//         return 1;
+//     }
+//    "#;
+//     compile_and_run(program.to_string(), (&[], &[]));
+// }
+
+#[test]
+fn test_const_functions_calling_const_functions() {
+    // Test that const functions can call other const functions
+    let program = r#"
+    fn main() {
+        y = compute_value(3);
+        print(y);
+        return;
+    }
+
+    fn compute_value(const n) -> 1 {
+        result = complex_computation(n, 5);
+        return result;
+    }
+
+    fn complex_computation(const a, const b) -> 1 {
+        return a * a + b * b;
+    }
+    "#;
+
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_inline_functions_calling_inline_functions() {
+    let program = r#"
+    fn main() {
+        x = double(3);
+        y = quad(x);
+        print(y);
+        return;
+    }
+
+    fn double(a) inline -> 1 {
+        return a + a;
+    }
+
+    fn quad(b) inline -> 1 {
+        result = double(b);
+        return result + result;
+    }
+    "#;
+
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_nested_inline_functions() {
+    let program = r#"
+    fn main() {
+        result = level_one(3);
+        print(result);
+        return;
+    }
+
+    fn level_one(x) inline -> 1 {
+        result = level_two(x);
+        return result;
+    }
+
+    fn level_two(y) inline -> 1 {
+        result = level_three(y);
+        return result;
+    }
+
+    fn level_three(z) inline -> 1 {
+        return z * z * z;
+    }
+    "#;
+
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}
+
+#[test]
+fn test_const_and_nonconst_malloc_sharing_name() {
+    let program = r#"
+    fn main() {
+        f(1);
+        return;
+    }
+
+    fn f(n) {
+        if 0 == 0 {
+            res = malloc(2);
+            res[1] = 0;
+            return;
+        } else {
+            res = malloc(n * 1);
+            return;
+        }
+    }
+    "#;
+
+    compile_and_run(program.to_string(), (&[], &[]), false);
+}

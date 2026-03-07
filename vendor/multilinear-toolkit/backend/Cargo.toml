@@ -1,0 +1,14 @@
+[package]
+name = "backend"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+p3-field.workspace = true
+p3-util.workspace = true
+itertools.workspace = true
+rayon.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+p3-koala-bear.workspace = true

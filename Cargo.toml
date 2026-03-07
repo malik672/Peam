@@ -24,10 +24,10 @@ snap = "1.1"
 fiat-shamir = { path = "./fiat-shamir" }
 
 [patch."https://github.com/leanEthereum/multilinear-toolkit.git"]
-multilinear-toolkit = { path = "../ream/vendor/multilinear-toolkit" }
+multilinear-toolkit = { path = "./vendor/multilinear-toolkit" }
 
 [patch."https://github.com/leanEthereum/leanMultisig.git"]
-lean-multisig = { path = "../ream/vendor/leanMultisig" }
+lean-multisig = { path = "./vendor/leanMultisig" }
 
 [patch."https://github.com/TomWambsgans/whir-p3"]
 whir-p3 = { path = "./whir-p3" }
