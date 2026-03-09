@@ -8,6 +8,12 @@ TODO.md
 DEVNET_SPINUP.local.md
 devnet2.md
 perf.md
+summary.md
+removal.md
+codex.txt
+benchmarks.md
+data/
+examples/
 .tmp/
 scripts/*
 !scripts/bench_apples_to_apples.sh
