@@ -523,22 +523,27 @@ impl HashTreeRoot for Block {
     }
 }
 
-/// SSZ serialization for [`BlockWithAttestation`] — variable-length, two offsets.
+/// SSZ serialization for [`BlockWithAttestation`].
 ///
-/// Layout: `[off_block: u32][off_proposer: u32][block bytes][proposer_attestation bytes]`
+/// Interop canonical layout (Ream/EthLambda/Zeam):
+/// `[off_block: u32][validator_id: u64][attestation_data: 128 B][block bytes]`.
+///
+/// We emit this format to preserve cross-client decode compatibility.
 impl SszEncode for BlockWithAttestation {
     fn encode_ssz(&self) -> Vec<u8> {
+        // Require exactly one proposer bit to derive validator_id for canonical wire format.
+        let proposer_index = single_set_bit(&self.proposer_attestation.aggregation_bits)
+            .expect("proposer attestation must have exactly one participant");
         let block = self.block.encode_ssz();
-        let proposer = self.proposer_attestation.encode_ssz();
-        let fixed_len = 8;
-        let mut out = Vec::with_capacity(fixed_len + block.len() + proposer.len());
-        unsafe { out.set_len(fixed_len + block.len() + proposer.len()) };
+        let att_data = self.proposer_attestation.data.encode_ssz();
+        let fixed_len = 4 + 8 + AttestationData::fixed_len();
+        let mut out = Vec::with_capacity(fixed_len + block.len());
+        unsafe { out.set_len(fixed_len + block.len()) };
         let off_block = fixed_len as u32;
-        let off_proposer = (fixed_len + block.len()) as u32;
         unsafe { write_bytes_at(&mut out, 0, &off_block.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut out, 4, &off_proposer.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 4, &(proposer_index as u64).to_le_bytes()) };
+        unsafe { write_bytes_at(&mut out, 12, &att_data) };
         unsafe { write_bytes_at(&mut out, fixed_len, &block) };
-        unsafe { write_bytes_at(&mut out, fixed_len + block.len(), &proposer) };
         out
     }
 }

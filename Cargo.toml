@@ -19,6 +19,8 @@ lean-multisig = { git = "https://github.com/leanEthereum/leanMultisig.git", rev 
 ssz = { package = "ethereum_ssz", version = "0.10.1" }
 rand = { version = "0.9" }
 snap = "1.1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 
 [patch."https://github.com/leanEthereum/fiat-shamir.git"]
 fiat-shamir = { path = "./fiat-shamir" }
@@ -40,7 +42,6 @@ sha2 = "0.10"
 
 [dev-dependencies]
 criterion = "0.5"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ssz_types = { git = "https://github.com/sigp/ssz_types.git", rev = "5dc2d521ed31f8e38b0065a80bf98af55aac06f8" }
 ssz = { package = "ethereum_ssz", version = "0.10.1" }

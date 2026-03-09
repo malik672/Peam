@@ -1,11 +1,12 @@
 mod gossip;
 mod head;
+mod sync;
 mod tasks;
 
 pub use gossip::handle_gossip_event;
 pub use head::proposal_head_from_pending;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, RwLock};
 
@@ -13,7 +14,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::app::{NodeSettings, build_genesis_with_validator_count, load_node_settings};
+use crate::app::{
+    NodeSettings, build_genesis_with_validator_count, load_node_settings, resolve_metrics_identity,
+};
 use crate::containers::attestation::Attestation;
 use crate::containers::config::Config;
 use crate::containers::state::State;
@@ -25,10 +28,20 @@ use crate::networking::{
 use crate::ssz::HashTreeRoot;
 use crate::storage::FileStore;
 
+use self::sync::spawn_status_sync_task;
 use tasks::{
-    apply_devnet_pq_validator_pubkeys, spawn_block_production_task, spawn_consensus_lifecycle_task,
-    spawn_signed_attestation_task, spawn_status_sync_task, spawn_strict_slot_clock,
+    DevnetValidatorKeyCache, apply_devnet_pq_validator_pubkeys, build_devnet_pq_validator_keys,
+    build_devnet_pq_validator_keys_from_hash_sig_dir, spawn_block_production_task,
+    spawn_consensus_lifecycle_task, spawn_signed_attestation_task, spawn_strict_slot_clock,
 };
+
+const PEAM_ASCII_BANNER: &str = r#"
+ ____  _____    _    __  __
+|  _ \| ____|  / \  |  \/  |
+| |_) |  _|   / _ \ | |\/| |
+|  __/| |___ / ___ \| |  | |
+|_|   |_____/_/   \_\_|  |_|
+"#;
 
 /// Filesystem paths used to initialize a [`Node`].
 #[derive(Clone, Debug)]
@@ -94,6 +107,14 @@ pub struct Node {
     sync_pending_depth: Arc<AtomicU64>,
     /// Shared metrics registry for all spec-defined Prometheus metrics.
     metrics: Arc<MetricsRegistry>,
+    /// Validator key cache (loaded from hash-sig files when available, otherwise deterministic devnet).
+    devnet_validator_keys: DevnetValidatorKeyCache,
+    /// Human-readable source of validator keys for startup logs.
+    validator_key_source: String,
+    /// Resolved `lean_node_info{name=...}` label.
+    metrics_node_name: String,
+    /// Resolved `lean_connected_peers{client=...}` label.
+    metrics_client_name: String,
 }
 
 impl Node {
@@ -110,9 +131,65 @@ impl Node {
     /// Returns `Err` if config loading, genesis construction, or store opening fails.
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
         let (config, settings) = load_node_settings(&node_config.config_path)?;
+        crate::crypto::pq::set_allow_unverified_aggregate_proofs(
+            settings.allow_unverified_aggregate_proofs,
+        );
         let mut genesis_state =
             build_genesis_with_validator_count(config.clone(), settings.validator_count)?;
-        apply_devnet_pq_validator_pubkeys(&mut genesis_state);
+        let fallback_config_dir = node_config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let config_dir = settings
+            .validator_config_path
+            .as_ref()
+            .map(|path| {
+                let path = Path::new(path);
+                if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    fallback_config_dir.join(path)
+                }
+            })
+            .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+            .unwrap_or_else(|| fallback_config_dir.to_path_buf());
+        let hash_sig_keys_dir = config_dir.join("hash-sig-keys");
+        let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
+            match build_devnet_pq_validator_keys_from_hash_sig_dir(
+                &hash_sig_keys_dir,
+                genesis_state.validators.data.len(),
+            ) {
+                Ok(keys) => (
+                    keys,
+                    format!("hash_sig_keys:{}", hash_sig_keys_dir.display()),
+                ),
+                Err(err) => {
+                    warn!(
+                        "failed to load validator keys from {}: {}; falling back to deterministic devnet keys",
+                        hash_sig_keys_dir.display(),
+                        err
+                    );
+                    (
+                        build_devnet_pq_validator_keys(genesis_state.validators.data.len()),
+                        "deterministic_devnet".to_string(),
+                    )
+                }
+            }
+        } else {
+            (
+                build_devnet_pq_validator_keys(genesis_state.validators.data.len()),
+                "deterministic_devnet".to_string(),
+            )
+        };
+        apply_devnet_pq_validator_pubkeys(&mut genesis_state, &devnet_validator_keys);
+        let (metrics_node_name, metrics_client_name) =
+            resolve_metrics_identity(&node_config.config_path, &settings).unwrap_or_else(|err| {
+                warn!(
+                    "failed to resolve metrics identity from config: {}; falling back to peam",
+                    err
+                );
+                ("peam".to_string(), "peam".to_string())
+            });
         let state = Arc::new(RwLock::new(genesis_state));
         let store_dir = settings
             .storage_dir
@@ -154,6 +231,10 @@ impl Node {
             sync_target_slot: Arc::new(AtomicU64::new(0)),
             sync_pending_depth: Arc::new(AtomicU64::new(0)),
             metrics,
+            devnet_validator_keys,
+            validator_key_source,
+            metrics_node_name,
+            metrics_client_name,
         })
     }
 
@@ -174,6 +255,46 @@ impl Node {
     ///
     /// Returns `Err` if any setup step fails (currently infallible after `load`).
     pub async fn run(mut self) -> Result<(), String> {
+        let version = format!(
+            "peam/v{}/{arch}-{os}",
+            env!("CARGO_PKG_VERSION"),
+            arch = std::env::consts::ARCH,
+            os = std::env::consts::OS
+        );
+        info!(version = %version, "Starting peam");
+        info!(
+            node_key = %self
+                .settings
+                .node_key_path
+                .as_deref()
+                .unwrap_or("<ephemeral>"),
+            "Using libp2p node key"
+        );
+        info!(
+            genesis_time = self.config.genesis_time.0,
+            validator_count = self.settings.validator_count,
+            "Loaded genesis configuration"
+        );
+        info!(
+            allow_unverified_aggregate_proofs = self.settings.allow_unverified_aggregate_proofs,
+            "Aggregate proof verification policy"
+        );
+        info!(
+            node_id = %self.metrics_node_name,
+            index = self.settings.local_validator_index,
+            secret_key_source = %self.validator_key_source,
+            "Loading validator secret key"
+        );
+        info!(
+            node_id = %self.metrics_node_name,
+            count = usize::from(
+                self.devnet_validator_keys
+                    .get(self.settings.local_validator_index as usize)
+                    .is_some_and(|entry| entry.is_some())
+            ),
+            "Loaded validator secret keys"
+        );
+        info!("\n{PEAM_ASCII_BANNER}");
         info!("node starting");
         info!("data_dir={}", self.data_dir_display());
         info!("store_dir={}", self.store_dir_display());
@@ -203,7 +324,8 @@ impl Node {
             ban_threshold: self.settings.ban_threshold,
             bootnodes: self.settings.bootnodes.clone(),
             trusted_peers: self.settings.trusted_peers.clone(),
-            listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
+            listen_addr: self.settings.listen_addr.clone(),
+            node_key_path: self.settings.node_key_path.clone(),
             allowed_topics: self.settings.allowed_topics.clone(),
             topic_scores: self.settings.topic_scores.clone(),
             topic_validators: self.settings.topic_validators.clone(),
@@ -253,6 +375,7 @@ impl Node {
                 self.state.clone(),
                 self.store.clone(),
                 self.fork_choice.clone(),
+                self.pending_attestations.clone(),
                 self.is_syncing.clone(),
                 self.sync_target_slot.clone(),
                 self.sync_pending_depth.clone(),
@@ -278,6 +401,7 @@ impl Node {
                     self.store.clone(),
                     self.fork_choice.clone(),
                     self.pending_block_attestations.clone(),
+                    self.devnet_validator_keys.clone(),
                     self.metrics.clone(),
                 );
             } else {
@@ -300,6 +424,7 @@ impl Node {
                     self.state.clone(),
                     self.fork_choice.clone(),
                     self.pending_attestations.clone(),
+                    self.devnet_validator_keys.clone(),
                     self.metrics.clone(),
                 );
             } else {
@@ -329,6 +454,8 @@ impl Node {
                 self.sync_target_slot.clone(),
                 self.sync_pending_depth.clone(),
                 self.metrics.clone(),
+                self.metrics_node_name.clone(),
+                self.metrics_client_name.clone(),
                 bind,
             ));
         }

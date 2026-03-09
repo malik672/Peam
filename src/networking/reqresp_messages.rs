@@ -80,19 +80,24 @@ fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootReque
 }
 
 #[inline]
-fn decode_blocks_by_root_response_compat(data: &[u8]) -> Result<BlocksByRootResponse, String> {
+fn decode_blocks_by_root_response_compat(
+    data: &[u8],
+) -> Result<SignedBlockWithAttestation, String> {
     // REAM sends one SignedBlockWithAttestation per chunk. Decode this first
     // to avoid permissive wrapper decoding from interpreting single-block bytes
     // as a malformed list.
     if let Ok(single) = SignedBlockWithAttestation::decode_ssz_checked(data) {
-        let blocks =
-            SszList::new(vec![single]).map_err(|err| format!("invalid block list: {err}"))?;
-        return Ok(BlocksByRootResponse { blocks });
+        return Ok(single);
     }
 
     // Fallback for peam's historical wrapper form.
     if let Ok(resp) = BlocksByRootResponse::decode_ssz_checked(data) {
-        return Ok(resp);
+        return resp
+            .blocks
+            .data
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty BlocksByRoot response payload".to_string());
     }
 
     Err("unsupported BlocksByRoot response payload".to_string())
@@ -196,8 +201,8 @@ impl LeanRequestMessage {
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanRequestMessage::Status(status) => encode_lean_status_compat(status),
-            // REAM-compatible transparent list payload.
-            LeanRequestMessage::BlocksByRoot(req) => req.roots.encode_ssz(),
+            // Canonical SSZ container payload (offset + roots list).
+            LeanRequestMessage::BlocksByRoot(req) => req.encode_ssz(),
         }
     }
 
@@ -223,8 +228,8 @@ impl LeanRequestMessage {
 pub enum LeanResponseMessage {
     /// Response to a status request.
     Status(Status),
-    /// Response to a blocks-by-root request.
-    BlocksByRoot(BlocksByRootResponse),
+    /// Response to a blocks-by-root request (one block per chunk).
+    BlocksByRoot(SignedBlockWithAttestation),
 }
 
 impl LeanResponseMessage {
@@ -232,13 +237,7 @@ impl LeanResponseMessage {
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanResponseMessage::Status(status) => encode_lean_status_compat(status),
-            LeanResponseMessage::BlocksByRoot(resp) => {
-                if resp.blocks.data.len() == 1 {
-                    // REAM-compatible chunk form.
-                    return resp.blocks.data[0].encode_ssz();
-                }
-                resp.encode_ssz()
-            }
+            LeanResponseMessage::BlocksByRoot(block) => block.encode_ssz(),
         }
     }
 

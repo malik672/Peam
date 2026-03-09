@@ -1,9 +1,12 @@
 use rapidhash::RapidHashMap;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::containers::attestation::Attestation;
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
+use crate::crypto::pq;
 use crate::slot::Slot;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
@@ -135,11 +138,15 @@ impl ForkChoiceStore {
             apply_vote_to(&self.blocks, &mut self.latest_votes, att);
         }
         apply_vote_to(&self.blocks, &mut self.latest_votes, &proposer_attestation);
-        if post_state.latest_justified != self.latest_justified {
+        // Keep checkpoint progression monotonic even when importing side branches.
+        // This prevents sync/backfill replay from regressing fork-choice checkpoints.
+        if post_state.latest_justified.slot > self.latest_justified.slot {
             self.previous_justified = self.latest_justified;
+            self.latest_justified = post_state.latest_justified;
         }
-        self.latest_justified = post_state.latest_justified;
-        self.latest_finalized = post_state.latest_finalized;
+        if post_state.latest_finalized.slot > self.latest_finalized.slot {
+            self.latest_finalized = post_state.latest_finalized;
+        }
         let old_head = self.head;
         let head = self.find_head();
         if let Some(head_block) = self.blocks.get(&head) {
@@ -169,8 +176,8 @@ impl ForkChoiceStore {
     /// `aggregation_bits`) as a vote for `attestation.data.target.root`. Attestations
     /// whose target root is not yet known to the store are silently ignored (equivocation
     /// protection: we only count votes for blocks we have already validated).
-    pub fn on_attestation(&mut self, attestation: &Attestation) {
-        let _ = apply_vote_to(&self.blocks, &mut self.latest_new_votes, attestation);
+    pub fn on_attestation(&mut self, attestation: &Attestation) -> bool {
+        apply_vote_to(&self.blocks, &mut self.latest_new_votes, attestation)
     }
 
     /// Promote newly received votes into active fork-choice votes.
@@ -484,19 +491,119 @@ fn state_matches_block_root(state: &State, expected: Bytes32) -> bool {
 }
 
 #[inline]
+fn attestation_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PEAM_TRACE_ATTESTATIONS")
+            .ok()
+            .map(|value| match value.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => false,
+            })
+            .unwrap_or(false)
+    })
+}
+
+#[inline]
+fn log_vote_drop_unknown_head_sample(attestation: &Attestation) {
+    if !attestation_trace_enabled() {
+        return;
+    }
+    static LOGGED: AtomicUsize = AtomicUsize::new(0);
+    if LOGGED.fetch_add(1, Ordering::Relaxed) >= 256 {
+        return;
+    }
+    let data = &attestation.data;
+    tracing::info!(
+        att_slot = data.slot.0.0,
+        head_slot = data.head.slot.0.0,
+        source_slot = data.source.slot.0.0,
+        target_slot = data.target.slot.0.0,
+        head_root = ?data.head.root,
+        source_root = ?data.source.root,
+        target_root = ?data.target.root,
+        participants_len_bits = attestation.aggregation_bits.len(),
+        "fork choice dropped attestation vote: unknown head root"
+    );
+}
+
+#[inline]
 fn apply_vote_to(
     blocks: &RapidHashMap<Bytes32, SignedBlockWithAttestation>,
     votes: &mut RapidHashMap<usize, Bytes32>,
     attestation: &Attestation,
 ) -> bool {
-    let target_root = attestation.data.target.root;
-    if !blocks.contains_key(&target_root) {
+    let Some(vote_root) = resolve_vote_root(blocks, attestation) else {
+        log_vote_drop_unknown_head_sample(attestation);
         return false;
-    }
+    };
     for validator_id in bitlist_indices(&attestation.aggregation_bits) {
-        votes.insert(validator_id, target_root);
+        votes.insert(validator_id, vote_root);
     }
     true
+}
+
+#[inline]
+fn resolve_vote_root(
+    blocks: &RapidHashMap<Bytes32, SignedBlockWithAttestation>,
+    attestation: &Attestation,
+) -> Option<Bytes32> {
+    let head_root = attestation.data.head.root;
+    if blocks.contains_key(&head_root) {
+        return Some(head_root);
+    }
+    if !pq::allow_unverified_aggregate_proofs() {
+        return None;
+    }
+
+    // Interop fallback: if the peer's head root is not byte-identical but points to
+    // the same slot, map the vote onto a local block at that slot.
+    let head_slot = attestation.data.head.slot.0.0;
+    let mut candidates = blocks
+        .iter()
+        .filter_map(|(root, block)| (block.message.block.slot.0.0 == head_slot).then_some(*root))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return candidates.pop();
+    }
+
+    let target_root = attestation.data.target.root;
+    if blocks.contains_key(&target_root) {
+        for candidate in candidates.iter().copied() {
+            if is_descendant_in_blocks(blocks, candidate, target_root) {
+                return Some(candidate);
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| a.as_array().cmp(&b.as_array()));
+    candidates.into_iter().next()
+}
+
+#[inline]
+fn is_descendant_in_blocks(
+    blocks: &RapidHashMap<Bytes32, SignedBlockWithAttestation>,
+    mut node: Bytes32,
+    ancestor: Bytes32,
+) -> bool {
+    if node == ancestor {
+        return true;
+    }
+    while let Some(block) = blocks.get(&node) {
+        let parent = block.message.block.parent_root;
+        if parent == ancestor {
+            return true;
+        }
+        if parent == Bytes32::zero() {
+            return false;
+        }
+        node = parent;
+    }
+    false
 }
 
 #[inline]

@@ -207,6 +207,7 @@ impl Networking {
         let p2p_config = P2pConfig {
             listen_addr,
             bootnodes,
+            node_key_path: config.node_key_path.clone(),
             gossipsub_topic,
             allowed_topics: config.allowed_topics.clone(),
             topic_scores: config.topic_scores.clone(),
@@ -350,6 +351,8 @@ pub struct NetworkingConfig {
     pub trusted_peers: Vec<String>,
     /// Multiaddr string the node listens on.
     pub listen_addr: String,
+    /// Optional filesystem path to a secp256k1 private key used for peer identity.
+    pub node_key_path: Option<String>,
     /// Gossipsub topic strings the node subscribes to and validates.
     pub allowed_topics: Vec<String>,
     /// Score increment per topic awarded on valid message receipt.
@@ -379,14 +382,25 @@ impl Default for NetworkingConfig {
             bootnodes: Vec::new(),
             trusted_peers: Vec::new(),
             listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
+            node_key_path: None,
             allowed_topics: vec![
                 "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/attestation_0/ssz_snappy".to_string(),
                 "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
                 ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
                 (
+                    "/leanconsensus/devnet2/attestation_0/ssz_snappy".to_string(),
+                    1,
+                ),
+                (
                     "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    1,
+                ),
+                (
+                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
@@ -396,8 +410,16 @@ impl Default for NetworkingConfig {
                     GossipValidatorKind::Block,
                 ),
                 (
+                    "/leanconsensus/devnet2/attestation_0/ssz_snappy".to_string(),
+                    GossipValidatorKind::Attestation,
+                ),
+                (
                     "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     GossipValidatorKind::Attestation,
+                ),
+                (
+                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
+                    GossipValidatorKind::AggregatedAttestation,
                 ),
             ],
             signature_verifier: Arc::new(NoopGossipVerifier),

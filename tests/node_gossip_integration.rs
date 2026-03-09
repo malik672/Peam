@@ -208,3 +208,48 @@ fn gossip_attestation_updates_fork_choice_votes() {
     let fc = fc.as_ref().expect("fork choice");
     assert_eq!(fc.head(), root);
 }
+
+#[test]
+fn gossip_block_enqueues_proposer_attestation_for_future_aggregation() {
+    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
+    let v = Validator {
+        pubkey,
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = Arc::new(RwLock::new(State::generate_genesis(Uint64(0), validators)));
+    let store = Arc::new(RwLock::new(MemoryStore::new()));
+    let fork_choice = Arc::new(RwLock::new(None));
+    let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+    let metrics = Arc::new(MetricsRegistry::new());
+
+    let (signed, _post, _root) = {
+        let s = state.read().expect("state lock");
+        build_signed_block(&s, 1)
+    };
+    let expected = signed.message.proposer_attestation.clone();
+    let gossip = GossipBlock { block: signed };
+    let payload = gossip.encode_ssz();
+    let topic = LeanGossipTopic {
+        fork: "devnet2".to_string(),
+        kind: LeanGossipTopicKind::Block,
+    }
+    .to_string();
+
+    handle_gossip_event(
+        &topic,
+        &payload,
+        &state,
+        &store,
+        &fork_choice,
+        &pending_attestations,
+        &metrics,
+    );
+
+    let pending = pending_attestations
+        .read()
+        .expect("pending attestations lock");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0], expected);
+}

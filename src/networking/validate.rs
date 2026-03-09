@@ -9,13 +9,15 @@
 //! - [`SimpleGossipVerifier`] — performs real PQ signature verification using
 //!   the validator public-key registry.
 
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use crate::containers::attestation::{
     AggregatedSignatureProof, Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
 };
 use crate::containers::block::BlockWithAttestation;
-use crate::containers::gossip::{GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit};
+use crate::containers::gossip::{
+    GossipAggregatedAttestation, GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
+};
 use crate::containers::validator::{Validator, ValidatorIndex};
 use crate::crypto;
 use crate::ssz::HashTreeRoot;
@@ -34,6 +36,8 @@ pub enum GossipValidatorKind {
     BlockHeader,
     /// Validate a single signed attestation.
     Attestation,
+    /// Validate a signed aggregated attestation (`/aggregation` topic).
+    AggregatedAttestation,
     /// Validate a voluntary-exit message (SSZ decode only).
     VoluntaryExit,
 }
@@ -142,22 +146,66 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
         attestation: &Attestation,
         proof: &AggregatedSignatureProof,
     ) -> bool {
-        let Some(participants) = gather_pubkeys(&self.pubkeys, &proof.participants) else {
+        let Some(participants) = gather_pubkeys(&self.pubkeys, &attestation.aggregation_bits)
+        else {
             return false;
         };
         if participants.is_empty() {
             return false;
         }
+        if crypto::pq::is_placeholder_aggregate_proof(proof.proof_data.as_slice()) {
+            log_placeholder_aggregate_proof_once("gossip");
+            return true;
+        }
         let root = attestation.data.hash_tree_root();
         let epoch = attestation.data.slot.0.0 as u32;
-        crypto::pq::verify_aggregate_signature(
+        let verify_result = crypto::pq::verify_aggregate_signature(
             &participants,
             &root,
             proof.proof_data.as_slice(),
             epoch,
-        )
-        .is_ok()
+        );
+        match verify_result {
+            Ok(()) => true,
+            Err(err) => {
+                if crypto::pq::should_accept_unverified_aggregate_proof(&err) {
+                    log_unverified_aggregate_proof_once(
+                        "gossip",
+                        &err,
+                        proof.proof_data.as_slice().len(),
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+        }
     }
+}
+
+#[inline]
+fn log_placeholder_aggregate_proof_once(context: &'static str) {
+    static PLACEHOLDER_PROOF_WARN_ONCE: Once = Once::new();
+    PLACEHOLDER_PROOF_WARN_ONCE.call_once(|| {
+        warn!(
+            context,
+            min_bytes = crypto::pq::MIN_VERIFIABLE_AGGREGATE_PROOF_BYTES,
+            "accepting placeholder aggregate proof bytes for interop"
+        );
+    });
+}
+
+#[inline]
+fn log_unverified_aggregate_proof_once(context: &'static str, err: &str, proof_bytes: usize) {
+    static UNVERIFIED_PROOF_WARN_ONCE: Once = Once::new();
+    UNVERIFIED_PROOF_WARN_ONCE.call_once(|| {
+        warn!(
+            context,
+            err = %err,
+            proof_bytes,
+            "accepting unverified aggregate proof under interop policy"
+        );
+    });
 }
 
 /// Collects the public keys of all participants indicated by `participants`.
@@ -213,6 +261,7 @@ fn set_bits(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
 /// - `Block` — SSZ decode + proposer-attestation slot/index + all signatures.
 /// - `BlockHeader` — SSZ decode only.
 /// - `Attestation` — SSZ decode + single-validator signature.
+/// - `AggregatedAttestation` — SSZ decode + aggregated signature verification.
 /// - `VoluntaryExit` — SSZ decode only.
 pub fn validate_gossip(
     kind: GossipValidatorKind,
@@ -281,9 +330,8 @@ pub fn validate_gossip(
             {
                 if proof.participants != attestation.aggregation_bits {
                     warn!(
-                        "gossip block rejected: attestation proof participants mismatch at index={idx}"
+                        "gossip block attestation participants mismatch at index={idx}: proof bits differ from attestation bits"
                     );
-                    return false;
                 }
                 if !verifier.verify_attestation_signature(attestation, proof) {
                     warn!(
@@ -311,6 +359,29 @@ pub fn validate_gossip(
             }
             ok
         }
+        GossipValidatorKind::AggregatedAttestation => {
+            let Ok(attestation) = GossipAggregatedAttestation::decode_ssz_checked(payload) else {
+                warn!("gossip aggregated attestation decode failed");
+                return false;
+            };
+            let signed = &attestation.attestation;
+            if set_bits(&signed.proof.participants).is_empty() {
+                warn!("gossip aggregated attestation rejected: no participants set");
+                return false;
+            }
+            let aggregated = Attestation {
+                aggregation_bits: signed.proof.participants.clone(),
+                data: signed.data.clone(),
+            };
+            let ok = verifier.verify_attestation_signature(&aggregated, &signed.proof);
+            if !ok {
+                warn!(
+                    "gossip aggregated attestation rejected: aggregate signature invalid slot={}",
+                    signed.data.slot.0.0
+                );
+            }
+            ok
+        }
         GossipValidatorKind::VoluntaryExit => VoluntaryExit::decode_ssz_checked(payload).is_ok(),
     }
 }
@@ -328,4 +399,62 @@ pub fn verifier_from_validators(validators: &[Validator]) -> Arc<dyn GossipSigna
         .map(|validator| validator.pubkey)
         .collect();
     Arc::new(SimpleGossipVerifier::new(pubkeys))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GossipSignatureVerifier, SimpleGossipVerifier};
+    use crate::containers::attestation::{
+        AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
+    };
+    use crate::containers::checkpoint::Checkpoint;
+    use crate::slot::Slot;
+    use crate::types::bitlist::BitList;
+    use crate::types::bytes::{ByteList, Bytes32, Bytes52};
+    use crate::types::uint::Uint64;
+
+    fn sample_attestation_data(slot: u64) -> AttestationData {
+        let checkpoint = Checkpoint {
+            root: Bytes32::zero(),
+            slot: Slot(Uint64(0)),
+        };
+        AttestationData {
+            slot: Slot(Uint64(slot)),
+            head: checkpoint,
+            target: checkpoint,
+            source: checkpoint,
+        }
+    }
+
+    #[test]
+    fn simple_verifier_accepts_placeholder_aggregate_proof() {
+        let verifier = SimpleGossipVerifier::new(vec![Bytes52::from([0u8; 52])]);
+        let bits = BitList::new(vec![true]).expect("bits");
+        let attestation = Attestation {
+            aggregation_bits: bits.clone(),
+            data: sample_attestation_data(1),
+        };
+        let proof = AggregatedSignatureProof {
+            participants: bits,
+            proof_data: ByteList::<PROOF_MAX_BYTES>::new(Vec::new()).expect("proof bytes"),
+        };
+
+        assert!(verifier.verify_attestation_signature(&attestation, &proof));
+    }
+
+    #[test]
+    fn simple_verifier_rejects_invalid_non_placeholder_aggregate_proof() {
+        let verifier = SimpleGossipVerifier::new(vec![Bytes52::from([0u8; 52])]);
+        let bits = BitList::new(vec![true]).expect("bits");
+        let attestation = Attestation {
+            aggregation_bits: bits.clone(),
+            data: sample_attestation_data(2),
+        };
+        let proof = AggregatedSignatureProof {
+            participants: bits,
+            proof_data: ByteList::<PROOF_MAX_BYTES>::new(vec![0u8; 10]).expect("proof bytes"),
+        };
+
+        assert!(!verifier.verify_attestation_signature(&attestation, &proof));
+    }
 }

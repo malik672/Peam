@@ -22,9 +22,12 @@ pub const ENCODING_POSTFIX: &str = "ssz_snappy";
 pub const LEAN_BLOCK_TOPIC: &str = "block";
 /// Topic name segment for global attestations.
 pub const LEAN_ATTESTATION_TOPIC: &str = "attestation";
-// Attestation subnet topics are encoded as: attestation_subnet_{id}
+/// Topic name segment for aggregated-attestation gossip.
+pub const LEAN_AGGREGATION_TOPIC: &str = "aggregation";
 /// Prefix for per-subnet attestation topics.
-pub const LEAN_ATTESTATION_SUBNET_PREFIX: &str = "attestation_subnet_";
+pub const LEAN_ATTESTATION_SUBNET_PREFIX: &str = "attestation_";
+/// Legacy prefix accepted for backward-compatibility.
+pub const LEAN_ATTESTATION_SUBNET_PREFIX_LEGACY: &str = "attestation_subnet_";
 
 /// A parsed lean-Ethereum gossipsub topic.
 ///
@@ -64,8 +67,18 @@ impl LeanGossipTopic {
         let kind = match topic_name {
             LEAN_BLOCK_TOPIC => LeanGossipTopicKind::Block,
             LEAN_ATTESTATION_TOPIC => LeanGossipTopicKind::Attestation,
+            LEAN_AGGREGATION_TOPIC => LeanGossipTopicKind::AggregatedAttestation,
             other if other.starts_with(LEAN_ATTESTATION_SUBNET_PREFIX) => {
                 let subnet_str = other.trim_start_matches(LEAN_ATTESTATION_SUBNET_PREFIX);
+                let subnet_id = subnet_str.parse::<u64>().map_err(|err| {
+                    GossipsubError::InvalidTopic(format!(
+                        "Invalid attestation subnet id: {subnet_str:?}, error: {err}"
+                    ))
+                })?;
+                LeanGossipTopicKind::AttestationSubnet(subnet_id)
+            }
+            other if other.starts_with(LEAN_ATTESTATION_SUBNET_PREFIX_LEGACY) => {
+                let subnet_str = other.trim_start_matches(LEAN_ATTESTATION_SUBNET_PREFIX_LEGACY);
                 let subnet_id = subnet_str.parse::<u64>().map_err(|err| {
                     GossipsubError::InvalidTopic(format!(
                         "Invalid attestation subnet id: {subnet_str:?}, error: {err}"
@@ -90,6 +103,7 @@ impl std::fmt::Display for LeanGossipTopic {
         let topic_name = match &self.kind {
             LeanGossipTopicKind::Block => LEAN_BLOCK_TOPIC.to_string(),
             LeanGossipTopicKind::Attestation => LEAN_ATTESTATION_TOPIC.to_string(),
+            LeanGossipTopicKind::AggregatedAttestation => LEAN_AGGREGATION_TOPIC.to_string(),
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => {
                 format!("{LEAN_ATTESTATION_SUBNET_PREFIX}{subnet_id}")
             }
@@ -123,6 +137,7 @@ impl From<LeanGossipTopic> for TopicHash {
         let kind_str = match &val.kind {
             LeanGossipTopicKind::Block => LEAN_BLOCK_TOPIC.to_string(),
             LeanGossipTopicKind::Attestation => LEAN_ATTESTATION_TOPIC.to_string(),
+            LeanGossipTopicKind::AggregatedAttestation => LEAN_AGGREGATION_TOPIC.to_string(),
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => {
                 format!("{LEAN_ATTESTATION_SUBNET_PREFIX}{subnet_id}")
             }
@@ -142,6 +157,8 @@ pub enum LeanGossipTopicKind {
     Block,
     /// A global (non-subnet) attestation.
     Attestation,
+    /// Aggregated attestation gossip payload (data + aggregated signature proof).
+    AggregatedAttestation,
     /// A subnet-specific attestation; carries the subnet ID.
     AttestationSubnet(u64),
 }
@@ -152,6 +169,7 @@ impl std::fmt::Display for LeanGossipTopicKind {
         match self {
             LeanGossipTopicKind::Block => write!(f, "{LEAN_BLOCK_TOPIC}"),
             LeanGossipTopicKind::Attestation => write!(f, "{LEAN_ATTESTATION_TOPIC}"),
+            LeanGossipTopicKind::AggregatedAttestation => write!(f, "{LEAN_AGGREGATION_TOPIC}"),
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => {
                 write!(f, "{LEAN_ATTESTATION_SUBNET_PREFIX}{subnet_id}")
             }

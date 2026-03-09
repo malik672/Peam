@@ -1,4 +1,4 @@
-use crate::containers::attestation::SignedAttestation;
+use crate::containers::attestation::{SignedAggregatedAttestation, SignedAttestation};
 use crate::containers::block::{BlockHeader, SignedBlockWithAttestation};
 use crate::containers::validator::ValidatorIndex;
 use crate::ssz::hash::hash_nodes;
@@ -20,6 +20,11 @@ pub struct GossipBlockHeader {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GossipAttestation {
     pub attestation: SignedAttestation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GossipAggregatedAttestation {
+    pub attestation: SignedAggregatedAttestation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -107,6 +112,34 @@ impl GossipAttestation {
 }
 
 impl HashTreeRoot for GossipAttestation {
+    fn hash_tree_root(&self) -> [u8; 32] {
+        self.attestation.hash_tree_root()
+    }
+}
+
+impl SszEncode for GossipAggregatedAttestation {
+    fn encode_ssz(&self) -> Vec<u8> {
+        self.attestation.encode_ssz()
+    }
+}
+
+impl SszDecode for GossipAggregatedAttestation {
+    fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
+        Ok(Self {
+            attestation: SignedAggregatedAttestation::decode_ssz(bytes)?,
+        })
+    }
+}
+
+impl GossipAggregatedAttestation {
+    pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
+        Ok(Self {
+            attestation: SignedAggregatedAttestation::decode_ssz_checked(bytes)?,
+        })
+    }
+}
+
+impl HashTreeRoot for GossipAggregatedAttestation {
     fn hash_tree_root(&self) -> [u8; 32] {
         self.attestation.hash_tree_root()
     }

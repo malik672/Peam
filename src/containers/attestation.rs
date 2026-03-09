@@ -80,6 +80,17 @@ pub struct SignedAttestation {
     pub signature: Bytes3112,
 }
 
+/// Aggregated attestation gossip payload carrying attestation data and a proof.
+///
+/// This matches the interop wire type used on the `/aggregation` gossipsub topic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignedAggregatedAttestation {
+    /// Attested chain view shared by all participants.
+    pub data: AttestationData,
+    /// Aggregated signature proof and participant bitfield.
+    pub proof: AggregatedSignatureProof,
+}
+
 /// An aggregated post-quantum signature proof together with the bitfield of
 /// validators whose individual signatures were combined.
 ///
@@ -295,6 +306,75 @@ impl HashTreeRoot for SignedAttestation {
 impl SszFixedLen for SignedAttestation {
     fn fixed_len() -> usize {
         8 + 128 + SIGNATURE_BYTES
+    }
+}
+
+/// SSZ serialization for [`SignedAggregatedAttestation`] — variable-length.
+///
+/// Layout: `[data: 128 B][off_proof: u32][proof bytes]`
+impl SszEncode for SignedAggregatedAttestation {
+    fn encode_ssz(&self) -> Vec<u8> {
+        let data_bytes = self.data.encode_ssz();
+        let proof_bytes = self.proof.encode_ssz();
+        let fixed_len = data_bytes.len() + 4;
+        let mut out = Vec::with_capacity(fixed_len + proof_bytes.len());
+        unsafe { out.set_len(fixed_len + proof_bytes.len()) };
+        unsafe { write_bytes_at(&mut out, 0, &data_bytes) };
+        unsafe {
+            write_bytes_at(
+                &mut out,
+                data_bytes.len(),
+                &(fixed_len as u32).to_le_bytes(),
+            )
+        };
+        unsafe { write_bytes_at(&mut out, fixed_len, &proof_bytes) };
+        out
+    }
+}
+
+/// SSZ deserialization for [`SignedAggregatedAttestation`] — trusts offset validity.
+impl SszDecode for SignedAggregatedAttestation {
+    fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
+        let data_len = AttestationData::fixed_len();
+        let data = AttestationData::decode_ssz(&bytes[..data_len])?;
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&bytes[data_len..(data_len + 4)]);
+        let off_proof = u32::from_le_bytes(buf) as usize;
+        let proof = AggregatedSignatureProof::decode_ssz(&bytes[off_proof..])?;
+        Ok(Self { data, proof })
+    }
+}
+
+impl SignedAggregatedAttestation {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
+        let data_len = AttestationData::fixed_len();
+        let min_len = data_len + 4;
+        if bytes.len() < min_len {
+            return Err(format!(
+                "SignedAggregatedAttestation expects at least {min_len} bytes, got {}",
+                bytes.len()
+            ));
+        }
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&bytes[data_len..min_len]);
+        let off_proof = u32::from_le_bytes(buf) as usize;
+        if off_proof < min_len || off_proof > bytes.len() {
+            return Err(format!(
+                "SignedAggregatedAttestation invalid proof offset {off_proof} for length {}",
+                bytes.len()
+            ));
+        }
+        Self::decode_ssz(bytes)
+    }
+}
+
+impl HashTreeRoot for SignedAggregatedAttestation {
+    fn hash_tree_root(&self) -> [u8; 32] {
+        let data_root = Bytes32::from(self.data.hash_tree_root());
+        let proof_root = Bytes32::from(self.proof.hash_tree_root());
+        let root = hash_nodes(&data_root, &proof_root);
+        *root.as_ref()
     }
 }
 

@@ -41,7 +41,7 @@ use std::time::Instant;
 use super::canonical_db::CanonicalDb;
 use super::pending::PendingSlotCache;
 use super::*;
-use crate::ssz::SszEncode;
+use crate::ssz::{HashTreeRoot, SszEncode};
 
 /// A disk-backed [`Store`] with canonical+pending slot indexes as truth.
 ///
@@ -305,6 +305,80 @@ impl FileStore {
     }
 
     #[inline]
+    fn persist_signed_block_bundle_from_state(
+        &mut self,
+        root: Bytes32,
+        signed: &SignedBlockWithAttestation,
+        state: &State,
+    ) -> Result<(), String> {
+        let block = signed.message.block.clone();
+        let slot = block.slot.0.0;
+        let state_root = block.state_root;
+        let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
+        let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
+        let state_blob = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
+
+        self.head = Some(root);
+        self.justified = Some(state.latest_justified.root);
+        self.finalized = Some(state.latest_finalized.root);
+        self.finalized_slot = Some(state.latest_finalized.slot.0.0);
+        self.set_meta_dirty();
+
+        let fin_slot = state.latest_finalized.slot.0.0;
+        let block_canonical = self.index_block_slot(slot, root, state_root);
+        self.index_state_slot(slot, state_root);
+        let promoted = self.promote_finalized_slot_in_memory(fin_slot);
+
+        let mut state_upserts = Vec::with_capacity(1 + promoted.len());
+        let mut block_upserts = Vec::with_capacity(usize::from(block_canonical) + promoted.len());
+        state_upserts.push((slot, state_root));
+        if block_canonical {
+            block_upserts.push((slot, root));
+        }
+        for entry in &promoted {
+            state_upserts.push((entry.slot, entry.state_root));
+            block_upserts.push((entry.slot, entry.block_root));
+        }
+
+        self.canonical_db.persist_signed_block_bundle(
+            root,
+            &block_blob,
+            &signed_blob,
+            state_root,
+            &state_blob,
+            &state_upserts,
+            &block_upserts,
+            self.head,
+            self.finalized,
+            self.justified,
+        )?;
+        self.index_dirty = false;
+        self.meta_dirty = false;
+        Ok(())
+    }
+
+    #[inline]
+    fn replay_signed_block_from_parent(
+        &self,
+        signed: &SignedBlockWithAttestation,
+        metrics: Option<&crate::metrics::MetricsRegistry>,
+    ) -> Result<State, String> {
+        let parent_root = signed.message.block.parent_root;
+        let parent_block = self
+            .load_block_by_root(&parent_root)
+            .ok_or_else(|| "block parent root unknown in store".to_string())?;
+        let mut parent_state = self
+            .load_state_by_root(&parent_block.state_root)
+            .ok_or_else(|| "parent state root missing in store".to_string())?;
+        if let Some(metrics) = metrics {
+            parent_state.process_signed_block_with_metrics(signed, metrics)?;
+        } else {
+            parent_state.process_signed_block(signed)?;
+        }
+        Ok(parent_state)
+    }
+
+    #[inline]
     fn put_signed_block_inner(
         &mut self,
         root: Bytes32,
@@ -314,63 +388,84 @@ impl FileStore {
     ) -> Result<(), String> {
         let import_start = metrics.map(|_| Instant::now());
         let result = (|| {
-            if let Some(metrics) = metrics {
-                state.process_signed_block_with_metrics(&signed, metrics)?;
+            let pre_import_slot = state.slot;
+            let pre_import_justified = state.latest_justified;
+            let pre_import_finalized = state.latest_finalized;
+            let mut imported_from_fallback = false;
+            let process_result = if let Some(metrics) = metrics {
+                state.process_signed_block_with_metrics(&signed, metrics)
             } else {
-                state.process_signed_block(&signed)?;
+                state.process_signed_block(&signed)
+            };
+            if let Err(err) = process_result {
+                if !err.contains("block parent root does not match latest header root") {
+                    return Err(err);
+                }
+                let replayed = self.replay_signed_block_from_parent(&signed, metrics)?;
+                *state = replayed;
+                imported_from_fallback = true;
             }
-
-            let block = signed.message.block.clone();
-            let slot = block.slot.0.0;
-            let state_root = block.state_root;
-            let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
-            let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
-            let state_blob = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
-
-            self.head = Some(root);
-            self.justified = Some(state.latest_justified.root);
-            self.finalized = Some(state.latest_finalized.root);
-            self.finalized_slot = Some(state.latest_finalized.slot.0.0);
-            self.set_meta_dirty();
-
-            let fin_slot = state.latest_finalized.slot.0.0;
-            let block_canonical = self.index_block_slot(slot, root, state_root);
-            self.index_state_slot(slot, state_root);
-            let promoted = self.promote_finalized_slot_in_memory(fin_slot);
-
-            let mut state_upserts = Vec::with_capacity(1 + promoted.len());
-            let mut block_upserts =
-                Vec::with_capacity(usize::from(block_canonical) + promoted.len());
-            state_upserts.push((slot, state_root));
-            if block_canonical {
-                block_upserts.push((slot, root));
+            if imported_from_fallback {
+                tracing::info!(
+                    block_root = ?root,
+                    block_slot = signed.message.block.slot.0.0,
+                    parent_root = ?signed.message.block.parent_root,
+                    "imported block via parent-state replay fallback"
+                );
             }
-            for entry in &promoted {
-                state_upserts.push((entry.slot, entry.state_root));
-                block_upserts.push((entry.slot, entry.block_root));
+            if state.slot < pre_import_slot {
+                return Err("imported block would regress local state slot".to_string());
             }
-
-            self.canonical_db.persist_signed_block_bundle(
-                root,
-                &block_blob,
-                &signed_blob,
-                state_root,
-                &state_blob,
-                &state_upserts,
-                &block_upserts,
-                self.head,
-                self.finalized,
-                self.justified,
-            )?;
-            self.index_dirty = false;
-            self.meta_dirty = false;
-            Ok(())
+            if state.latest_finalized.slot < pre_import_finalized.slot {
+                state.latest_finalized = pre_import_finalized;
+            }
+            if state.latest_justified.slot < pre_import_justified.slot {
+                state.latest_justified = pre_import_justified;
+            }
+            self.persist_signed_block_bundle_from_state(root, &signed, state)
         })();
 
         if let (Some(metrics), Some(start)) = (metrics, import_start) {
             metrics.block_import_end_to_end_time.observe_duration(start);
         }
 
+        result
+    }
+
+    pub fn put_prevalidated_signed_block_with_metrics(
+        &mut self,
+        root: Bytes32,
+        signed: &SignedBlockWithAttestation,
+        state: &mut State,
+        post_state: State,
+        metrics: &crate::metrics::MetricsRegistry,
+    ) -> Result<(), String> {
+        let import_start = Instant::now();
+        let result = (|| {
+            let pre_import_justified = state.latest_justified;
+            let pre_import_finalized = state.latest_finalized;
+            let block = &signed.message.block;
+            let mut expected = state.clone();
+            if block.slot > expected.slot {
+                expected.process_slots(block.slot)?;
+            }
+            let expected_parent = Bytes32::from(expected.latest_block_header.hash_tree_root());
+            if block.parent_root != expected_parent {
+                return Err("block parent root does not match latest header root".to_string());
+            }
+
+            *state = post_state;
+            if state.latest_finalized.slot < pre_import_finalized.slot {
+                state.latest_finalized = pre_import_finalized;
+            }
+            if state.latest_justified.slot < pre_import_justified.slot {
+                state.latest_justified = pre_import_justified;
+            }
+            self.persist_signed_block_bundle_from_state(root, signed, state)
+        })();
+        metrics
+            .block_import_end_to_end_time
+            .observe_duration(import_start);
         result
     }
 }

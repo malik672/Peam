@@ -136,4 +136,19 @@ impl PendingSlotCache {
             .filter_map(|entry| entry.map(|value| value.block_root))
             .collect()
     }
+
+    /// Extends root-retention sets with all currently buffered pending entries.
+    ///
+    /// Used by pruning to avoid deleting blobs that are still reachable from
+    /// the in-memory non-finalized window.
+    pub(super) fn extend_referenced_roots(
+        &self,
+        block_roots: &mut rapidhash::RapidHashSet<Bytes32>,
+        state_roots: &mut rapidhash::RapidHashSet<Bytes32>,
+    ) {
+        for entry in self.entries.iter().flatten() {
+            block_roots.insert(entry.block_root);
+            state_roots.insert(entry.state_root);
+        }
+    }
 }

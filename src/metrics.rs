@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -11,7 +11,17 @@ use tracing::{info, warn};
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::networking::peer_manager::PeerManager;
+use crate::ssz::SszEncode;
 use crate::storage::{FileStore, Store};
+use crate::unsafe_vec::{write_at, write_bytes_at};
+
+enum HttpRoute {
+    Metrics,
+    Health,
+    FinalizedState,
+    JustifiedCheckpoint,
+    NotFound,
+}
 
 // ---------------------------------------------------------------------------
 // AtomicCounter
@@ -329,6 +339,8 @@ pub fn spawn_metrics_server(
     sync_target_slot: Arc<AtomicU64>,
     sync_pending_depth: Arc<AtomicU64>,
     registry: Arc<MetricsRegistry>,
+    node_name: String,
+    client_name: String,
     bind_addr: String,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -340,6 +352,7 @@ pub fn spawn_metrics_server(
             }
         };
         info!("metrics listening on {}", bind_addr);
+        let mut finalized_state_cache: Option<(crate::types::bytes::Bytes32, Vec<u8>)> = None;
 
         loop {
             let (mut stream, _peer) = match listener.accept().await {
@@ -350,38 +363,206 @@ pub fn spawn_metrics_server(
                 }
             };
 
-            let body = {
-                let state_guard = state.read().expect("state lock");
-                let store_guard = store.read().expect("store lock");
-                let fc_guard = fork_choice.read().expect("fork choice lock");
-                let peer_count = peers.as_ref().map(|p| p.peer_count()).unwrap_or(0);
-                let syncing = is_syncing.load(Ordering::Relaxed);
-                let sync_target = sync_target_slot.load(Ordering::Relaxed);
-                let sync_depth = sync_pending_depth.load(Ordering::Relaxed);
-                render_metrics(
-                    &state_guard,
-                    &store_guard,
-                    &fc_guard,
-                    peer_count,
-                    syncing,
-                    sync_target,
-                    sync_depth,
-                    &registry,
-                )
+            let mut request_buf = [0u8; 2048];
+            let request_len = match stream.read(&mut request_buf).await {
+                Ok(n) => n,
+                Err(err) => {
+                    warn!("metrics read failed: {}", err);
+                    continue;
+                }
+            };
+            if request_len == 0 {
+                continue;
+            }
+            let route = classify_http_route(&request_buf[..request_len]);
+
+            let response = match route {
+                HttpRoute::Metrics => {
+                    let body = {
+                        let state_guard = state.read().expect("state lock");
+                        let store_guard = store.read().expect("store lock");
+                        let fc_guard = fork_choice.read().expect("fork choice lock");
+                        let peer_count = peers.as_ref().map(|p| p.peer_count()).unwrap_or(0);
+                        let syncing = is_syncing.load(Ordering::Relaxed);
+                        let sync_target = sync_target_slot.load(Ordering::Relaxed);
+                        let sync_depth = sync_pending_depth.load(Ordering::Relaxed);
+                        render_metrics(
+                            &state_guard,
+                            &store_guard,
+                            &fc_guard,
+                            peer_count,
+                            syncing,
+                            sync_target,
+                            sync_depth,
+                            &registry,
+                            &node_name,
+                            &client_name,
+                        )
+                        .into_bytes()
+                    };
+                    http_response_bytes("200 OK", "text/plain; version=0.0.4", body)
+                }
+                HttpRoute::Health => {
+                    http_response_bytes("200 OK", "text/plain; charset=utf-8", b"ok\n".to_vec())
+                }
+                HttpRoute::FinalizedState => {
+                    let finalized_state = {
+                        let state_guard = state.read().expect("state lock");
+                        let store_guard = store.read().expect("store lock");
+                        latest_finalized_state_ssz(
+                            &state_guard,
+                            &store_guard,
+                            &mut finalized_state_cache,
+                        )
+                    };
+                    match finalized_state {
+                        Some(bytes) => {
+                            http_response_bytes("200 OK", "application/octet-stream", bytes)
+                        }
+                        None => http_response_bytes(
+                            "404 Not Found",
+                            "text/plain; charset=utf-8",
+                            b"finalized state not found\n".to_vec(),
+                        ),
+                    }
+                }
+                HttpRoute::JustifiedCheckpoint => {
+                    let maybe_checkpoint = {
+                        let fc_guard = fork_choice.read().expect("fork choice lock");
+                        fc_guard.as_ref().map(|fc| fc.latest_justified())
+                    };
+                    match maybe_checkpoint {
+                        Some(checkpoint) => http_response_bytes(
+                            "200 OK",
+                            "application/json; charset=utf-8",
+                            checkpoint_json(checkpoint.slot.0.0, checkpoint.root),
+                        ),
+                        None => http_response_bytes(
+                            "503 Service Unavailable",
+                            "text/plain; charset=utf-8",
+                            b"store not initialized\n".to_vec(),
+                        ),
+                    }
+                }
+                HttpRoute::NotFound => http_response_bytes(
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    b"not found\n".to_vec(),
+                ),
             };
 
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-
-            if let Err(err) = stream.write_all(response.as_bytes()).await {
+            if let Err(err) = stream.write_all(&response).await {
                 warn!("metrics write failed: {}", err);
             }
             let _ = stream.shutdown().await;
         }
     })
+}
+
+#[inline]
+fn classify_http_route(request: &[u8]) -> HttpRoute {
+    let line_end = request
+        .iter()
+        .position(|b| *b == b'\n')
+        .unwrap_or(request.len());
+    let mut line = &request[..line_end];
+    if line.last() == Some(&b'\r') {
+        line = &line[..line.len().saturating_sub(1)];
+    }
+    if !line.starts_with(b"GET ") {
+        return HttpRoute::NotFound;
+    }
+    let path_start = 4usize;
+    if path_start >= line.len() {
+        return HttpRoute::NotFound;
+    }
+    let Some(path_rel_end) = line[path_start..].iter().position(|b| *b == b' ') else {
+        return HttpRoute::NotFound;
+    };
+    let mut path = &line[path_start..path_start + path_rel_end];
+    if let Some(query_start) = path.iter().position(|b| *b == b'?') {
+        path = &path[..query_start];
+    }
+    match path {
+        b"/" | b"/metrics" => HttpRoute::Metrics,
+        b"/health" | b"/lean/health" | b"/lean/v0/health" => HttpRoute::Health,
+        b"/states/finalized" | b"/lean/states/finalized" | b"/lean/v0/states/finalized" => {
+            HttpRoute::FinalizedState
+        }
+        b"/checkpoints/justified"
+        | b"/lean/checkpoints/justified"
+        | b"/lean/v0/checkpoints/justified" => HttpRoute::JustifiedCheckpoint,
+        _ => HttpRoute::NotFound,
+    }
+}
+
+#[inline]
+fn http_response_bytes(status: &str, content_type: &str, body: Vec<u8>) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(&body);
+    response
+}
+
+#[inline]
+fn latest_finalized_state_ssz(
+    state: &State,
+    store: &FileStore,
+    cache: &mut Option<(crate::types::bytes::Bytes32, Vec<u8>)>,
+) -> Option<Vec<u8>> {
+    let store_finalized = store.finalized();
+    if let Some(root) = store_finalized {
+        if let Some((cached_root, cached_bytes)) = cache.as_ref()
+            && *cached_root == root
+        {
+            return Some(cached_bytes.clone());
+        }
+        if let Some(finalized_state) = store.get_state(&root) {
+            let bytes = finalized_state.encode_ssz();
+            *cache = Some((root, bytes.clone()));
+            return Some(bytes);
+        }
+        return None;
+    }
+    // Before any finalized root has been persisted, serve the live in-memory snapshot.
+    *cache = None;
+    Some(state.encode_ssz())
+}
+
+#[inline]
+fn checkpoint_json(slot: u64, root: crate::types::bytes::Bytes32) -> Vec<u8> {
+    const PREFIX: &[u8] = b"{\"slot\":";
+    const MID: &[u8] = b",\"root\":\"0x";
+    const SUFFIX: &[u8] = b"\"}\n";
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let slot_bytes = slot.to_string().into_bytes();
+    let root_bytes: &[u8] = root.as_ref();
+    let total_len =
+        PREFIX.len() + slot_bytes.len() + MID.len() + (root_bytes.len() * 2) + SUFFIX.len();
+
+    let mut out = Vec::with_capacity(total_len);
+    unsafe { out.set_len(total_len) };
+
+    let mut cursor = 0usize;
+    unsafe { write_bytes_at(&mut out, cursor, PREFIX) };
+    cursor += PREFIX.len();
+    unsafe { write_bytes_at(&mut out, cursor, &slot_bytes) };
+    cursor += slot_bytes.len();
+    unsafe { write_bytes_at(&mut out, cursor, MID) };
+    cursor += MID.len();
+
+    for &b in root_bytes {
+        unsafe { write_at(&mut out, cursor, HEX[(b >> 4) as usize]) };
+        unsafe { write_at(&mut out, cursor + 1, HEX[(b & 0x0f) as usize]) };
+        cursor += 2;
+    }
+
+    unsafe { write_bytes_at(&mut out, cursor, SUFFIX) };
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +586,11 @@ fn write_counter_metric_labeled(out: &mut String, name: &str, labels: &str, valu
     let _ = writeln!(out, "{name}{{{labels}}} {value}");
 }
 
+#[inline]
+fn escape_label_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn render_metrics(
     state: &State,
     store: &FileStore,
@@ -414,6 +600,8 @@ fn render_metrics(
     sync_target_slot: u64,
     sync_pending_depth: u64,
     registry: &MetricsRegistry,
+    node_name: &str,
+    client_name: &str,
 ) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -480,7 +668,14 @@ fn render_metrics(
     // -- Node info --
     let _ = writeln!(out, "# HELP lean_node_info Client implementation metadata.");
     let _ = writeln!(out, "# TYPE lean_node_info gauge");
-    let _ = writeln!(out, "lean_node_info{{name=\"peam\",version=\"0.1.0\"}} 1");
+    let node_name = escape_label_value(node_name);
+    let client_name = escape_label_value(client_name);
+    let _ = writeln!(
+        out,
+        "lean_node_info{{name=\"{}\",version=\"{}\"}} 1",
+        node_name,
+        env!("CARGO_PKG_VERSION")
+    );
     write_gauge_metric(
         &mut out,
         "lean_node_start_time_seconds",
@@ -491,6 +686,10 @@ fn render_metrics(
     // -- Beacon chain gauges --
     write_gauge_metric(&mut out, "lean_current_slot", state.slot.0.0);
     write_gauge_metric(&mut out, "lean_head_slot", head_slot);
+    // Alias for clients/dashboards that use non-latest names.
+    write_gauge_metric(&mut out, "lean_justified_slot", justified_slot);
+    // Alias for clients/dashboards that use non-latest names.
+    write_gauge_metric(&mut out, "lean_finalized_slot", finalized_slot);
     write_gauge_metric(&mut out, "lean_latest_justified_slot", justified_slot);
     write_gauge_metric(&mut out, "lean_latest_finalized_slot", finalized_slot);
     write_gauge_metric(
@@ -523,7 +722,11 @@ fn render_metrics(
 
     // -- Network --
     write_gauge_metric(&mut out, "lean_connected_peers", peer_count);
-    let _ = writeln!(out, "lean_connected_peers{{client=\"peam\"}} {peer_count}");
+    let _ = writeln!(
+        out,
+        "lean_connected_peers{{client=\"{}\"}} {peer_count}",
+        client_name
+    );
     let _ = writeln!(out, "# TYPE lean_peer_connection_events_total counter");
     write_counter_metric_labeled(
         &mut out,
@@ -719,6 +922,11 @@ fn render_metrics(
     out.push_str(&registry.pq_attestation_signing_time.render(
         "lean_pq_sig_attestation_signing_time_seconds",
         "Time to produce a PQ attestation signature.",
+        true,
+    ));
+    out.push_str(&registry.pq_proposer_signing_time.render(
+        "lean_pq_sig_proposer_signing_time_seconds",
+        "Time to produce a PQ proposer signature.",
         true,
     ));
     out.push_str(&registry.pq_proposer_signing_time.render(

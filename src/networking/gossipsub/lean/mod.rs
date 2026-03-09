@@ -15,8 +15,9 @@ use crate::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopi
 
 /// Resolves the [`GossipValidatorKind`] for a given libp2p [`TopicHash`].
 ///
-/// Both `Attestation` and `AttestationSubnet` topics map to
-/// [`GossipValidatorKind::Attestation`].
+/// `Attestation` and `AttestationSubnet` map to
+/// [`GossipValidatorKind::Attestation`], while `AggregatedAttestation` maps to
+/// [`GossipValidatorKind::AggregatedAttestation`].
 ///
 /// # Errors
 ///
@@ -26,6 +27,9 @@ pub fn kind_from_topic_hash(topic: &TopicHash) -> Result<GossipValidatorKind, Go
     match LeanGossipTopic::from_topic_hash(topic)?.kind {
         LeanGossipTopicKind::Block => Ok(GossipValidatorKind::Block),
         LeanGossipTopicKind::Attestation => Ok(GossipValidatorKind::Attestation),
+        LeanGossipTopicKind::AggregatedAttestation => {
+            Ok(GossipValidatorKind::AggregatedAttestation)
+        }
         LeanGossipTopicKind::AttestationSubnet(_) => Ok(GossipValidatorKind::Attestation),
     }
 }

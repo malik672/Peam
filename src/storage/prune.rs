@@ -1,4 +1,5 @@
 use super::*;
+use rapidhash::RapidHashSet;
 
 /// Statistics returned by [`FileStore::prune`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -7,7 +8,11 @@ pub struct PruneReport {
     pub removed_states: usize,
     /// Number of canonical block slot rows removed.
     pub removed_blocks: usize,
-    /// Always zero in index-only pruning mode.
+    /// Number of state blob rows removed from canonical blob storage.
+    pub removed_state_blobs: usize,
+    /// Number of block blob rows removed from canonical blob storage.
+    pub removed_block_blobs: usize,
+    /// Number of signed-block blob rows removed from canonical blob storage.
     pub removed_signed_blocks: usize,
     /// Number of entries skipped because their root is currently pinned
     /// (head, justified, or finalized).
@@ -15,14 +20,16 @@ pub struct PruneReport {
 }
 
 impl FileStore {
-    /// Prunes canonical slot indexes by retention window and persists them.
+    /// Prunes canonical slot indexes by retention window and garbage-collects
+    /// unreferenced canonical blob rows.
     ///
     /// Flow:
     /// - Compute `prune_before = finalized_slot - keep_recent_slots` (saturating).
     /// - Prune canonical state/block slot indexes while preserving pinned roots.
     /// - Flush updated canonical state (`canonical.redb`) atomically.
-    ///
-    /// This operation intentionally does not prune pending caches or delete blob files.
+    /// - Delete unreferenced state/block/signed-block blobs from `canonical.redb`
+    ///   while preserving roots still referenced by canonical indexes, pending
+    ///   entries, or pinned fork-choice roots.
     #[inline]
     pub fn prune(
         &mut self,
@@ -61,6 +68,22 @@ impl FileStore {
 
         self.index_dirty = true;
         self.flush_canonical()?;
+
+        let mut keep_state_roots = RapidHashSet::<Bytes32>::default();
+        keep_state_roots.extend(self.state_by_slot.values().copied());
+        let mut keep_block_roots = RapidHashSet::<Bytes32>::default();
+        keep_block_roots.extend(self.block_by_slot.values().copied());
+        keep_block_roots.extend(pinned.iter().flatten().copied());
+        self.pending_blocks
+            .extend_referenced_roots(&mut keep_block_roots, &mut keep_state_roots);
+
+        let gc = self
+            .canonical_db
+            .gc_unreferenced_blobs(&keep_state_roots, &keep_block_roots)?;
+        report.removed_state_blobs = gc.removed_state_blobs;
+        report.removed_block_blobs = gc.removed_block_blobs;
+        report.removed_signed_blocks = gc.removed_signed_block_blobs;
+
         Ok(report)
     }
 }

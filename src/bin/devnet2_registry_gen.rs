@@ -38,6 +38,12 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+fn synthetic_node_privkey_hex(node_index: usize) -> String {
+    // Deterministic 32-byte hex key per node entry for devnet config compatibility.
+    // This key is metadata for config interoperability and not used for validator signing.
+    format!("{:064x}", node_index + 1)
+}
+
 fn ensure_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| format!("failed to create {}: {err}", path.display()))
 }
@@ -276,9 +282,29 @@ fn main() {
         std::process::exit(1);
     });
 
+    let mut validator_config_lines = Vec::new();
+    validator_config_lines.push("validators:".to_string());
+    for (node_index, node) in node_map.keys().enumerate() {
+        validator_config_lines.push(format!("  - name: \"{node}\""));
+        validator_config_lines.push(format!(
+            "    privkey: \"{}\"",
+            synthetic_node_privkey_hex(node_index)
+        ));
+    }
+    let validator_config_path = out_dir.join("validator-config.yaml");
+    fs::write(
+        &validator_config_path,
+        validator_config_lines.join("\n") + "\n",
+    )
+    .unwrap_or_else(|err| {
+        eprintln!("failed writing {}: {err}", validator_config_path.display());
+        std::process::exit(1);
+    });
+
     println!("generated:");
     println!("  {}", config_path.display());
     println!("  {}", validators_path.display());
     println!("  {}", annotated_validators_path.display());
+    println!("  {}", validator_config_path.display());
     println!("  {}", manifest_path.display());
 }

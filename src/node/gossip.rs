@@ -1,9 +1,11 @@
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
 use libp2p::gossipsub::TopicHash;
 
 use crate::containers::attestation::{Attestation, VALIDATOR_REGISTRY_LIMIT};
+use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::MetricsRegistry;
@@ -13,6 +15,114 @@ use crate::storage::Store;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
 use tracing::warn;
+
+#[inline]
+fn single_validator_bitlist(validator_index: usize) -> Option<BitList<VALIDATOR_REGISTRY_LIMIT>> {
+    let mut bits = vec![false; validator_index + 1];
+    bits[validator_index] = true;
+    BitList::new(bits).ok()
+}
+
+#[inline]
+fn bitlist_has_any_set(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> bool {
+    bits.data.iter().copied().any(|byte| byte != 0)
+}
+
+#[inline]
+fn attestation_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PEAM_TRACE_ATTESTATIONS")
+            .ok()
+            .map(|value| match value.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => false,
+            })
+            .unwrap_or(false)
+    })
+}
+
+#[inline]
+fn log_pending_attestation_sample(reason: &'static str, attestation: &Attestation) {
+    if !attestation_trace_enabled() {
+        return;
+    }
+    static LOGGED: AtomicUsize = AtomicUsize::new(0);
+    if LOGGED.fetch_add(1, Ordering::Relaxed) >= 256 {
+        return;
+    }
+    let data = &attestation.data;
+    tracing::info!(
+        reason,
+        att_slot = data.slot.0.0,
+        head_slot = data.head.slot.0.0,
+        source_slot = data.source.slot.0.0,
+        target_slot = data.target.slot.0.0,
+        head_root = ?data.head.root,
+        source_root = ?data.source.root,
+        target_root = ?data.target.root,
+        participants_len_bits = attestation.aggregation_bits.len(),
+        "pending attestation ingress sample"
+    );
+}
+
+#[inline]
+fn log_imported_block_attestation_payload_sample(
+    reason: &'static str,
+    block_root: Bytes32,
+    signed: &SignedBlockWithAttestation,
+) {
+    if !attestation_trace_enabled() {
+        return;
+    }
+    static LOGGED: AtomicUsize = AtomicUsize::new(0);
+    if LOGGED.fetch_add(1, Ordering::Relaxed) >= 256 {
+        return;
+    }
+    let block = &signed.message.block;
+    let proposer = &signed.message.proposer_attestation.data;
+    let first_body_att = block.body.attestations.data.first();
+    tracing::info!(
+        reason,
+        block_root = ?block_root,
+        block_slot = block.slot.0.0,
+        parent_root = ?block.parent_root,
+        body_attestation_count = block.body.attestations.data.len(),
+        proposer_att_slot = proposer.slot.0.0,
+        proposer_head_slot = proposer.head.slot.0.0,
+        proposer_source_slot = proposer.source.slot.0.0,
+        proposer_target_slot = proposer.target.slot.0.0,
+        proposer_head_root = ?proposer.head.root,
+        proposer_source_root = ?proposer.source.root,
+        proposer_target_root = ?proposer.target.root,
+        first_body_att_slot = first_body_att.map(|att| att.data.slot.0.0),
+        first_body_head_slot = first_body_att.map(|att| att.data.head.slot.0.0),
+        first_body_source_slot = first_body_att.map(|att| att.data.source.slot.0.0),
+        first_body_target_slot = first_body_att.map(|att| att.data.target.slot.0.0),
+        first_body_head_root = ?first_body_att.map(|att| att.data.head.root),
+        first_body_source_root = ?first_body_att.map(|att| att.data.source.root),
+        first_body_target_root = ?first_body_att.map(|att| att.data.target.root),
+        first_body_participants_len_bits = first_body_att.map(|att| att.aggregation_bits.len()),
+        "imported block attestation payload sample"
+    );
+}
+
+#[inline]
+fn enqueue_proposer_attestation_from_signed_block(
+    pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
+    signed: &SignedBlockWithAttestation,
+) {
+    let proposer_attestation = signed.message.proposer_attestation.clone();
+    log_pending_attestation_sample(
+        "from_imported_block_proposer_attestation",
+        &proposer_attestation,
+    );
+    pending_attestations
+        .write()
+        .expect("pending attestations lock")
+        .push(proposer_attestation);
+}
 
 /// Decode and dispatch a single gossipsub message, updating shared state.
 ///
@@ -62,6 +172,11 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 &metrics,
             ) {
                 Ok(()) => {
+                    log_imported_block_attestation_payload_sample(
+                        "from_gossip_imported_block",
+                        root,
+                        &signed,
+                    );
                     let mut fc = fork_choice.write().expect("fork choice lock");
                     if fc.is_none() {
                         match ForkChoiceStore::new(signed.clone(), state_guard.clone()) {
@@ -77,6 +192,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                             warn!("fork choice on_block failed root={root:?} err={err}");
                         }
                     }
+                    enqueue_proposer_attestation_from_signed_block(pending_attestations, &signed);
                     metrics
                         .fc_block_processing_time
                         .observe_duration(block_start);
@@ -94,17 +210,16 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 metrics.fc_attestations_invalid_total.inc();
                 return;
             }
-            let mut bits = vec![false; idx + 1];
-            bits[idx] = true;
-            if let Ok(bitlist) = BitList::new(bits) {
-                let aggregated = Attestation {
+            if let Some(bitlist) = single_validator_bitlist(idx) {
+                let pending = Attestation {
                     aggregation_bits: bitlist,
                     data: att.message.clone(),
                 };
+                log_pending_attestation_sample("from_gossip_attestation", &pending);
                 pending_attestations
                     .write()
                     .expect("pending attestations lock")
-                    .push(aggregated.clone());
+                    .push(pending);
                 metrics.fc_attestations_valid_total.inc();
                 metrics
                     .fc_attestation_validation_time
@@ -121,17 +236,16 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 metrics.fc_attestations_invalid_total.inc();
                 return;
             }
-            let mut bits = vec![false; idx + 1];
-            bits[idx] = true;
-            if let Ok(bitlist) = BitList::new(bits) {
-                let aggregated = Attestation {
+            if let Some(bitlist) = single_validator_bitlist(idx) {
+                let pending = Attestation {
                     aggregation_bits: bitlist,
                     data: att.message.clone(),
                 };
+                log_pending_attestation_sample("from_gossip_attestation_subnet", &pending);
                 pending_attestations
                     .write()
                     .expect("pending attestations lock")
-                    .push(aggregated.clone());
+                    .push(pending);
                 metrics.fc_attestations_valid_total.inc();
                 metrics
                     .fc_attestation_validation_time
@@ -139,6 +253,27 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
             } else {
                 metrics.fc_attestations_invalid_total.inc();
             }
+        }
+        LeanGossipsubMessage::AggregatedAttestation(attestation) => {
+            let att_start = Instant::now();
+            let att = &attestation.attestation;
+            if !bitlist_has_any_set(&att.proof.participants) {
+                metrics.fc_attestations_invalid_total.inc();
+                return;
+            }
+            let pending = Attestation {
+                aggregation_bits: att.proof.participants.clone(),
+                data: att.data.clone(),
+            };
+            log_pending_attestation_sample("from_gossip_aggregated_attestation", &pending);
+            pending_attestations
+                .write()
+                .expect("pending attestations lock")
+                .push(pending);
+            metrics.fc_attestations_valid_total.inc();
+            metrics
+                .fc_attestation_validation_time
+                .observe_duration(att_start);
         }
     }
 }

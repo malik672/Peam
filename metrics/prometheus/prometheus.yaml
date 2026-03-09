@@ -18,3 +18,7 @@ scrape_configs:
         labels:
           instance: peer2
           client: peer2
+      - targets: ["host.docker.internal:18083"]
+        labels:
+          instance: peer3
+          client: peer3

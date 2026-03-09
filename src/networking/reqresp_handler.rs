@@ -8,12 +8,12 @@
 //!   [`State`].
 
 use std::sync::{Arc, RwLock};
+use tracing::debug;
 
-use crate::containers::req_resp::{BlocksByRootResponse, Status};
+use crate::containers::req_resp::Status;
 use crate::ssz::HashTreeRoot;
 use crate::storage::Store;
 use crate::types::bytes::Bytes32;
-use crate::types::collections::SszList;
 use crate::types::uint::Uint64;
 
 use super::reqresp_messages::{LeanRequestMessage, LeanResponseMessage};
@@ -65,22 +65,23 @@ impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
     /// Constructs a [`Status`] from the current store/state snapshot.
     ///
     /// Falls back to `latest_block_header` values when the store has no head.
+    #[inline]
     fn build_status(&self) -> Status {
         let state = self.state.read().expect("state lock");
         let store = self.store.read().expect("store lock");
-        let (head_root, head_slot) = match store.head() {
-            Some(root) => match store.get_block(&root) {
-                Some(block) => (root, Uint64(block.slot.0.0)),
-                None => (
+        let (head_root, head_slot) = store
+            .head()
+            .and_then(|root| {
+                store
+                    .get_block(&root)
+                    .map(|block| (root, Uint64(block.slot.0.0)))
+            })
+            .unwrap_or_else(|| {
+                (
                     Bytes32::from(state.latest_block_header.hash_tree_root()),
                     Uint64(state.slot.0.0),
-                ),
-            },
-            None => (
-                Bytes32::from(state.latest_block_header.hash_tree_root()),
-                Uint64(state.slot.0.0),
-            ),
-        };
+                )
+            });
         let finalized_root = store.finalized().unwrap_or(state.latest_finalized.root);
         Status {
             fork_digest: Bytes32::zero(),
@@ -98,18 +99,21 @@ impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S>
         match request {
             LeanRequestMessage::Status(_) => Some(LeanResponseMessage::Status(self.build_status())),
             LeanRequestMessage::BlocksByRoot(req) => {
-                // Return up to MAX_BLOCKS_BY_ROOT_RESPONSE blocks found in the store.
+                // Interop compatibility: return at most one block per response chunk.
+                // Ream/EthLambda decode lean BlocksByRoot responses as a single
+                // SignedBlockWithAttestation, not a wrapped list.
                 let store = self.store.read().expect("store lock");
-                let mut blocks = Vec::new();
+                let mut block = None;
                 for root in req.roots.data.iter().take(MAX_BLOCKS_BY_ROOT_RESPONSE) {
-                    if let Some(block) = store.get_signed_block(root) {
-                        blocks.push(block);
+                    if let Some(found) = store.get_signed_block(root) {
+                        block = Some(found);
+                        break;
+                    } else {
+                        // DEVNET4_REMOVE: temporary sync diagnostics.
+                        debug!("reqresp blocks_by_root missing root={:?}", root);
                     }
                 }
-                let blocks = SszList::new(blocks).ok()?;
-                Some(LeanResponseMessage::BlocksByRoot(BlocksByRootResponse {
-                    blocks,
-                }))
+                block.map(LeanResponseMessage::BlocksByRoot)
             }
         }
     }

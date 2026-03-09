@@ -6,7 +6,7 @@
 
 use libp2p::gossipsub::TopicHash;
 
-use crate::containers::gossip::{GossipAttestation, GossipBlock};
+use crate::containers::gossip::{GossipAggregatedAttestation, GossipAttestation, GossipBlock};
 use crate::networking::gossipsub::error::GossipsubError;
 use crate::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopicKind};
 
@@ -24,6 +24,8 @@ pub enum LeanGossipsubMessage {
         subnet_id: u64,
         attestation: Box<GossipAttestation>,
     },
+    /// An aggregated attestation received on the aggregation topic.
+    AggregatedAttestation(Box<GossipAggregatedAttestation>),
 }
 
 impl LeanGossipsubMessage {
@@ -41,6 +43,12 @@ impl LeanGossipsubMessage {
             LeanGossipTopicKind::Attestation => Ok(Self::Attestation(Box::new(
                 GossipAttestation::decode_ssz_checked(data).map_err(GossipsubError::from)?,
             ))),
+            LeanGossipTopicKind::AggregatedAttestation => {
+                Ok(Self::AggregatedAttestation(Box::new(
+                    GossipAggregatedAttestation::decode_ssz_checked(data)
+                        .map_err(GossipsubError::from)?,
+                )))
+            }
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => Ok(Self::AttestationSubnet {
                 subnet_id,
                 attestation: Box::new(

@@ -18,8 +18,13 @@
 //! | `mdns`       | Local-network peer discovery |
 
 use std::io::{Cursor, Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -116,6 +121,8 @@ pub struct P2pConfig {
     pub listen_addr: Multiaddr,
     /// Boot-node addresses to dial immediately on startup.
     pub bootnodes: Vec<Multiaddr>,
+    /// Optional filesystem path to secp256k1 private key used for peer identity.
+    pub node_key_path: Option<String>,
     /// Primary gossipsub topic to subscribe to.
     pub gossipsub_topic: String,
     /// Full list of topic strings the node will accept messages from.
@@ -271,6 +278,9 @@ pub struct LeanResponse {
 #[inline]
 fn build_gossipsub_config_lean(max_transmit_size: usize) -> gossipsub::Config {
     let mut builder = gossipsub::ConfigBuilder::default();
+    // In Anonymous mode, default message-id behavior can collapse many
+    // messages into the same id on some peers. Use content-addressed ids.
+    builder.message_id_fn(lean_gossip_message_id);
     builder.max_transmit_size(max_transmit_size);
     builder.heartbeat_interval(Duration::from_millis(700));
     builder.fanout_ttl(Duration::from_secs(60));
@@ -286,6 +296,14 @@ fn build_gossipsub_config_lean(max_transmit_size: usize) -> gossipsub::Config {
     builder.allow_self_origin(true);
     builder.flood_publish(false);
     builder.build().expect("valid lean gossipsub config")
+}
+
+#[inline]
+fn lean_gossip_message_id(message: &Message) -> gossipsub::MessageId {
+    let mut hasher = DefaultHasher::new();
+    message.topic.hash(&mut hasher);
+    message.data.hash(&mut hasher);
+    gossipsub::MessageId::from(format!("{:016x}", hasher.finish()))
 }
 
 /// [`RequestResponseCodec`] impl for [`LeanReqRespCodec`].
@@ -411,13 +429,58 @@ impl RequestResponseCodec for LeanReqRespCodec {
 }
 
 impl P2pService {
+    fn decode_hex_key(mut raw: &str) -> Result<Vec<u8>, String> {
+        raw = raw.trim();
+        if let Some(stripped) = raw.strip_prefix("0x") {
+            raw = stripped;
+        }
+        if raw.len() != 64 {
+            return Err(format!(
+                "expected 32-byte hex (64 chars), got {} chars",
+                raw.len()
+            ));
+        }
+        let mut out = Vec::with_capacity(32);
+        for i in (0..raw.len()).step_by(2) {
+            let byte = u8::from_str_radix(&raw[i..i + 2], 16)
+                .map_err(|err| format!("invalid hex at [{i}..{}]: {err}", i + 2))?;
+            out.push(byte);
+        }
+        Ok(out)
+    }
+
+    fn load_keypair_from_path(path: &Path) -> Result<Keypair, String> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let mut secret_bytes = Self::decode_hex_key(&raw)?;
+        let secret = libp2p::identity::secp256k1::SecretKey::try_from_bytes(&mut secret_bytes)
+            .map_err(|err| format!("failed to parse secp256k1 secret key: {err}"))?;
+        let secp_keypair = libp2p::identity::secp256k1::Keypair::from(secret);
+        Ok(Keypair::from(secp_keypair))
+    }
+
     /// Constructs and starts the libp2p swarm.
     ///
-    /// Generates a fresh ephemeral secp256k1 keypair, subscribes to the
-    /// configured gossipsub topic, dials all bootnodes, and listens on
+    /// Loads a secp256k1 keypair from `config.node_key_path` when provided
+    /// (falls back to an ephemeral key on parse/load failure), subscribes to
+    /// the configured gossipsub topic, dials all bootnodes, and listens on
     /// `config.listen_addr`.
     pub fn new(config: P2pConfig, events: EventBus, outbound: mpsc::Receiver<P2pCommand>) -> Self {
-        let keypair = Keypair::generate_secp256k1();
+        let keypair = if let Some(path) = config.node_key_path.as_deref() {
+            let path = Path::new(path);
+            match Self::load_keypair_from_path(path) {
+                Ok(keypair) => keypair,
+                Err(err) => {
+                    warn!(
+                        "p2p_node_key_load_failed path={} err={err}; using ephemeral key",
+                        path.display()
+                    );
+                    Keypair::generate_secp256k1()
+                }
+            }
+        } else {
+            Keypair::generate_secp256k1()
+        };
         let peer_id = PeerId::from(keypair.public());
 
         let gossipsub = Gossipsub::new_with_transform(

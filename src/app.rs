@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use serde::Deserialize;
+
 use crate::containers::config::Config;
 use crate::containers::state::{State, Validators};
 use crate::containers::validator::{Validator, ValidatorIndex};
@@ -38,14 +40,20 @@ fn canonicalize_topic(topic: &str) -> String {
 /// | `score_decay_interval_secs` | `30`                                         |
 /// | `score_decay_amount`        | `1`                                          |
 /// | `ban_threshold`             | `-100`                                       |
-/// | `allowed_topics`            | block + attestation devnet2 topics           |
-/// | `topic_scores`              | block=2, attestation=1                       |
-/// | `topic_validators`          | block + attestation validators               |
+/// | `listen_addr`               | `"/ip4/0.0.0.0/udp/9000/quic-v1"`            |
+/// | `node_key_path`             | `None` (ephemeral peer identity)             |
+/// | `allowed_topics`            | block + attestation + aggregation devnet2 topics |
+/// | `topic_scores`              | block=2, attestation=1, aggregation=1        |
+/// | `topic_validators`          | block + attestation + aggregation validators |
 /// | `max_gossip_bytes`          | `2_000_000`                                  |
 /// | `max_reqresp_bytes`         | `4_000_000`                                  |
+/// | `allow_unverified_aggregate_proofs` | `false`                              |
 /// | `validator_count`           | `5`                                          |
 /// | `local_validator_index`     | `0`                                          |
 /// | `storage_dir`               | `None` (resolved to `data_dir/store`)        |
+/// | `validator_config_path`     | `None` (`<config_dir>/validator-config.yaml`)|
+/// | `metrics_node_name`         | `None` (auto-resolve, fallback `"peam"`)     |
+/// | `metrics_client_name`       | `None` (derived from node name)              |
 #[derive(Clone, Debug)]
 pub struct NodeSettings {
     /// Enable the Prometheus metrics HTTP server.
@@ -62,6 +70,10 @@ pub struct NodeSettings {
     pub score_decay_amount: i64,
     /// Score threshold below which a peer is banned.
     pub ban_threshold: i64,
+    /// Multiaddr the libp2p swarm listens on.
+    pub listen_addr: String,
+    /// Optional path to secp256k1 private key used for libp2p identity.
+    pub node_key_path: Option<String>,
     /// libp2p multiaddrs of bootstrap peers to dial on startup.
     pub bootnodes: Vec<String>,
     /// Peers that are always trusted regardless of score.
@@ -76,6 +88,11 @@ pub struct NodeSettings {
     pub max_gossip_bytes: usize,
     /// Maximum byte size of a request/response message.
     pub max_reqresp_bytes: usize,
+    /// Allow importing blocks whose aggregate proofs cannot be decoded/verified.
+    ///
+    /// Intended for cross-client devnet interop where aggregate proof wire
+    /// formats may diverge.
+    pub allow_unverified_aggregate_proofs: bool,
     /// Number of validators used when building genesis.
     pub validator_count: usize,
     /// Local validator index used for runtime signing/proposing in devnet mode.
@@ -84,6 +101,15 @@ pub struct NodeSettings {
     /// Relative paths are resolved against `data_dir`; `None` defaults to
     /// `data_dir/store`.
     pub storage_dir: Option<String>,
+    /// Optional path to a `validator-config.yaml` file for cross-client
+    /// node-name resolution.
+    ///
+    /// Relative paths are resolved against the config file directory.
+    pub validator_config_path: Option<String>,
+    /// Optional metrics `lean_node_info{name=...}` override.
+    pub metrics_node_name: Option<String>,
+    /// Optional metrics `lean_connected_peers{client=...}` override.
+    pub metrics_client_name: Option<String>,
 }
 
 /// Load only the chain [`Config`] from `path`.
@@ -141,15 +167,16 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
 /// Accepts the same two formats as [`load_config`]:
 ///
 /// - **SSZ binary** — decoded as a bare [`Config`]; all [`NodeSettings`] fields
-///   are set to their defaults, including the devnet2 block and attestation topics.
+///   are set to their defaults, including devnet2 block/attestation/aggregation topics.
 ///
 /// - **Key-value text** — parses all known keys (see [`NodeSettings`] field docs
 ///   for names). Multi-value keys (`bootnodes`, `trusted_peers`, `allowed_topics`)
 ///   are comma-separated. `topic_scores` uses `topic:score` pairs;
 ///   `topic_validators` uses `topic=kind` pairs where `kind` is one of
-///   `block`, `block_header`, `attestation`, `exit` (unrecognized kinds map to
-///   `GossipValidatorKind::None`). If `allowed_topics` is empty after parsing,
-///   the devnet2 defaults are substituted.
+///   `block`, `block_header`, `attestation`, `aggregation`, `exit`
+///   (unrecognized kinds map to `GossipValidatorKind::None`). If
+///   `allowed_topics` is empty after parsing, the devnet2 defaults are
+///   substituted.
 ///
 /// # Errors
 ///
@@ -169,16 +196,23 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             score_decay_interval_secs: 30,
             score_decay_amount: 1,
             ban_threshold: -100,
+            listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
+            node_key_path: None,
             bootnodes: Vec::new(),
             trusted_peers: Vec::new(),
             allowed_topics: vec![
                 "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
                 "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
                 ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
                 (
                     "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    1,
+                ),
+                (
+                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
@@ -191,12 +225,20 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     crate::networking::GossipValidatorKind::Attestation,
                 ),
+                (
+                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
+                    crate::networking::GossipValidatorKind::AggregatedAttestation,
+                ),
             ],
             max_gossip_bytes: 2_000_000,
             max_reqresp_bytes: 4_000_000,
+            allow_unverified_aggregate_proofs: false,
             validator_count: DEFAULT_VALIDATOR_COUNT,
             local_validator_index: 0,
             storage_dir: None,
+            validator_config_path: None,
+            metrics_node_name: None,
+            metrics_client_name: None,
         };
         return Ok((config, settings));
     }
@@ -211,6 +253,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut score_decay_interval_secs: Option<u64> = None;
     let mut score_decay_amount: Option<i64> = None;
     let mut ban_threshold: Option<i64> = None;
+    let mut listen_addr: Option<String> = None;
+    let mut node_key_path: Option<String> = None;
     let mut bootnodes: Vec<String> = Vec::new();
     let mut trusted_peers: Vec<String> = Vec::new();
     let mut allowed_topics: Vec<String> = Vec::new();
@@ -218,9 +262,13 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut topic_validators: Vec<(String, crate::networking::GossipValidatorKind)> = Vec::new();
     let mut max_gossip_bytes: Option<usize> = None;
     let mut max_reqresp_bytes: Option<usize> = None;
+    let mut allow_unverified_aggregate_proofs: Option<bool> = None;
     let mut validator_count: Option<usize> = None;
     let mut local_validator_index: Option<u64> = None;
     let mut storage_dir: Option<String> = None;
+    let mut validator_config_path: Option<String> = None;
+    let mut metrics_node_name: Option<String> = None;
+    let mut metrics_client_name: Option<String> = None;
 
     for line in text.lines() {
         let line = line.trim();
@@ -278,6 +326,14 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     .parse::<i64>()
                     .map_err(|err| format!("Invalid ban_threshold {value}: {err}"))?,
             );
+        } else if key == "listen_addr" {
+            if !value.is_empty() {
+                listen_addr = Some(value.to_string());
+            }
+        } else if key == "node_key_path" {
+            if !value.is_empty() {
+                node_key_path = Some(value.to_string());
+            }
         } else if key == "bootnodes" {
             bootnodes = value
                 .split(',')
@@ -317,6 +373,9 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                         "block" => crate::networking::GossipValidatorKind::Block,
                         "block_header" => crate::networking::GossipValidatorKind::BlockHeader,
                         "attestation" => crate::networking::GossipValidatorKind::Attestation,
+                        "aggregation" | "aggregated_attestation" => {
+                            crate::networking::GossipValidatorKind::AggregatedAttestation
+                        }
                         "exit" => crate::networking::GossipValidatorKind::VoluntaryExit,
                         _ => crate::networking::GossipValidatorKind::None,
                     };
@@ -335,6 +394,16 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     .parse::<usize>()
                     .map_err(|err| format!("Invalid max_reqresp_bytes {value}: {err}"))?,
             );
+        } else if key == "allow_unverified_aggregate_proofs" {
+            allow_unverified_aggregate_proofs = Some(match value {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => {
+                    return Err(format!(
+                        "Invalid allow_unverified_aggregate_proofs {value}: expected true/false"
+                    ));
+                }
+            });
         } else if key == "validator_count" {
             let parsed = value
                 .parse::<usize>()
@@ -353,6 +422,18 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             if !value.is_empty() {
                 storage_dir = Some(value.to_string());
             }
+        } else if key == "validator_config_path" {
+            if !value.is_empty() {
+                validator_config_path = Some(value.to_string());
+            }
+        } else if key == "metrics_node_name" {
+            if !value.is_empty() {
+                metrics_node_name = Some(value.to_string());
+            }
+        } else if key == "metrics_client_name" {
+            if !value.is_empty() {
+                metrics_client_name = Some(value.to_string());
+            }
         }
     }
 
@@ -369,16 +450,23 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
             ban_threshold: ban_threshold.unwrap_or(-100),
+            listen_addr: listen_addr.unwrap_or_else(|| "/ip4/0.0.0.0/udp/9000/quic-v1".to_string()),
+            node_key_path,
             bootnodes,
             trusted_peers,
             allowed_topics: vec![
                 "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
                 "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
                 ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
                 (
                     "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
+                    1,
+                ),
+                (
+                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
@@ -391,12 +479,20 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
                     crate::networking::GossipValidatorKind::Attestation,
                 ),
+                (
+                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
+                    crate::networking::GossipValidatorKind::AggregatedAttestation,
+                ),
             ],
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            allow_unverified_aggregate_proofs: allow_unverified_aggregate_proofs.unwrap_or(false),
             validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
             local_validator_index: local_validator_index.unwrap_or(0),
             storage_dir,
+            validator_config_path,
+            metrics_node_name,
+            metrics_client_name,
         }
     } else {
         NodeSettings {
@@ -407,6 +503,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
             ban_threshold: ban_threshold.unwrap_or(-100),
+            listen_addr: listen_addr.unwrap_or_else(|| "/ip4/0.0.0.0/udp/9000/quic-v1".to_string()),
+            node_key_path,
             bootnodes,
             trusted_peers,
             allowed_topics,
@@ -414,12 +512,133 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             topic_validators,
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            allow_unverified_aggregate_proofs: allow_unverified_aggregate_proofs.unwrap_or(false),
             validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
             local_validator_index: local_validator_index.unwrap_or(0),
             storage_dir,
+            validator_config_path,
+            metrics_node_name,
+            metrics_client_name,
         }
     };
     Ok((config, settings))
+}
+
+#[derive(Deserialize)]
+struct ValidatorConfig {
+    validators: Vec<ValidatorConfigEntry>,
+}
+
+#[derive(Deserialize)]
+struct ValidatorConfigEntry {
+    name: String,
+}
+
+#[inline]
+fn derive_client_name(node_name: &str) -> String {
+    node_name
+        .split_once('_')
+        .map(|(prefix, _)| prefix)
+        .or_else(|| node_name.split_once('-').map(|(prefix, _)| prefix))
+        .filter(|prefix| !prefix.is_empty())
+        .unwrap_or(node_name)
+        .to_string()
+}
+
+#[inline]
+fn node_name_from_validators_yaml(
+    validators_path: &Path,
+    local_validator_index: u64,
+) -> Result<Option<String>, String> {
+    if !validators_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(validators_path)
+        .map_err(|err| format!("Failed to read {}: {err}", validators_path.display()))?;
+    let by_node: std::collections::BTreeMap<String, Vec<u64>> = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("Failed to parse {}: {err}", validators_path.display()))?;
+    Ok(by_node.into_iter().find_map(|(name, indexes)| {
+        if indexes.contains(&local_validator_index) {
+            Some(name)
+        } else {
+            None
+        }
+    }))
+}
+
+#[inline]
+fn node_name_from_validator_config(
+    validator_config_path: &Path,
+    local_validator_index: u64,
+) -> Result<Option<String>, String> {
+    if !validator_config_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(validator_config_path)
+        .map_err(|err| format!("Failed to read {}: {err}", validator_config_path.display()))?;
+    let parsed: ValidatorConfig = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("Failed to parse {}: {err}", validator_config_path.display()))?;
+    Ok(parsed
+        .validators
+        .into_iter()
+        .nth(local_validator_index as usize)
+        .map(|entry| entry.name))
+}
+
+/// Resolve metrics labels (`node_name`, `client_name`) for this node.
+///
+/// Priority:
+/// 1. Explicit config overrides (`metrics_node_name`, `metrics_client_name`)
+/// 2. `validators.yaml` lookup by `local_validator_index`
+/// 3. `validator-config.yaml` nth-entry lookup
+/// 4. Fallback to `"peam"` and derived client name
+pub fn resolve_metrics_identity(
+    config_path: &Path,
+    settings: &NodeSettings,
+) -> Result<(String, String), String> {
+    let explicit_node_name = settings
+        .metrics_node_name
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+
+    let node_name = if let Some(name) = explicit_node_name {
+        name
+    } else {
+        let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+        let validators_path = config_dir.join("validators.yaml");
+        if let Some(name) =
+            node_name_from_validators_yaml(&validators_path, settings.local_validator_index)?
+        {
+            name
+        } else {
+            let validator_config_path = settings
+                .validator_config_path
+                .as_ref()
+                .map(|path| {
+                    let path = Path::new(path);
+                    if path.is_absolute() {
+                        path.to_path_buf()
+                    } else {
+                        config_dir.join(path)
+                    }
+                })
+                .unwrap_or_else(|| config_dir.join("validator-config.yaml"));
+            node_name_from_validator_config(&validator_config_path, settings.local_validator_index)?
+                .unwrap_or_else(|| "peam".to_string())
+        }
+    };
+
+    let client_name = settings
+        .metrics_client_name
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| derive_client_name(&node_name));
+
+    Ok((node_name, client_name))
 }
 
 /// Construct a genesis [`State`] from the given chain [`Config`].

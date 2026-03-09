@@ -1,5 +1,5 @@
-use crate::ssz::hash::merkleize_tree_root_3;
-use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
+use crate::ssz::hash::hash_nodes;
+use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::types::bytes::Bytes32;
 use crate::types::bytes::Bytes52;
 use crate::types::container::Container;
@@ -70,11 +70,11 @@ impl SszFixedLen for ValidatorIndex {
 
 impl SszEncode for Validator {
     fn encode_ssz(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(52 + 8 + 8);
-        unsafe { out.set_len(52 + 8 + 8) };
+        // Lean interop consensus encoding uses only pubkey + index.
+        let mut out = Vec::with_capacity(52 + 8);
+        unsafe { out.set_len(52 + 8) };
         unsafe { write_bytes_at(&mut out, 0, self.pubkey.as_ref()) };
         unsafe { write_bytes_at(&mut out, 52, &self.index.0.0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut out, 60, &self.balance.0.to_le_bytes()) };
         out
     }
 }
@@ -83,7 +83,7 @@ impl SszDecode for Validator {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         let pubkey = Bytes52::from_slice(&bytes[0..52]);
         let index = ValidatorIndex::decode_ssz(&bytes[52..60])?;
-        let balance = Uint64::decode_ssz(&bytes[60..68])?;
+        let balance = Uint64(0);
         Ok(Validator {
             pubkey,
             index,
@@ -92,12 +92,20 @@ impl SszDecode for Validator {
     }
 }
 
+impl SszElement for Validator {
+    #[inline]
+    fn fixed_len_opt() -> Option<usize> {
+        None
+    }
+}
+
 impl Validator {
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() != Self::fixed_len() {
+        const VALIDATOR_BYTES: usize = 60;
+        if bytes.len() != VALIDATOR_BYTES {
             return Err(format!(
                 "Validator expects {} bytes, got {}",
-                Self::fixed_len(),
+                VALIDATOR_BYTES,
                 bytes.len()
             ));
         }
@@ -109,15 +117,9 @@ impl HashTreeRoot for Validator {
     fn hash_tree_root(&self) -> [u8; 32] {
         let pubkey_root = Bytes32::from(self.pubkey.hash_tree_root());
         let index_root = Bytes32::from(self.index.hash_tree_root());
-        let balance_root = Bytes32::from(self.balance.hash_tree_root());
-        let root = merkleize_tree_root_3(&[pubkey_root, index_root, balance_root]);
+        // Lean interop consensus root uses only (pubkey, index).
+        // `balance` is local metadata and is intentionally excluded.
+        let root = hash_nodes(&pubkey_root, &index_root);
         *root.as_ref()
-    }
-}
-
-impl SszFixedLen for Validator {
-    #[inline]
-    fn fixed_len() -> usize {
-        68
     }
 }

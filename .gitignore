@@ -6,6 +6,8 @@ book/book/
 plan.md
 TODO.md
 DEVNET_SPINUP.local.md
+devnet2.md
+perf.md
 .tmp/
 scripts/*
 !scripts/bench_apples_to_apples.sh

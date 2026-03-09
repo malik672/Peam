@@ -31,7 +31,7 @@
 
 use std::path::Path;
 
-use rapidhash::RapidHashMap;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use super::Bytes32;
@@ -61,6 +61,14 @@ const SIGNED_BLOCK_BLOB_TABLE: TableDefinition<'static, &'static [u8], &'static 
 /// Thread safety comes from redb's internal locking (single-writer, multi-reader).
 pub(super) struct CanonicalDb {
     db: Database,
+}
+
+/// Result counters from blob garbage collection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct BlobGcReport {
+    pub removed_state_blobs: usize,
+    pub removed_block_blobs: usize,
+    pub removed_signed_block_blobs: usize,
 }
 
 impl CanonicalDb {
@@ -373,6 +381,41 @@ impl CanonicalDb {
         self.persist_blob(BLOCK_BLOB_TABLE, root, encoded)
     }
 
+    /// Removes blob rows that are no longer referenced by canonical/pending roots.
+    ///
+    /// `keep_state_roots` is used for state blobs and `keep_block_roots` for
+    /// block + signed block blobs.
+    pub(super) fn gc_unreferenced_blobs(
+        &self,
+        keep_state_roots: &RapidHashSet<Bytes32>,
+        keep_block_roots: &RapidHashSet<Bytes32>,
+    ) -> Result<BlobGcReport, String> {
+        let write_txn = self.db.begin_write().map_err(to_string)?;
+        let report = {
+            let mut state_blob_table = write_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
+            let removed_state_blobs =
+                gc_blob_table(&mut state_blob_table, keep_state_roots).map_err(to_string)?;
+
+            let mut block_blob_table = write_txn.open_table(BLOCK_BLOB_TABLE).map_err(to_string)?;
+            let removed_block_blobs =
+                gc_blob_table(&mut block_blob_table, keep_block_roots).map_err(to_string)?;
+
+            let mut signed_blob_table = write_txn
+                .open_table(SIGNED_BLOCK_BLOB_TABLE)
+                .map_err(to_string)?;
+            let removed_signed_block_blobs =
+                gc_blob_table(&mut signed_blob_table, keep_block_roots).map_err(to_string)?;
+
+            BlobGcReport {
+                removed_state_blobs,
+                removed_block_blobs,
+                removed_signed_block_blobs,
+            }
+        };
+        write_txn.commit().map_err(to_string)?;
+        Ok(report)
+    }
+
     /// Zero-copy blob read: opens a read txn, looks up the key, and passes
     /// the raw mmap `&[u8]` directly to `f` — no `.to_vec()`, no heap alloc.
     /// The closure runs while the redb read guard is alive.
@@ -452,4 +495,23 @@ fn upsert_or_remove_meta(
         let _ = table.remove(key).map_err(to_string)?;
     }
     Ok(())
+}
+
+/// Removes every blob row whose key (root) is not in `keep_roots`.
+fn gc_blob_table(
+    table: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    keep_roots: &RapidHashSet<Bytes32>,
+) -> Result<usize, String> {
+    let mut to_delete = Vec::<[u8; 32]>::new();
+    for row in table.iter().map_err(to_string)? {
+        let (root, _) = row.map_err(to_string)?;
+        let root = bytes_to_root(root.value())?;
+        if !keep_roots.contains(&root) {
+            to_delete.push(root.as_array());
+        }
+    }
+    for root in &to_delete {
+        let _ = table.remove(root.as_slice()).map_err(to_string)?;
+    }
+    Ok(to_delete.len())
 }

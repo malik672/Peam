@@ -7,6 +7,7 @@ Grafana + Prometheus setup for local lean devnet clients.
 - Peam: `http://127.0.0.1:18080/metrics`
 - Peer1: `http://127.0.0.1:18081/metrics`
 - Peer2: `http://127.0.0.1:18082/metrics`
+- Peer3 (Zeam): `http://127.0.0.1:18083/metrics`
 ## Run Visualizer
 
 From the repo root:
@@ -43,5 +44,6 @@ Optional external peers:
 ```bash
 PEER1_CMD='/absolute/path/to/peer1 ...' \
 PEER2_CMD='/absolute/path/to/peer2 ...' \
+PEER3_CMD='/absolute/path/to/zeam ...' \
 ./scripts/run_devnet2_3clients.sh
 ```
