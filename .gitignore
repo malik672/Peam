@@ -16,6 +16,7 @@ benchmarks.md
 data/
 examples/
 .tmp/
+deserialization_dumps/
 scripts/*
 !scripts/bench_apples_to_apples.sh
 !scripts/run_interop_node.sh
