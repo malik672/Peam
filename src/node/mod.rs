@@ -7,7 +7,7 @@ pub use gossip::handle_gossip_event;
 pub use head::proposal_head_from_pending;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::oneshot;
@@ -15,9 +15,11 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::app::{
-    NodeSettings, build_genesis_with_validator_count, load_node_settings, resolve_metrics_identity,
+    NodeSettings, build_genesis_from_config_yaml, build_genesis_with_validator_count,
+    load_node_settings, resolve_metrics_identity,
 };
 use crate::containers::attestation::Attestation;
+use crate::containers::attestation::SignedAttestation;
 use crate::containers::config::Config;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
@@ -30,8 +32,9 @@ use crate::storage::FileStore;
 
 use self::sync::spawn_status_sync_task;
 use tasks::{
-    DevnetValidatorKeyCache, apply_devnet_pq_validator_pubkeys, build_devnet_pq_validator_keys,
-    build_devnet_pq_validator_keys_from_hash_sig_dir, spawn_block_production_task,
+    DevnetValidatorKeyCache, PendingBlockAttestation, build_devnet_pq_validator_keys,
+    build_devnet_pq_validator_keys_from_hash_sig_dir, filter_keys_against_genesis,
+    spawn_attestation_aggregation_task, spawn_block_production_task,
     spawn_consensus_lifecycle_task, spawn_signed_attestation_task, spawn_strict_slot_clock,
 };
 
@@ -75,8 +78,10 @@ pub struct Node {
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     /// Attestations received since the last proposal head query.
     pending_attestations: Arc<RwLock<Vec<Attestation>>>,
+    /// Individual signed attestations awaiting aggregation (aggregator-only).
+    pending_individual_attestations: Arc<RwLock<Vec<SignedAttestation>>>,
     /// Aggregated attestations staged by lifecycle for block production.
-    pending_block_attestations: Arc<RwLock<Vec<Attestation>>>,
+    pending_block_attestations: Arc<RwLock<Vec<PendingBlockAttestation>>>,
     /// Root data directory for this node instance.
     data_dir: PathBuf,
     /// Resolved path to the block store directory.
@@ -97,6 +102,8 @@ pub struct Node {
     signing_task: Option<JoinHandle<()>>,
     /// Handle to the local block-production task.
     block_task: Option<JoinHandle<()>>,
+    /// Handle to the local aggregation publishing task.
+    aggregation_task: Option<JoinHandle<()>>,
     /// Handle to the status/backfill sync task.
     sync_task: Option<JoinHandle<()>>,
     /// True while the node is actively catching up from peers.
@@ -131,11 +138,18 @@ impl Node {
     /// Returns `Err` if config loading, genesis construction, or store opening fails.
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
         let (config, settings) = load_node_settings(&node_config.config_path)?;
-        crate::crypto::pq::set_allow_unverified_aggregate_proofs(
-            settings.allow_unverified_aggregate_proofs,
+        crate::containers::attestation::set_attestation_committee_count(
+            settings.attestation_committee_count,
         );
-        let mut genesis_state =
-            build_genesis_with_validator_count(config.clone(), settings.validator_count)?;
+        if settings.is_aggregator {
+            crate::crypto::pq::setup_aggregate_prover();
+        }
+        tracing::info!(
+            validator_count = settings.validator_count,
+            local_validator_index = settings.local_validator_index,
+            is_aggregator = settings.is_aggregator,
+            "peam startup: settings applied"
+        );
         let fallback_config_dir = node_config
             .config_path
             .parent()
@@ -153,6 +167,16 @@ impl Node {
             })
             .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
             .unwrap_or_else(|| fallback_config_dir.to_path_buf());
+        let genesis_config_yaml = config_dir.join("config.yaml");
+        let genesis_state = if genesis_config_yaml.is_file() {
+            tracing::info!(
+                path = %genesis_config_yaml.display(),
+                "peam startup: loading genesis from config.yaml"
+            );
+            build_genesis_from_config_yaml(&genesis_config_yaml)?
+        } else {
+            build_genesis_with_validator_count(config.clone(), settings.validator_count)?
+        };
         let hash_sig_keys_dir = config_dir.join("hash-sig-keys");
         let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
             match build_devnet_pq_validator_keys_from_hash_sig_dir(
@@ -181,7 +205,46 @@ impl Node {
                 "deterministic_devnet".to_string(),
             )
         };
-        apply_devnet_pq_validator_pubkeys(&mut genesis_state, &devnet_validator_keys);
+        tracing::info!(
+            source = %validator_key_source,
+            "peam startup: validator keys loaded"
+        );
+        let loaded_keys = devnet_validator_keys.iter().filter(|k| k.is_some()).count();
+        tracing::info!(
+            loaded_keys,
+            total = devnet_validator_keys.len(),
+            "peam startup: validator key cache"
+        );
+        let devnet_validator_keys =
+            filter_keys_against_genesis(&genesis_state, devnet_validator_keys);
+        if let Some(first) = genesis_state.validators.data.first() {
+            tracing::info!(
+                first_validator_pubkey = ?first.pubkey,
+                "peam startup: first validator pubkey"
+            );
+        }
+        let local_validator_index = settings.local_validator_index as usize;
+        let Some(expected) = genesis_state.validators.data.get(local_validator_index) else {
+            return Err(format!(
+                "local_validator_index {} out of range for {} genesis validators",
+                settings.local_validator_index,
+                genesis_state.validators.data.len()
+            ));
+        };
+        let Some(Some(local_key)) = devnet_validator_keys.get(local_validator_index) else {
+            return Err(format!(
+                "local validator key missing after filtering against genesis (source: {}); \
+ensure hash-sig-keys are available or use matching derivation for validator {}",
+                validator_key_source, settings.local_validator_index
+            ));
+        };
+        if local_key.pubkey != expected.pubkey {
+            return Err(format!(
+                "local validator pubkey mismatch after filtering (source: {}); \
+expected {:?}, got {:?}",
+                validator_key_source, expected.pubkey, local_key.pubkey
+            ));
+        }
         let (metrics_node_name, metrics_client_name) =
             resolve_metrics_identity(&node_config.config_path, &settings).unwrap_or_else(|err| {
                 warn!(
@@ -206,6 +269,7 @@ impl Node {
         let store = Arc::new(RwLock::new(FileStore::open(&store_dir)?));
         let fork_choice = Arc::new(RwLock::new(None));
         let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+        let pending_individual_attestations = Arc::new(RwLock::new(Vec::new()));
         let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let metrics = Arc::new(MetricsRegistry::new());
@@ -215,6 +279,7 @@ impl Node {
             store,
             fork_choice,
             pending_attestations,
+            pending_individual_attestations,
             pending_block_attestations,
             data_dir: node_config.data_dir,
             store_dir,
@@ -226,6 +291,7 @@ impl Node {
             lifecycle_task: None,
             signing_task: None,
             block_task: None,
+            aggregation_task: None,
             sync_task: None,
             is_syncing: Arc::new(AtomicBool::new(false)),
             sync_target_slot: Arc::new(AtomicU64::new(0)),
@@ -276,10 +342,6 @@ impl Node {
             "Loaded genesis configuration"
         );
         info!(
-            allow_unverified_aggregate_proofs = self.settings.allow_unverified_aggregate_proofs,
-            "Aggregate proof verification policy"
-        );
-        info!(
             node_id = %self.metrics_node_name,
             index = self.settings.local_validator_index,
             secret_key_source = %self.validator_key_source,
@@ -317,6 +379,15 @@ impl Node {
             slot_clock,
         ));
 
+        let committee_count = self.settings.attestation_committee_count.max(1);
+        let local_subnet = self.settings.local_validator_index % committee_count;
+        let (allowed_topics, topic_scores, topic_validators) = filter_topics_for_role(
+            &self.settings.allowed_topics,
+            &self.settings.topic_scores,
+            &self.settings.topic_validators,
+            self.settings.is_aggregator,
+            local_subnet,
+        );
         let net_config = NetworkingConfig {
             discovery_interval_secs: self.settings.discovery_interval_secs,
             score_decay_interval_secs: self.settings.score_decay_interval_secs,
@@ -326,9 +397,9 @@ impl Node {
             trusted_peers: self.settings.trusted_peers.clone(),
             listen_addr: self.settings.listen_addr.clone(),
             node_key_path: self.settings.node_key_path.clone(),
-            allowed_topics: self.settings.allowed_topics.clone(),
-            topic_scores: self.settings.topic_scores.clone(),
-            topic_validators: self.settings.topic_validators.clone(),
+            allowed_topics,
+            topic_scores,
+            topic_validators,
             signature_verifier,
             reqresp_handler,
             gossip_context,
@@ -348,6 +419,9 @@ impl Node {
             let store = self.store.clone();
             let fork_choice = self.fork_choice.clone();
             let pending_attestations = self.pending_attestations.clone();
+            let pending_individual_attestations = self.pending_individual_attestations.clone();
+            let pending_block_attestations = self.pending_block_attestations.clone();
+            let is_aggregator = self.settings.is_aggregator;
             let metrics = self.metrics.clone();
             tokio::spawn(async move {
                 loop {
@@ -361,6 +435,9 @@ impl Node {
                             &store,
                             &fork_choice,
                             &pending_attestations,
+                            &pending_individual_attestations,
+                            &pending_block_attestations,
+                            is_aggregator,
                             &metrics,
                         );
                     }
@@ -384,13 +461,20 @@ impl Node {
         }
 
         if let Some(networking) = &self.networking {
-            let maybe_block_topic = self
-                .settings
-                .allowed_topics
-                .iter()
-                .find(|topic| topic.contains("block"))
-                .cloned();
-            if let Some(block_topic) = maybe_block_topic {
+            let committee_count = self.settings.attestation_committee_count.max(1);
+            let local_subnet = self.settings.local_validator_index % committee_count;
+            self.metrics
+                .is_aggregator
+                .store(self.settings.is_aggregator, Ordering::Relaxed);
+            self.metrics
+                .attestation_committee_count
+                .store(committee_count, Ordering::Relaxed);
+            self.metrics
+                .attestation_committee_subnet
+                .store(local_subnet, Ordering::Relaxed);
+
+            let maybe_block_topic = select_block_topic(&net_config.allowed_topics);
+            if let Some(block_topic) = maybe_block_topic.clone() {
                 self.block_task = spawn_block_production_task(
                     self.config.genesis_time.0,
                     self.settings.local_validator_index as usize,
@@ -408,12 +492,11 @@ impl Node {
                 warn!("no block topic configured; local block production disabled");
             }
 
-            let maybe_att_topic = self
-                .settings
-                .allowed_topics
-                .iter()
-                .find(|topic| topic.contains("attestation"))
-                .cloned();
+            let maybe_att_topic = select_attestation_topic(
+                &self.settings.allowed_topics,
+                self.settings.local_validator_index,
+                committee_count,
+            );
             if let Some(attestation_topic) = maybe_att_topic {
                 self.signing_task = spawn_signed_attestation_task(
                     self.config.genesis_time.0,
@@ -424,11 +507,34 @@ impl Node {
                     self.state.clone(),
                     self.fork_choice.clone(),
                     self.pending_attestations.clone(),
+                    self.pending_individual_attestations.clone(),
                     self.devnet_validator_keys.clone(),
                     self.metrics.clone(),
+                    self.settings.is_aggregator,
                 );
             } else {
                 warn!("no attestation topic configured; local signing task disabled");
+            }
+
+            if self.settings.is_aggregator {
+                if let Some(aggregation_topic) =
+                    select_aggregation_topic(&net_config.allowed_topics)
+                {
+                    self.aggregation_task = spawn_attestation_aggregation_task(
+                        self.config.genesis_time.0,
+                        aggregation_topic,
+                        networking.p2p_sender(),
+                        self.pending_individual_attestations.clone(),
+                        self.pending_attestations.clone(),
+                        self.pending_block_attestations.clone(),
+                        self.devnet_validator_keys.clone(),
+                        self.settings.local_validator_index as usize,
+                        committee_count,
+                        self.metrics.clone(),
+                    );
+                } else {
+                    warn!("no aggregation topic configured; aggregator task disabled");
+                }
             }
         }
 
@@ -436,7 +542,6 @@ impl Node {
             self.config.genesis_time.0,
             self.fork_choice.clone(),
             self.pending_attestations.clone(),
-            self.pending_block_attestations.clone(),
             self.metrics.clone(),
         ));
 
@@ -484,6 +589,9 @@ impl Node {
         if let Some(task) = self.block_task.take() {
             task.abort();
         }
+        if let Some(task) = self.aggregation_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.sync_task.take() {
             task.abort();
         }
@@ -511,4 +619,75 @@ impl Node {
     fn store_dir_display(&self) -> String {
         self.store_dir.display().to_string()
     }
+}
+
+#[inline]
+fn select_attestation_topic(
+    allowed_topics: &[String],
+    local_validator_index: u64,
+    committee_count: u64,
+) -> Option<String> {
+    let subnet = if committee_count <= 1 {
+        0
+    } else {
+        local_validator_index % committee_count
+    };
+    allowed_topics
+        .iter()
+        .find(|topic| topic.contains(&format!("/attestation_{subnet}/")))
+        .cloned()
+}
+
+#[inline]
+fn select_aggregation_topic(allowed_topics: &[String]) -> Option<String> {
+    allowed_topics
+        .iter()
+        .find(|topic| topic.contains("/aggregation/"))
+        .cloned()
+}
+
+#[inline]
+fn select_block_topic(allowed_topics: &[String]) -> Option<String> {
+    allowed_topics
+        .iter()
+        .find(|topic| topic.contains("/blocks/"))
+        .cloned()
+}
+
+#[inline]
+fn filter_topics_for_role(
+    allowed_topics: &[String],
+    topic_scores: &[(String, i64)],
+    topic_validators: &[(String, crate::networking::GossipValidatorKind)],
+    is_aggregator: bool,
+    _local_attestation_subnet: u64,
+) -> (
+    Vec<String>,
+    Vec<(String, i64)>,
+    Vec<(String, crate::networking::GossipValidatorKind)>,
+) {
+    if is_aggregator {
+        return (
+            allowed_topics.to_vec(),
+            topic_scores.to_vec(),
+            topic_validators.to_vec(),
+        );
+    }
+    let should_keep = |topic: &str| !topic.contains("/attestation_");
+    let allowed = allowed_topics
+        .iter()
+        .filter(|topic| should_keep(topic))
+        .cloned()
+        .collect::<Vec<_>>();
+    let scores = topic_scores
+        .iter()
+        .filter(|(topic, _)| should_keep(topic))
+        .cloned()
+        .collect::<Vec<_>>();
+    let validators = topic_validators
+        .iter()
+        .filter(|(topic, _)| should_keep(topic))
+        .cloned()
+        .collect::<Vec<_>>();
+    (allowed, scores, validators)
 }

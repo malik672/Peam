@@ -22,7 +22,7 @@ make docker-build-peam
 
 Default image tags:
 - `ghcr.io/leanethereum/peam:latest`
-- `ghcr.io/leanethereum/peam:latest-devnet2`
+- `ghcr.io/leanethereum/peam:latest-devnet3`
 
 For multi-arch push with OCI labels (`org.opencontainers.*`):
 
@@ -32,7 +32,7 @@ make docker-buildx-push-peam
 ```
 
 ## Devnet status
-- Currently devenet 2
+- Currently devnet 3
 
 ## Contributing
 PRs welcome. Please run `cargo test` before opening a PR.

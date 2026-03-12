@@ -12,9 +12,9 @@ score_decay_amount=1
 ban_threshold=-100
 bootnodes=/ip4/1.2.3.4/tcp/30303/p2p/12D3KooWBootA
 trusted_peers=/ip4/5.6.7.8/tcp/30303/p2p/12D3KooWTrustA
-allowed_topics=leanconsensus/devnet2/block/ssz_snappy,leanconsensus/devnet2/attestation/ssz_snappy
-topic_scores=leanconsensus/devnet2/block/ssz_snappy:2,leanconsensus/devnet2/attestation/ssz_snappy:1
-topic_validators=leanconsensus/devnet2/block/ssz_snappy=block,leanconsensus/devnet2/attestation/ssz_snappy=attestation
+allowed_topics=leanconsensus/devnet3/blocks/ssz_snappy,leanconsensus/devnet3/attestation_0/ssz_snappy,leanconsensus/devnet3/aggregation/ssz_snappy
+topic_scores=leanconsensus/devnet3/blocks/ssz_snappy:2,leanconsensus/devnet3/attestation_0/ssz_snappy:1,leanconsensus/devnet3/aggregation/ssz_snappy:1
+topic_validators=leanconsensus/devnet3/blocks/ssz_snappy=block,leanconsensus/devnet3/attestation_0/ssz_snappy=attestation,leanconsensus/devnet3/aggregation/ssz_snappy=aggregation
 max_gossip_bytes=2000000
 max_reqresp_bytes=4000000
 storage_dir=store
@@ -45,7 +45,7 @@ The node accepts either SSZ config bytes or the text format above. SSZ config ca
 | `trusted_peers` | `multiaddr` list | Peers exempt from score-based banning |
 | `allowed_topics` | string list | Gossip topics the node subscribes to |
 | `topic_scores` | `topic:score` pairs | Per-topic score weights |
-| `topic_validators` | `topic=kind` pairs | Maps topics to validators (`block`, `attestation`) |
+| `topic_validators` | `topic=kind` pairs | Maps topics to validators (`block`, `attestation`, `aggregation`) |
 | `max_gossip_bytes` | `u64` | Max size of a single gossip message |
 | `max_reqresp_bytes` | `u64` | Max size of a req/resp payload |
 | `storage_dir` | path | Storage root relative to `--data-dir` |

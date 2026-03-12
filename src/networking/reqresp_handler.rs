@@ -100,7 +100,6 @@ impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S>
             LeanRequestMessage::Status(_) => Some(LeanResponseMessage::Status(self.build_status())),
             LeanRequestMessage::BlocksByRoot(req) => {
                 // Interop compatibility: return at most one block per response chunk.
-                // Ream/EthLambda decode lean BlocksByRoot responses as a single
                 // SignedBlockWithAttestation, not a wrapped list.
                 let store = self.store.read().expect("store lock");
                 let mut block = None;

@@ -150,6 +150,7 @@ impl SignedBlockWithAttestation {
     ///
     /// Validates:
     /// - `attestation_signatures.len() == block.body.attestations.len()`
+    /// - each aggregate proof bitfield matches its attestation bitfield
     /// - `proposer_attestation.data.slot == block.slot`
     /// - `proposer_attestation.aggregation_bits` has exactly one set bit
     /// - that bit's index equals `block.proposer_index`
@@ -162,6 +163,20 @@ impl SignedBlockWithAttestation {
                 "attestation signatures count {} does not match attestations {}",
                 sig_count, att_count
             ));
+        }
+        for (idx, (attestation, proof)) in block
+            .body
+            .attestations
+            .data
+            .iter()
+            .zip(self.signature.attestation_signatures.data.iter())
+            .enumerate()
+        {
+            if proof.participants != attestation.aggregation_bits {
+                return Err(format!(
+                    "attestation aggregate participants mismatch at index {idx}"
+                ));
+            }
         }
         let proposer_attestation = &self.message.proposer_attestation;
         if proposer_attestation.data.slot != block.slot {
@@ -229,7 +244,7 @@ fn decode_ream_block_with_attestation(
     bytes: &[u8],
     checked: bool,
 ) -> Result<BlockWithAttestation, String> {
-    // REAM devnet2 layout:
+    // REAM current layout:
     // [off_block: u32][validator_id: u64][attestation_data: 128 bytes][block bytes]
     let proposer_fixed_len = 8 + AttestationData::fixed_len();
     let fixed_len = 4 + proposer_fixed_len;
@@ -525,7 +540,6 @@ impl HashTreeRoot for Block {
 
 /// SSZ serialization for [`BlockWithAttestation`].
 ///
-/// Interop canonical layout (Ream/EthLambda/Zeam):
 /// `[off_block: u32][validator_id: u64][attestation_data: 128 B][block bytes]`.
 ///
 /// We emit this format to preserve cross-client decode compatibility.

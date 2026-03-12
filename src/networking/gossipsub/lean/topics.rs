@@ -4,7 +4,7 @@
 //! ```text
 //! /{TOPIC_PREFIX}/{fork}/{kind}/{ENCODING_POSTFIX}
 //! ```
-//! e.g. `/leanconsensus/devnet2/block/ssz_snappy`.
+//! e.g. `/leanconsensus/devnet3/blocks/ssz_snappy`.
 //!
 //! [`LeanGossipTopic`] represents a parsed topic and converts to/from libp2p
 //! [`TopicHash`] and [`IdentTopic`].
@@ -18,23 +18,19 @@ pub const TOPIC_PREFIX: &str = "leanconsensus";
 /// Encoding suffix appended to every topic string.
 pub const ENCODING_POSTFIX: &str = "ssz_snappy";
 
-/// Topic name segment for full signed blocks.
-pub const LEAN_BLOCK_TOPIC: &str = "block";
-/// Topic name segment for global attestations.
-pub const LEAN_ATTESTATION_TOPIC: &str = "attestation";
+/// Canonical topic name segment for full signed blocks.
+pub const LEAN_BLOCK_TOPIC: &str = "blocks";
 /// Topic name segment for aggregated-attestation gossip.
 pub const LEAN_AGGREGATION_TOPIC: &str = "aggregation";
 /// Prefix for per-subnet attestation topics.
 pub const LEAN_ATTESTATION_SUBNET_PREFIX: &str = "attestation_";
-/// Legacy prefix accepted for backward-compatibility.
-pub const LEAN_ATTESTATION_SUBNET_PREFIX_LEGACY: &str = "attestation_subnet_";
 
 /// A parsed lean-Ethereum gossipsub topic.
 ///
-/// Carries the fork string (e.g. `"devnet2"`) and the message [`LeanGossipTopicKind`].
+/// Carries the fork string (e.g. `"devnet3"`) and the message [`LeanGossipTopicKind`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct LeanGossipTopic {
-    /// Fork identifier, e.g. `"devnet2"`.
+    /// Fork identifier, e.g. `"devnet3"`.
     pub fork: String,
     /// Message kind encoded in the topic.
     pub kind: LeanGossipTopicKind,
@@ -66,19 +62,9 @@ impl LeanGossipTopic {
 
         let kind = match topic_name {
             LEAN_BLOCK_TOPIC => LeanGossipTopicKind::Block,
-            LEAN_ATTESTATION_TOPIC => LeanGossipTopicKind::Attestation,
             LEAN_AGGREGATION_TOPIC => LeanGossipTopicKind::AggregatedAttestation,
             other if other.starts_with(LEAN_ATTESTATION_SUBNET_PREFIX) => {
                 let subnet_str = other.trim_start_matches(LEAN_ATTESTATION_SUBNET_PREFIX);
-                let subnet_id = subnet_str.parse::<u64>().map_err(|err| {
-                    GossipsubError::InvalidTopic(format!(
-                        "Invalid attestation subnet id: {subnet_str:?}, error: {err}"
-                    ))
-                })?;
-                LeanGossipTopicKind::AttestationSubnet(subnet_id)
-            }
-            other if other.starts_with(LEAN_ATTESTATION_SUBNET_PREFIX_LEGACY) => {
-                let subnet_str = other.trim_start_matches(LEAN_ATTESTATION_SUBNET_PREFIX_LEGACY);
                 let subnet_id = subnet_str.parse::<u64>().map_err(|err| {
                     GossipsubError::InvalidTopic(format!(
                         "Invalid attestation subnet id: {subnet_str:?}, error: {err}"
@@ -97,12 +83,11 @@ impl LeanGossipTopic {
     }
 }
 
-/// Renders the full topic string, e.g. `/leanconsensus/devnet2/block/ssz_snappy`.
+/// Renders the full topic string, e.g. `/leanconsensus/devnet3/blocks/ssz_snappy`.
 impl std::fmt::Display for LeanGossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let topic_name = match &self.kind {
             LeanGossipTopicKind::Block => LEAN_BLOCK_TOPIC.to_string(),
-            LeanGossipTopicKind::Attestation => LEAN_ATTESTATION_TOPIC.to_string(),
             LeanGossipTopicKind::AggregatedAttestation => LEAN_AGGREGATION_TOPIC.to_string(),
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => {
                 format!("{LEAN_ATTESTATION_SUBNET_PREFIX}{subnet_id}")
@@ -136,7 +121,6 @@ impl From<LeanGossipTopic> for TopicHash {
     fn from(val: LeanGossipTopic) -> Self {
         let kind_str = match &val.kind {
             LeanGossipTopicKind::Block => LEAN_BLOCK_TOPIC.to_string(),
-            LeanGossipTopicKind::Attestation => LEAN_ATTESTATION_TOPIC.to_string(),
             LeanGossipTopicKind::AggregatedAttestation => LEAN_AGGREGATION_TOPIC.to_string(),
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => {
                 format!("{LEAN_ATTESTATION_SUBNET_PREFIX}{subnet_id}")
@@ -155,8 +139,6 @@ impl From<LeanGossipTopic> for TopicHash {
 pub enum LeanGossipTopicKind {
     /// A full signed block.
     Block,
-    /// A global (non-subnet) attestation.
-    Attestation,
     /// Aggregated attestation gossip payload (data + aggregated signature proof).
     AggregatedAttestation,
     /// A subnet-specific attestation; carries the subnet ID.
@@ -168,7 +150,6 @@ impl std::fmt::Display for LeanGossipTopicKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LeanGossipTopicKind::Block => write!(f, "{LEAN_BLOCK_TOPIC}"),
-            LeanGossipTopicKind::Attestation => write!(f, "{LEAN_ATTESTATION_TOPIC}"),
             LeanGossipTopicKind::AggregatedAttestation => write!(f, "{LEAN_AGGREGATION_TOPIC}"),
             LeanGossipTopicKind::AttestationSubnet(subnet_id) => {
                 write!(f, "{LEAN_ATTESTATION_SUBNET_PREFIX}{subnet_id}")

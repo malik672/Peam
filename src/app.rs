@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -13,6 +13,9 @@ use crate::unsafe_vec::write_at;
 
 /// Default validator-set size used when config does not specify `validator_count`.
 pub const DEFAULT_VALIDATOR_COUNT: usize = 5;
+const DEFAULT_BLOCK_TOPIC: &str = "/leanconsensus/devnet3/blocks/ssz_snappy";
+const DEFAULT_ATTESTATION_TOPIC: &str = "/leanconsensus/devnet3/attestation_0/ssz_snappy";
+const DEFAULT_AGGREGATION_TOPIC: &str = "/leanconsensus/devnet3/aggregation/ssz_snappy";
 
 #[inline]
 fn canonicalize_topic(topic: &str) -> String {
@@ -22,6 +25,94 @@ fn canonicalize_topic(topic: &str) -> String {
     } else {
         format!("/{topic}")
     }
+}
+
+#[inline]
+fn default_allowed_topics() -> Vec<String> {
+    vec![
+        DEFAULT_BLOCK_TOPIC.to_string(),
+        DEFAULT_ATTESTATION_TOPIC.to_string(),
+        DEFAULT_AGGREGATION_TOPIC.to_string(),
+    ]
+}
+
+#[inline]
+fn default_topic_scores() -> Vec<(String, i64)> {
+    vec![
+        (DEFAULT_BLOCK_TOPIC.to_string(), 2),
+        (DEFAULT_ATTESTATION_TOPIC.to_string(), 1),
+        (DEFAULT_AGGREGATION_TOPIC.to_string(), 1),
+    ]
+}
+
+#[inline]
+fn default_topic_validators() -> Vec<(String, crate::networking::GossipValidatorKind)> {
+    vec![
+        (
+            DEFAULT_BLOCK_TOPIC.to_string(),
+            crate::networking::GossipValidatorKind::Block,
+        ),
+        (
+            DEFAULT_ATTESTATION_TOPIC.to_string(),
+            crate::networking::GossipValidatorKind::Attestation,
+        ),
+        (
+            DEFAULT_AGGREGATION_TOPIC.to_string(),
+            crate::networking::GossipValidatorKind::AggregatedAttestation,
+        ),
+    ]
+}
+
+#[inline]
+fn resolve_validator_config_path(
+    config_path: &Path,
+    validator_config_path: Option<&str>,
+) -> PathBuf {
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    validator_config_path
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                config_dir.join(path)
+            }
+        })
+        .unwrap_or_else(|| config_dir.join("validator-config.yaml"))
+}
+
+#[inline]
+fn validator_config_entry(
+    validator_config_path: &Path,
+    local_validator_index: u64,
+) -> Result<Option<ValidatorConfigEntry>, String> {
+    if !validator_config_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(validator_config_path)
+        .map_err(|err| format!("Failed to read {}: {err}", validator_config_path.display()))?;
+    let parsed: ValidatorConfig = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("Failed to parse {}: {err}", validator_config_path.display()))?;
+    Ok(parsed
+        .validators
+        .into_iter()
+        .nth(local_validator_index as usize))
+}
+
+#[inline]
+fn resolve_validator_config_is_aggregator(
+    config_path: &Path,
+    validator_config_path: Option<&str>,
+    local_validator_index: u64,
+) -> Result<Option<bool>, String> {
+    let validator_config_path = resolve_validator_config_path(config_path, validator_config_path);
+    let Some(entry) = validator_config_entry(&validator_config_path, local_validator_index)? else {
+        return Ok(None);
+    };
+    Ok(entry
+        .enr_fields
+        .and_then(|fields| fields.is_aggregator)
+        .or(entry.is_aggregator))
 }
 
 /// Runtime settings for a [`Node`], parsed from the config file.
@@ -42,12 +133,13 @@ fn canonicalize_topic(topic: &str) -> String {
 /// | `ban_threshold`             | `-100`                                       |
 /// | `listen_addr`               | `"/ip4/0.0.0.0/udp/9000/quic-v1"`            |
 /// | `node_key_path`             | `None` (ephemeral peer identity)             |
-/// | `allowed_topics`            | block + attestation + aggregation devnet2 topics |
-/// | `topic_scores`              | block=2, attestation=1, aggregation=1        |
-/// | `topic_validators`          | block + attestation + aggregation validators |
+/// | `allowed_topics`            | block + attestation_0 + aggregation devnet3 topics |
+/// | `topic_scores`              | block=2, attestation_0=1, aggregation=1      |
+/// | `topic_validators`          | block + attestation_0 + aggregation validators |
 /// | `max_gossip_bytes`          | `2_000_000`                                  |
 /// | `max_reqresp_bytes`         | `4_000_000`                                  |
-/// | `allow_unverified_aggregate_proofs` | `false`                              |
+/// | `is_aggregator`            | `false`                                      |
+/// | `attestation_committee_count` | `1`                                    |
 /// | `validator_count`           | `5`                                          |
 /// | `local_validator_index`     | `0`                                          |
 /// | `storage_dir`               | `None` (resolved to `data_dir/store`)        |
@@ -88,11 +180,10 @@ pub struct NodeSettings {
     pub max_gossip_bytes: usize,
     /// Maximum byte size of a request/response message.
     pub max_reqresp_bytes: usize,
-    /// Allow importing blocks whose aggregate proofs cannot be decoded/verified.
-    ///
-    /// Intended for cross-client devnet interop where aggregate proof wire
-    /// formats may diverge.
-    pub allow_unverified_aggregate_proofs: bool,
+    /// Whether this node performs attestation aggregation duties.
+    pub is_aggregator: bool,
+    /// Number of attestation subnets used for validator-to-subnet mapping.
+    pub attestation_committee_count: u64,
     /// Number of validators used when building genesis.
     pub validator_count: usize,
     /// Local validator index used for runtime signing/proposing in devnet mode.
@@ -102,7 +193,7 @@ pub struct NodeSettings {
     /// `data_dir/store`.
     pub storage_dir: Option<String>,
     /// Optional path to a `validator-config.yaml` file for cross-client
-    /// node-name resolution.
+    /// node-name and aggregator-role resolution.
     ///
     /// Relative paths are resolved against the config file directory.
     pub validator_config_path: Option<String>,
@@ -167,7 +258,7 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
 /// Accepts the same two formats as [`load_config`]:
 ///
 /// - **SSZ binary** — decoded as a bare [`Config`]; all [`NodeSettings`] fields
-///   are set to their defaults, including devnet2 block/attestation/aggregation topics.
+///   are set to their defaults, including devnet3 blocks/attestation-subnet/aggregation topics.
 ///
 /// - **Key-value text** — parses all known keys (see [`NodeSettings`] field docs
 ///   for names). Multi-value keys (`bootnodes`, `trusted_peers`, `allowed_topics`)
@@ -175,8 +266,9 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
 ///   `topic_validators` uses `topic=kind` pairs where `kind` is one of
 ///   `block`, `block_header`, `attestation`, `aggregation`, `exit`
 ///   (unrecognized kinds map to `GossipValidatorKind::None`). If
-///   `allowed_topics` is empty after parsing, the devnet2 defaults are
-///   substituted.
+///   `allowed_topics` is empty after parsing, the devnet3 defaults are
+///   substituted. If `validator-config.yaml` contains `is_aggregator` metadata
+///   for the local validator, it overrides the local config flag.
 ///
 /// # Errors
 ///
@@ -200,39 +292,13 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             node_key_path: None,
             bootnodes: Vec::new(),
             trusted_peers: Vec::new(),
-            allowed_topics: vec![
-                "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
-                "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
-            ],
-            topic_scores: vec![
-                ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
-                (
-                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
-                    1,
-                ),
-                (
-                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
-                    1,
-                ),
-            ],
-            topic_validators: vec![
-                (
-                    "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                    crate::networking::GossipValidatorKind::Block,
-                ),
-                (
-                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
-                    crate::networking::GossipValidatorKind::Attestation,
-                ),
-                (
-                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
-                    crate::networking::GossipValidatorKind::AggregatedAttestation,
-                ),
-            ],
+            allowed_topics: default_allowed_topics(),
+            topic_scores: default_topic_scores(),
+            topic_validators: default_topic_validators(),
             max_gossip_bytes: 2_000_000,
             max_reqresp_bytes: 4_000_000,
-            allow_unverified_aggregate_proofs: false,
+            is_aggregator: false,
+            attestation_committee_count: 1,
             validator_count: DEFAULT_VALIDATOR_COUNT,
             local_validator_index: 0,
             storage_dir: None,
@@ -262,7 +328,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut topic_validators: Vec<(String, crate::networking::GossipValidatorKind)> = Vec::new();
     let mut max_gossip_bytes: Option<usize> = None;
     let mut max_reqresp_bytes: Option<usize> = None;
-    let mut allow_unverified_aggregate_proofs: Option<bool> = None;
+    let mut is_aggregator: Option<bool> = None;
+    let mut attestation_committee_count: Option<u64> = None;
     let mut validator_count: Option<usize> = None;
     let mut local_validator_index: Option<u64> = None;
     let mut storage_dir: Option<String> = None;
@@ -394,16 +461,24 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     .parse::<usize>()
                     .map_err(|err| format!("Invalid max_reqresp_bytes {value}: {err}"))?,
             );
-        } else if key == "allow_unverified_aggregate_proofs" {
-            allow_unverified_aggregate_proofs = Some(match value {
+        } else if key == "is_aggregator" {
+            is_aggregator = Some(match value {
                 "1" | "true" | "yes" | "on" => true,
                 "0" | "false" | "no" | "off" => false,
                 _ => {
                     return Err(format!(
-                        "Invalid allow_unverified_aggregate_proofs {value}: expected true/false"
+                        "Invalid is_aggregator {value}: expected true/false"
                     ));
                 }
             });
+        } else if key == "attestation_committee_count" {
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|err| format!("Invalid attestation_committee_count {value}: {err}"))?;
+            if parsed == 0 {
+                return Err("Invalid attestation_committee_count 0: must be > 0".to_string());
+            }
+            attestation_committee_count = Some(parsed);
         } else if key == "validator_count" {
             let parsed = value
                 .parse::<usize>()
@@ -441,7 +516,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let config = Config {
         genesis_time: Uint64(genesis_time),
     };
-    let settings = if allowed_topics.is_empty() {
+    let mut settings = if allowed_topics.is_empty() {
         NodeSettings {
             metrics: metrics.unwrap_or(false),
             metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
@@ -454,39 +529,13 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             node_key_path,
             bootnodes,
             trusted_peers,
-            allowed_topics: vec![
-                "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
-                "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
-            ],
-            topic_scores: vec![
-                ("/leanconsensus/devnet2/block/ssz_snappy".to_string(), 2),
-                (
-                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
-                    1,
-                ),
-                (
-                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
-                    1,
-                ),
-            ],
-            topic_validators: vec![
-                (
-                    "/leanconsensus/devnet2/block/ssz_snappy".to_string(),
-                    crate::networking::GossipValidatorKind::Block,
-                ),
-                (
-                    "/leanconsensus/devnet2/attestation/ssz_snappy".to_string(),
-                    crate::networking::GossipValidatorKind::Attestation,
-                ),
-                (
-                    "/leanconsensus/devnet2/aggregation/ssz_snappy".to_string(),
-                    crate::networking::GossipValidatorKind::AggregatedAttestation,
-                ),
-            ],
+            allowed_topics: default_allowed_topics(),
+            topic_scores: default_topic_scores(),
+            topic_validators: default_topic_validators(),
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
-            allow_unverified_aggregate_proofs: allow_unverified_aggregate_proofs.unwrap_or(false),
+            is_aggregator: is_aggregator.unwrap_or(false),
+            attestation_committee_count: attestation_committee_count.unwrap_or(1),
             validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
             local_validator_index: local_validator_index.unwrap_or(0),
             storage_dir,
@@ -512,7 +561,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             topic_validators,
             max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
             max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
-            allow_unverified_aggregate_proofs: allow_unverified_aggregate_proofs.unwrap_or(false),
+            is_aggregator: is_aggregator.unwrap_or(false),
+            attestation_committee_count: attestation_committee_count.unwrap_or(1),
             validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
             local_validator_index: local_validator_index.unwrap_or(0),
             storage_dir,
@@ -521,6 +571,13 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             metrics_client_name,
         }
     };
+    if let Some(config_is_aggregator) = resolve_validator_config_is_aggregator(
+        path,
+        settings.validator_config_path.as_deref(),
+        settings.local_validator_index,
+    )? {
+        settings.is_aggregator = config_is_aggregator;
+    }
     Ok((config, settings))
 }
 
@@ -529,9 +586,19 @@ struct ValidatorConfig {
     validators: Vec<ValidatorConfigEntry>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ValidatorConfigEntry {
     name: String,
+    #[serde(default)]
+    is_aggregator: Option<bool>,
+    #[serde(default, rename = "enrFields")]
+    enr_fields: Option<ValidatorConfigEnrFields>,
+}
+
+#[derive(Clone, Deserialize)]
+struct ValidatorConfigEnrFields {
+    #[serde(default)]
+    is_aggregator: Option<bool>,
 }
 
 #[inline]
@@ -571,18 +638,10 @@ fn node_name_from_validator_config(
     validator_config_path: &Path,
     local_validator_index: u64,
 ) -> Result<Option<String>, String> {
-    if !validator_config_path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(validator_config_path)
-        .map_err(|err| format!("Failed to read {}: {err}", validator_config_path.display()))?;
-    let parsed: ValidatorConfig = serde_yaml::from_str(&raw)
-        .map_err(|err| format!("Failed to parse {}: {err}", validator_config_path.display()))?;
-    Ok(parsed
-        .validators
-        .into_iter()
-        .nth(local_validator_index as usize)
-        .map(|entry| entry.name))
+    Ok(
+        validator_config_entry(validator_config_path, local_validator_index)?
+            .map(|entry| entry.name),
+    )
 }
 
 /// Resolve metrics labels (`node_name`, `client_name`) for this node.
@@ -613,18 +672,10 @@ pub fn resolve_metrics_identity(
         {
             name
         } else {
-            let validator_config_path = settings
-                .validator_config_path
-                .as_ref()
-                .map(|path| {
-                    let path = Path::new(path);
-                    if path.is_absolute() {
-                        path.to_path_buf()
-                    } else {
-                        config_dir.join(path)
-                    }
-                })
-                .unwrap_or_else(|| config_dir.join("validator-config.yaml"));
+            let validator_config_path = resolve_validator_config_path(
+                config_path,
+                settings.validator_config_path.as_deref(),
+            );
             node_name_from_validator_config(&validator_config_path, settings.local_validator_index)?
                 .unwrap_or_else(|| "peam".to_string())
         }
@@ -660,6 +711,55 @@ pub fn build_genesis_with_validator_count(
     }
     let validators = build_devnet_validators(validator_count);
     Ok(State::generate_genesis(config.genesis_time, validators))
+}
+
+/// Builds a genesis state from a lean-spec `config.yaml` file.
+///
+/// Parses `GENESIS_TIME` and `GENESIS_VALIDATORS` (hex-encoded 52-byte pubkeys)
+/// from the YAML config. This is the canonical genesis used by all clients.
+pub fn build_genesis_from_config_yaml(path: &Path) -> Result<State, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+    let genesis_time = doc
+        .get("GENESIS_TIME")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| format!("missing GENESIS_TIME in {}", path.display()))?;
+    let validators_yaml = doc
+        .get("GENESIS_VALIDATORS")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| format!("missing GENESIS_VALIDATORS in {}", path.display()))?;
+    if validators_yaml.is_empty() {
+        return Err(format!("GENESIS_VALIDATORS is empty in {}", path.display()));
+    }
+    let mut validators = Vec::with_capacity(validators_yaml.len());
+    for (i, entry) in validators_yaml.iter().enumerate() {
+        let hex_str = entry
+            .as_str()
+            .ok_or_else(|| format!("GENESIS_VALIDATORS[{i}] is not a string"))?;
+        let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+        let pk_bytes: Vec<u8> = (0..hex_str.len())
+            .step_by(2)
+            .map(|j| {
+                u8::from_str_radix(&hex_str[j..j + 2], 16)
+                    .map_err(|err| format!("GENESIS_VALIDATORS[{i}] bad hex: {err}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if pk_bytes.len() != 52 {
+            return Err(format!(
+                "GENESIS_VALIDATORS[{i}] expected 52 bytes, got {}",
+                pk_bytes.len()
+            ));
+        }
+        validators.push(Validator {
+            pubkey: Bytes52::from_slice(&pk_bytes),
+            index: ValidatorIndex(Uint64(i as u64)),
+            balance: Uint64(0),
+        });
+    }
+    let validators = Validators::new(validators).expect("genesis validator set");
+    Ok(State::generate_genesis(Uint64(genesis_time), validators))
 }
 
 #[inline]

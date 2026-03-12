@@ -4,7 +4,7 @@ use std::{
 };
 
 use p3_field::{ExtensionField, Field};
-use rand::distr::{Distribution, StandardUniform};
+use rand::{RngExt, distr::{Distribution, StandardUniform}};
 
 /// A univariate polynomial represented in coefficient form.
 ///

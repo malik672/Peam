@@ -169,7 +169,8 @@ async fn ream_two_nodes_connection_smoke() {
     let config_1 = P2pConfig {
         listen_addr: addr_for(9000),
         bootnodes: vec![],
-        gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+        node_key_path: None,
+        gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
         allowed_topics: vec![],
         topic_scores: vec![],
         topic_validators: vec![],
@@ -190,7 +191,8 @@ async fn ream_two_nodes_connection_smoke() {
     let config_2 = P2pConfig {
         listen_addr: addr_for(9001),
         bootnodes: vec![node_1_addr],
-        gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+        node_key_path: None,
+        gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
         allowed_topics: vec![],
         topic_scores: vec![],
         topic_validators: vec![],
@@ -233,7 +235,8 @@ async fn ream_status_request_response_smoke() {
         P2pConfig {
             listen_addr: addr_for(9002),
             bootnodes: vec![],
-            gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+            node_key_path: None,
+            gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
             allowed_topics: vec![],
             topic_scores: vec![],
             topic_validators: vec![],
@@ -255,7 +258,8 @@ async fn ream_status_request_response_smoke() {
         P2pConfig {
             listen_addr: addr_for(9003),
             bootnodes: vec![node_1_addr],
-            gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+            node_key_path: None,
+            gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
             allowed_topics: vec![],
             topic_scores: vec![],
             topic_validators: vec![],
@@ -335,7 +339,8 @@ async fn ream_mdns_discovery_smoke() {
     let config_1 = P2pConfig {
         listen_addr: addr_for(9004),
         bootnodes: vec![],
-        gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+        node_key_path: None,
+        gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
         allowed_topics: vec![],
         topic_scores: vec![],
         topic_validators: vec![],
@@ -348,7 +353,8 @@ async fn ream_mdns_discovery_smoke() {
     let config_2 = P2pConfig {
         listen_addr: addr_for(9005),
         bootnodes: vec![],
-        gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+        node_key_path: None,
+        gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
         allowed_topics: vec![],
         topic_scores: vec![],
         topic_validators: vec![],
@@ -416,7 +422,8 @@ async fn ream_blocks_by_root_catchup_smoke() {
         P2pConfig {
             listen_addr: addr_for(9006),
             bootnodes: vec![],
-            gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+            node_key_path: None,
+            gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
             allowed_topics: vec![],
             topic_scores: vec![],
             topic_validators: vec![],
@@ -438,7 +445,8 @@ async fn ream_blocks_by_root_catchup_smoke() {
         P2pConfig {
             listen_addr: addr_for(9007),
             bootnodes: vec![node_1_addr],
-            gossipsub_topic: "leanconsensus/devnet2/block/ssz_snappy".to_string(),
+            node_key_path: None,
+            gossipsub_topic: "leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
             allowed_topics: vec![],
             topic_scores: vec![],
             topic_validators: vec![],
@@ -527,12 +535,7 @@ async fn ream_blocks_by_root_catchup_smoke() {
             break response;
         };
 
-        assert_eq!(response.blocks.data.len(), 1);
-        let signed = response
-            .blocks
-            .data
-            .first()
-            .expect("blocks_by_root response should contain one block");
+        let signed = &response;
         assert_eq!(Bytes32::from(signed.message.block.hash_tree_root()), *root);
 
         let mut state = state_1.write().expect("state_1 lock");

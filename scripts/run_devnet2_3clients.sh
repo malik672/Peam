@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="${TMP_ROOT:-$ROOT_DIR/.tmp}"
-RUN_ID="${RUN_ID:-devnet2_3clients_$(date +%s)}"
+RUN_ID="${RUN_ID:-devnet3_3clients_$(date +%s)}"
 RUN_DIR="$TMP_ROOT/$RUN_ID"
 LOG_DIR="$RUN_DIR/logs"
 
@@ -18,11 +18,12 @@ PEAM_METRICS_PORT="${PEAM_METRICS_PORT:-18080}"
 PEER1_METRICS_PORT="${PEER1_METRICS_PORT:-18081}"
 PEER2_METRICS_PORT="${PEER2_METRICS_PORT:-18082}"
 PEER3_METRICS_PORT="${PEER3_METRICS_PORT:-18083}"
-ALLOW_UNVERIFIED_AGGREGATE_PROOFS="${ALLOW_UNVERIFIED_AGGREGATE_PROOFS:-1}"
 
 VALIDATOR_COUNT="${VALIDATOR_COUNT:-3}"
 NODE_MAP="${NODE_MAP:-peam_0:0,peer1_0:1,peer2_0:2}"
 PEAM_VALIDATOR_INDEX="${PEAM_VALIDATOR_INDEX:-0}"
+ATTESTATION_COMMITTEE_COUNT="${ATTESTATION_COMMITTEE_COUNT:-1}"
+PEAM_IS_AGGREGATOR="${PEAM_IS_AGGREGATOR:-1}"
 
 BOOTNODES="${BOOTNODES:-}"
 TRUSTED_PEERS="${TRUSTED_PEERS:-}"
@@ -32,22 +33,77 @@ PEER1_CMD="${PEER1_CMD:-}"
 PEER2_CMD="${PEER2_CMD:-}"
 PEER3_CMD="${PEER3_CMD:-}"
 
-# Topic domain:
-# - devnet2 by default
-# - auto-fallback to devnet0 when EthLambda is part of the run, unless user overrides.
-TOPIC_DOMAIN="${TOPIC_DOMAIN:-}"
-if [[ -z "$TOPIC_DOMAIN" ]]; then
-  if [[ "$PEER1_CMD $PEER2_CMD $PEER3_CMD" == *ethlambda* ]]; then
-    TOPIC_DOMAIN="devnet0"
-  else
-    TOPIC_DOMAIN="devnet2"
-  fi
-fi
+# Topic domain defaults to the canonical devnet3 namespace.
+TOPIC_DOMAIN="${TOPIC_DOMAIN:-devnet3}"
 
-BLOCK_TOPIC="/leanconsensus/$TOPIC_DOMAIN/block/ssz_snappy"
-ATTESTATION_SUBNET_TOPIC="/leanconsensus/$TOPIC_DOMAIN/attestation_0/ssz_snappy"
-ATTESTATION_TOPIC="/leanconsensus/$TOPIC_DOMAIN/attestation/ssz_snappy"
+BLOCK_TOPIC="/leanconsensus/$TOPIC_DOMAIN/blocks/ssz_snappy"
 AGGREGATION_TOPIC="/leanconsensus/$TOPIC_DOMAIN/aggregation/ssz_snappy"
+if ! [[ "$ATTESTATION_COMMITTEE_COUNT" =~ ^[0-9]+$ ]] || [[ "$ATTESTATION_COMMITTEE_COUNT" -le 0 ]]; then
+  echo "Invalid ATTESTATION_COMMITTEE_COUNT=$ATTESTATION_COMMITTEE_COUNT (must be integer > 0)"
+  exit 2
+fi
+PEAM_ATTESTATION_SUBNET_ID="$(( PEAM_VALIDATOR_INDEX % ATTESTATION_COMMITTEE_COUNT ))"
+ATTESTATION_SUBNET_TOPIC="/leanconsensus/$TOPIC_DOMAIN/attestation_${PEAM_ATTESTATION_SUBNET_ID}/ssz_snappy"
+
+normalize_bool_literal() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) printf 'true\n' ;;
+    0|false|FALSE|no|NO|off|OFF) printf 'false\n' ;;
+    *)
+      echo "Invalid boolean value: $1"
+      exit 2
+      ;;
+  esac
+}
+
+resolve_local_node_name_from_map() {
+  local validator_index="$1"
+  local node_map="$2"
+  local entry name idx
+
+  IFS=',' read -r -a entries <<< "$node_map"
+  for entry in "${entries[@]}"; do
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [[ -z "$entry" ]] && continue
+    name="${entry%%:*}"
+    idx="${entry#*:}"
+    if [[ "$idx" == "$validator_index" ]]; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+set_validator_config_is_aggregator() {
+  local validator_cfg="$1"
+  local node_name="$2"
+  local bool_literal="$3"
+
+  [[ -f "$validator_cfg" ]] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v node="$node_name" -v agg="$bool_literal" '
+    /^  - name: / {
+      current = $3
+      gsub(/"/, "", current)
+      print
+      next
+    }
+    current == node && /^    is_aggregator:/ {
+      print "    is_aggregator: " agg
+      next
+    }
+    current == node && /^      is_aggregator:/ {
+      print "      is_aggregator: " agg
+      next
+    }
+    { print }
+  ' "$validator_cfg" > "$tmp"
+  mv "$tmp" "$validator_cfg"
+}
 
 mkdir -p "$LOG_DIR" "$RUN_DIR/peam_data"
 
@@ -114,8 +170,18 @@ echo "genesis_time=$GENESIS_TIME"
   --out "$RUN_DIR" \
   --genesis-time "$GENESIS_TIME" \
   --validators "$VALIDATOR_COUNT" \
+  --attestation-subnets "$ATTESTATION_COMMITTEE_COUNT" \
   --node-map "$NODE_MAP" \
   >"$LOG_DIR/registry_gen.log" 2>&1
+
+PEAM_IS_AGGREGATOR_BOOL="$(normalize_bool_literal "$PEAM_IS_AGGREGATOR")"
+PEAM_NODE_NAME="$(resolve_local_node_name_from_map "$PEAM_VALIDATOR_INDEX" "$NODE_MAP" || true)"
+if [[ -n "$PEAM_NODE_NAME" ]]; then
+  set_validator_config_is_aggregator \
+    "$RUN_DIR/validator-config.yaml" \
+    "$PEAM_NODE_NAME" \
+    "$PEAM_IS_AGGREGATOR_BOOL"
+fi
 
 write_node_key_from_validator_config() {
   local node_name="$1"
@@ -145,19 +211,34 @@ write_node_key_from_validator_config() {
   fi
 }
 
-# Interop helpers: Ream/EthLambda commonly read secp256k1 keys from files.
 # Generator outputs validator-config.yaml; derive key files when missing.
 write_node_key_from_validator_config "peer1_0" "$RUN_DIR/peer1_node.key"
 write_node_key_from_validator_config "peer2_0" "$RUN_DIR/peer2_node.key"
 write_node_key_from_validator_config "peer3_0" "$RUN_DIR/peer3_node.key"
 
-# EthLambda expects nodes.yaml (list of ENR strings). For local interop runs,
-# an empty list is valid and allows inbound-only peering via other clients.
 if [[ ! -f "$RUN_DIR/nodes.yaml" ]]; then
   printf '[]\n' > "$RUN_DIR/nodes.yaml"
 fi
 
 PEAM_CONFIG="$RUN_DIR/peam_node.conf"
+ALLOWED_TOPICS=("$BLOCK_TOPIC" "$AGGREGATION_TOPIC")
+TOPIC_SCORES=("$BLOCK_TOPIC:2" "$AGGREGATION_TOPIC:1")
+TOPIC_VALIDATORS=("$BLOCK_TOPIC=block" "$AGGREGATION_TOPIC=aggregation")
+if [[ "$PEAM_IS_AGGREGATOR_BOOL" == "true" ]]; then
+  for ((subnet=0; subnet<ATTESTATION_COMMITTEE_COUNT; subnet++)); do
+    topic="/leanconsensus/$TOPIC_DOMAIN/attestation_${subnet}/ssz_snappy"
+    ALLOWED_TOPICS+=("$topic")
+    TOPIC_SCORES+=("$topic:1")
+    TOPIC_VALIDATORS+=("$topic=attestation")
+  done
+else
+  ALLOWED_TOPICS+=("$ATTESTATION_SUBNET_TOPIC")
+  TOPIC_SCORES+=("$ATTESTATION_SUBNET_TOPIC:1")
+  TOPIC_VALIDATORS+=("$ATTESTATION_SUBNET_TOPIC=attestation")
+fi
+ALLOWED_TOPICS_CSV="$(IFS=,; echo "${ALLOWED_TOPICS[*]}")"
+TOPIC_SCORES_CSV="$(IFS=,; echo "${TOPIC_SCORES[*]}")"
+TOPIC_VALIDATORS_CSV="$(IFS=,; echo "${TOPIC_VALIDATORS[*]}")"
 cat >"$PEAM_CONFIG" <<EOF
 genesis_time=$GENESIS_TIME
 discovery_interval_secs=5
@@ -166,12 +247,13 @@ score_decay_amount=1
 ban_threshold=-100
 bootnodes=$BOOTNODES
 trusted_peers=$TRUSTED_PEERS
-allowed_topics=$BLOCK_TOPIC,$ATTESTATION_SUBNET_TOPIC,$ATTESTATION_TOPIC,$AGGREGATION_TOPIC
-topic_scores=$BLOCK_TOPIC:2,$ATTESTATION_SUBNET_TOPIC:1,$ATTESTATION_TOPIC:1,$AGGREGATION_TOPIC:1
-topic_validators=$BLOCK_TOPIC=block,$ATTESTATION_SUBNET_TOPIC=attestation,$ATTESTATION_TOPIC=attestation,$AGGREGATION_TOPIC=aggregation
+allowed_topics=$ALLOWED_TOPICS_CSV
+topic_scores=$TOPIC_SCORES_CSV
+topic_validators=$TOPIC_VALIDATORS_CSV
 max_gossip_bytes=2000000
 max_reqresp_bytes=4000000
-allow_unverified_aggregate_proofs=$ALLOW_UNVERIFIED_AGGREGATE_PROOFS
+is_aggregator=$PEAM_IS_AGGREGATOR_BOOL
+attestation_committee_count=$ATTESTATION_COMMITTEE_COUNT
 validator_count=$VALIDATOR_COUNT
 local_validator_index=$PEAM_VALIDATOR_INDEX
 storage_dir=store
@@ -193,6 +275,7 @@ if [[ "$START_PEER1" == "1" ]]; then
     export DEVNET_VALIDATOR_COUNT="$VALIDATOR_COUNT"
     export DEVNET_METRICS_PORT="$PEER1_METRICS_PORT"
     export DEVNET_TOPIC_DOMAIN="$TOPIC_DOMAIN"
+    export DEVNET_ATTESTATION_COMMITTEE_COUNT="$ATTESTATION_COMMITTEE_COUNT"
     eval "$PEER1_CMD"
   ) >"$LOG_DIR/peer1.log" 2>&1 &
   PEER1_PID=$!
@@ -207,6 +290,7 @@ if [[ "$START_PEER2" == "1" ]]; then
     export DEVNET_VALIDATOR_COUNT="$VALIDATOR_COUNT"
     export DEVNET_METRICS_PORT="$PEER2_METRICS_PORT"
     export DEVNET_TOPIC_DOMAIN="$TOPIC_DOMAIN"
+    export DEVNET_ATTESTATION_COMMITTEE_COUNT="$ATTESTATION_COMMITTEE_COUNT"
     eval "$PEER2_CMD"
   ) >"$LOG_DIR/peer2.log" 2>&1 &
   PEER2_PID=$!
@@ -221,6 +305,7 @@ if [[ "$START_PEER3" == "1" ]]; then
     export DEVNET_VALIDATOR_COUNT="$VALIDATOR_COUNT"
     export DEVNET_METRICS_PORT="$PEER3_METRICS_PORT"
     export DEVNET_TOPIC_DOMAIN="$TOPIC_DOMAIN"
+    export DEVNET_ATTESTATION_COMMITTEE_COUNT="$ATTESTATION_COMMITTEE_COUNT"
     eval "$PEER3_CMD"
   ) >"$LOG_DIR/peer3.log" 2>&1 &
   PEER3_PID=$!

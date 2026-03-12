@@ -6,11 +6,25 @@ use crate::types::bitlist::BitList;
 use crate::types::bytes::{ByteList, Bytes32, Bytes3112};
 use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum number of validators tracked by aggregation bitfields.
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 4_096;
 /// Number of attestation committees/subnets used by gossip validation.
 pub const ATTESTATION_COMMITTEE_COUNT: u64 = 1;
+static ATTESTATION_COMMITTEE_COUNT_RUNTIME: AtomicU64 = AtomicU64::new(ATTESTATION_COMMITTEE_COUNT);
+
+#[inline]
+pub fn attestation_committee_count() -> u64 {
+    ATTESTATION_COMMITTEE_COUNT_RUNTIME
+        .load(Ordering::Relaxed)
+        .max(1)
+}
+
+#[inline]
+pub fn set_attestation_committee_count(count: u64) {
+    ATTESTATION_COMMITTEE_COUNT_RUNTIME.store(count.max(1), Ordering::Relaxed);
+}
 
 /// Byte length of a post-quantum aggregate signature.
 pub const SIGNATURE_BYTES: usize = 3_112;

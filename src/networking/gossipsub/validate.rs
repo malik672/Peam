@@ -12,11 +12,10 @@
 //! the p2p layer scores and propagates the message.
 
 use crate::containers::attestation::{
-    ATTESTATION_COMMITTEE_COUNT, AttestationData, SignedAggregatedAttestation, SignedAttestation,
-    VALIDATOR_REGISTRY_LIMIT,
+    AttestationData, SignedAggregatedAttestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
+    attestation_committee_count,
 };
 use crate::containers::block::SignedBlockWithAttestation;
-use crate::crypto::pq;
 use crate::networking::gossipsub::context::GossipContext;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::types::bitlist::BitList;
@@ -39,9 +38,6 @@ pub enum ValidationResult {
 pub fn validate_basic_message(message: &LeanGossipsubMessage) -> ValidationResult {
     match message {
         LeanGossipsubMessage::Block(block) => validate_block_basic(&block.block),
-        LeanGossipsubMessage::Attestation(attestation) => {
-            validate_attestation_basic(&attestation.attestation)
-        }
         LeanGossipsubMessage::AggregatedAttestation(attestation) => {
             validate_aggregated_attestation_basic(&attestation.attestation)
         }
@@ -62,9 +58,6 @@ pub fn validate_with_context(
 ) -> ValidationResult {
     match message {
         LeanGossipsubMessage::Block(block) => validate_block_with_context(&block.block, context),
-        LeanGossipsubMessage::Attestation(attestation) => {
-            validate_attestation_with_context(&attestation.attestation, context)
-        }
         LeanGossipsubMessage::AggregatedAttestation(attestation) => {
             validate_aggregated_attestation_with_context(&attestation.attestation, context)
         }
@@ -94,12 +87,6 @@ fn validate_block_basic(block: &SignedBlockWithAttestation) -> ValidationResult 
     ValidationResult::Accept
 }
 
-/// Basic attestation validation: delegates to [`validate_attestation_fields`]
-/// with no slot upper bound.
-fn validate_attestation_basic(attestation: &SignedAttestation) -> ValidationResult {
-    validate_attestation_fields(&attestation.message, None)
-}
-
 /// Basic aggregated-attestation validation: requires at least one participant and
 /// validates attestation field geometry.
 fn validate_aggregated_attestation_basic(
@@ -118,7 +105,7 @@ fn validate_subnet_attestation_basic(
     subnet_id: u64,
     attestation: &SignedAttestation,
 ) -> ValidationResult {
-    let committee_count = ATTESTATION_COMMITTEE_COUNT;
+    let committee_count = attestation_committee_count();
     let expected_subnet = if committee_count <= 1 {
         0
     } else {
@@ -164,7 +151,7 @@ fn validate_block_with_context(
     context: &dyn GossipContext,
 ) -> ValidationResult {
     let parent_known = context.knows_block_root(&block.message.block.parent_root);
-    if !parent_known && !allow_unknown_roots_in_interop() {
+    if !parent_known {
         return ValidationResult::Ignore("block parent root unknown locally".to_string());
     }
     if let Some(finalized_slot) = context.finalized_slot() {
@@ -193,10 +180,9 @@ fn validate_block_with_context(
         if !matches!(check, ValidationResult::Accept) {
             return check;
         }
-        if !allow_unknown_roots_in_interop()
-            && (!context.knows_block_root(&att.data.head.root)
-                || !context.knows_block_root(&att.data.source.root)
-                || !context.knows_block_root(&att.data.target.root))
+        if !context.knows_block_root(&att.data.head.root)
+            || !context.knows_block_root(&att.data.source.root)
+            || !context.knows_block_root(&att.data.target.root)
         {
             return ValidationResult::Ignore(
                 "attestation references unknown chain roots".to_string(),
@@ -235,10 +221,9 @@ fn validate_attestation_data_with_context(
     if msg.head.slot < msg.target.slot {
         return ValidationResult::Reject("attestation head below target".to_string());
     }
-    if !allow_unknown_roots_in_interop()
-        && (!context.knows_block_root(&msg.head.root)
-            || !context.knows_block_root(&msg.source.root)
-            || !context.knows_block_root(&msg.target.root))
+    if !context.knows_block_root(&msg.head.root)
+        || !context.knows_block_root(&msg.source.root)
+        || !context.knows_block_root(&msg.target.root)
     {
         return ValidationResult::Ignore("attestation references unknown chain roots".to_string());
     }
@@ -255,11 +240,6 @@ fn validate_attestation_data_with_context(
         }
     }
     ValidationResult::Accept
-}
-
-#[inline]
-fn allow_unknown_roots_in_interop() -> bool {
-    pq::allow_unverified_aggregate_proofs()
 }
 
 #[inline]

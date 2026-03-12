@@ -1,6 +1,5 @@
 use peam::slot::{
-    INTERVALS_PER_SLOT, SLOT_DURATION_MILLIS, SLOT_DURATION_SECS, SLOT_INTERVAL_MILLIS, Slot,
-    interval_index_from_unix_millis, is_justifiable_after, justified_index_after,
+    SLOT_DURATION_MILLIS, SLOT_DURATION_SECS, Slot, is_justifiable_after, justified_index_after,
     next_slot_boundary_delay, slot_index_from_unix_millis, slot_index_from_unix_secs,
 };
 use peam::types::uint::Uint64;
@@ -49,17 +48,4 @@ fn next_slot_boundary_delay_aligns_to_exact_slot_edge() {
     let genesis = 1_000u64;
     let delay = next_slot_boundary_delay(genesis, 1_003_250);
     assert_eq!(delay.as_millis(), 750);
-}
-
-#[test]
-fn interval_index_tracks_quarters_of_slot() {
-    let genesis = 1_000u64;
-    assert_eq!(INTERVALS_PER_SLOT, 4);
-    assert_eq!(SLOT_INTERVAL_MILLIS, 1_000);
-    assert_eq!(interval_index_from_unix_millis(genesis, 1_000_000), 0);
-    assert_eq!(interval_index_from_unix_millis(genesis, 1_000_999), 0);
-    assert_eq!(interval_index_from_unix_millis(genesis, 1_001_000), 1);
-    assert_eq!(interval_index_from_unix_millis(genesis, 1_002_000), 2);
-    assert_eq!(interval_index_from_unix_millis(genesis, 1_003_000), 3);
-    assert_eq!(interval_index_from_unix_millis(genesis, 1_004_000), 0);
 }

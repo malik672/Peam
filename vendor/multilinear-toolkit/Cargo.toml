@@ -19,7 +19,7 @@ p3-matrix = { git = "https://github.com/TomWambsgans/Plonky3.git", branch = "lea
 p3-koala-bear = { git = "https://github.com/TomWambsgans/Plonky3.git", branch = "lean-vm-simple" }
 
 rayon = "*"
-rand = "0.9"
+rand = "0.10"
 itertools = "*"
 tracing = "*"
 

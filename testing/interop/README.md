@@ -8,11 +8,11 @@ This folder tracks the minimal workflow to run `lean_eth` against a local multi-
 - Basic health checks: gossip traffic, req/resp, slot/finality movement.
 
 ## 1) Create node config
-Use the template at `/Users/malik/Desktop/mc2/lean_eth/lean_eth/testing/interop/lean_eth_node.conf` and set:
+Use the template at `/Users/malik/Desktop/mc2/lean_eth/Peam/testing/interop/lean_eth_node.conf` and set:
 - `bootnodes`
 - `trusted_peers`
 - `genesis_time` (must match the devnet)
-- `validator_count` (set to devnet target, e.g. `400` for devnet-2)
+- `validator_count` (set to the devnet target, e.g. `400` for devnet-3)
 - `allowed_topics` (must match devnet topics)
 
 ## 2) Run node

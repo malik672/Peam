@@ -9,7 +9,7 @@
 //! - [`SimpleGossipVerifier`] — performs real PQ signature verification using
 //!   the validator public-key registry.
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 
 use crate::containers::attestation::{
     AggregatedSignatureProof, Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
@@ -153,59 +153,16 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
         if participants.is_empty() {
             return false;
         }
-        if crypto::pq::is_placeholder_aggregate_proof(proof.proof_data.as_slice()) {
-            log_placeholder_aggregate_proof_once("gossip");
-            return true;
-        }
         let root = attestation.data.hash_tree_root();
         let epoch = attestation.data.slot.0.0 as u32;
-        let verify_result = crypto::pq::verify_aggregate_signature(
+        crypto::pq::verify_aggregate_signature(
             &participants,
             &root,
             proof.proof_data.as_slice(),
             epoch,
-        );
-        match verify_result {
-            Ok(()) => true,
-            Err(err) => {
-                if crypto::pq::should_accept_unverified_aggregate_proof(&err) {
-                    log_unverified_aggregate_proof_once(
-                        "gossip",
-                        &err,
-                        proof.proof_data.as_slice().len(),
-                    );
-                    true
-                } else {
-                    false
-                }
-            }
-        }
+        )
+        .is_ok()
     }
-}
-
-#[inline]
-fn log_placeholder_aggregate_proof_once(context: &'static str) {
-    static PLACEHOLDER_PROOF_WARN_ONCE: Once = Once::new();
-    PLACEHOLDER_PROOF_WARN_ONCE.call_once(|| {
-        warn!(
-            context,
-            min_bytes = crypto::pq::MIN_VERIFIABLE_AGGREGATE_PROOF_BYTES,
-            "accepting placeholder aggregate proof bytes for interop"
-        );
-    });
-}
-
-#[inline]
-fn log_unverified_aggregate_proof_once(context: &'static str, err: &str, proof_bytes: usize) {
-    static UNVERIFIED_PROOF_WARN_ONCE: Once = Once::new();
-    UNVERIFIED_PROOF_WARN_ONCE.call_once(|| {
-        warn!(
-            context,
-            err = %err,
-            proof_bytes,
-            "accepting unverified aggregate proof under interop policy"
-        );
-    });
 }
 
 /// Collects the public keys of all participants indicated by `participants`.
@@ -332,6 +289,7 @@ pub fn validate_gossip(
                     warn!(
                         "gossip block attestation participants mismatch at index={idx}: proof bits differ from attestation bits"
                     );
+                    return false;
                 }
                 if !verifier.verify_attestation_signature(attestation, proof) {
                     warn!(
@@ -428,7 +386,11 @@ mod tests {
 
     #[test]
     fn simple_verifier_accepts_placeholder_aggregate_proof() {
-        let verifier = SimpleGossipVerifier::new(vec![Bytes52::from([0u8; 52])]);
+        // Avoid `setup_aggregate_verifier` in tests; placeholder path does not
+        // require aggregate verifier initialization.
+        let verifier = SimpleGossipVerifier {
+            pubkeys: vec![Bytes52::from([0u8; 52])],
+        };
         let bits = BitList::new(vec![true]).expect("bits");
         let attestation = Attestation {
             aggregation_bits: bits.clone(),
@@ -444,7 +406,9 @@ mod tests {
 
     #[test]
     fn simple_verifier_rejects_invalid_non_placeholder_aggregate_proof() {
-        let verifier = SimpleGossipVerifier::new(vec![Bytes52::from([0u8; 52])]);
+        let verifier = SimpleGossipVerifier {
+            pubkeys: vec![Bytes52::from([0u8; 52])],
+        };
         let bits = BitList::new(vec![true]).expect("bits");
         let attestation = Attestation {
             aggregation_bits: bits.clone(),

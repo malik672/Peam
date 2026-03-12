@@ -74,8 +74,6 @@ pub struct RecoveryReport {
     pub loaded_signed_blocks: usize,
     /// Number of corrupt DB/index entries skipped during recovery.
     pub skipped_corrupt: usize,
-    /// Number of unknown on-disk legacy artifacts skipped.
-    pub skipped_unknown_version: usize,
 }
 
 /// The core storage interface shared by [`MemoryStore`] and [`FileStore`].

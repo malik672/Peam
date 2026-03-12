@@ -51,6 +51,12 @@ impl AtomicCounter {
     }
 }
 
+impl Default for AtomicCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AtomicHistogram
 // ---------------------------------------------------------------------------
@@ -264,6 +270,8 @@ pub struct MetricsRegistry {
 
     // -- Validator --
     pub is_aggregator: AtomicBool,
+    pub attestation_committee_subnet: AtomicU64,
+    pub attestation_committee_count: AtomicU64,
 
     // -- Network peer connections --
     pub peer_connection_inbound: AtomicCounter,
@@ -316,12 +324,20 @@ impl MetricsRegistry {
             block_import_end_to_end_time: AtomicHistogram::new(BUCKETS_STATE_TRANSITION),
 
             is_aggregator: AtomicBool::new(false),
+            attestation_committee_subnet: AtomicU64::new(0),
+            attestation_committee_count: AtomicU64::new(0),
 
             peer_connection_inbound: AtomicCounter::new(),
             peer_connection_outbound: AtomicCounter::new(),
             peer_disconnection_inbound: AtomicCounter::new(),
             peer_disconnection_outbound: AtomicCounter::new(),
         }
+    }
+}
+
+impl Default for MetricsRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -662,6 +678,10 @@ fn render_metrics(
     } else {
         0
     };
+    let attestation_subnet = registry
+        .attestation_committee_subnet
+        .load(Ordering::Relaxed);
+    let attestation_subnet_count = registry.attestation_committee_count.load(Ordering::Relaxed);
 
     let mut out = String::with_capacity(8192);
 
@@ -717,8 +737,16 @@ fn render_metrics(
 
     // -- Validator --
     write_gauge_metric(&mut out, "lean_is_aggregator", is_agg);
-    write_gauge_metric(&mut out, "lean_attestation_committee_subnet", 0);
-    write_gauge_metric(&mut out, "lean_attestation_committee_count", 0);
+    write_gauge_metric(
+        &mut out,
+        "lean_attestation_committee_subnet",
+        attestation_subnet,
+    );
+    write_gauge_metric(
+        &mut out,
+        "lean_attestation_committee_count",
+        attestation_subnet_count,
+    );
 
     // -- Network --
     write_gauge_metric(&mut out, "lean_connected_peers", peer_count);

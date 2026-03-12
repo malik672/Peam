@@ -1,4 +1,0 @@
-/target
-.vscode
-/docs/benchmark_graphs/.venv
-crates/rec_aggregation/test_data

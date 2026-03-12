@@ -6,7 +6,6 @@ use crate::containers::attestation::Attestation;
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
-use crate::crypto::pq;
 use crate::slot::Slot;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
@@ -550,60 +549,7 @@ fn resolve_vote_root(
     attestation: &Attestation,
 ) -> Option<Bytes32> {
     let head_root = attestation.data.head.root;
-    if blocks.contains_key(&head_root) {
-        return Some(head_root);
-    }
-    if !pq::allow_unverified_aggregate_proofs() {
-        return None;
-    }
-
-    // Interop fallback: if the peer's head root is not byte-identical but points to
-    // the same slot, map the vote onto a local block at that slot.
-    let head_slot = attestation.data.head.slot.0.0;
-    let mut candidates = blocks
-        .iter()
-        .filter_map(|(root, block)| (block.message.block.slot.0.0 == head_slot).then_some(*root))
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return None;
-    }
-    if candidates.len() == 1 {
-        return candidates.pop();
-    }
-
-    let target_root = attestation.data.target.root;
-    if blocks.contains_key(&target_root) {
-        for candidate in candidates.iter().copied() {
-            if is_descendant_in_blocks(blocks, candidate, target_root) {
-                return Some(candidate);
-            }
-        }
-    }
-
-    candidates.sort_by(|a, b| a.as_array().cmp(&b.as_array()));
-    candidates.into_iter().next()
-}
-
-#[inline]
-fn is_descendant_in_blocks(
-    blocks: &RapidHashMap<Bytes32, SignedBlockWithAttestation>,
-    mut node: Bytes32,
-    ancestor: Bytes32,
-) -> bool {
-    if node == ancestor {
-        return true;
-    }
-    while let Some(block) = blocks.get(&node) {
-        let parent = block.message.block.parent_root;
-        if parent == ancestor {
-            return true;
-        }
-        if parent == Bytes32::zero() {
-            return false;
-        }
-        node = parent;
-    }
-    false
+    blocks.contains_key(&head_root).then_some(head_root)
 }
 
 #[inline]

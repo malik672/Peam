@@ -8,13 +8,17 @@ pub const SLOT_DURATION_SECS: u64 = 4;
 /// Target slot duration in milliseconds.
 pub const SLOT_DURATION_MILLIS: u128 = (SLOT_DURATION_SECS as u128) * 1_000;
 /// Number of fork-choice processing intervals within a slot.
-pub const INTERVALS_PER_SLOT: u64 = 4;
+pub const INTERVALS_PER_SLOT: u64 = 5;
 /// Slot interval duration in milliseconds.
 pub const SLOT_INTERVAL_MILLIS: u128 = SLOT_DURATION_MILLIS / (INTERVALS_PER_SLOT as u128);
 /// Interval index at which new gossip attestations are promoted to active votes.
-pub const ACCEPTANCE_INTERVAL_INDEX: u64 = 3;
+pub const ACCEPTANCE_INTERVAL_INDEX: u64 = 4;
 /// Interval index at which safe-target recomputation should run.
-pub const SAFE_TARGET_INTERVAL_INDEX: u64 = 2;
+pub const SAFE_TARGET_INTERVAL_INDEX: u64 = 3;
+/// Interval index at which committee signature aggregation should run.
+pub const AGGREGATION_INTERVAL_INDEX: u64 = 2;
+/// Interval index at which attesters should produce attestations.
+pub const ATTESTATION_INTERVAL_INDEX: u64 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Slot(pub Uint64);

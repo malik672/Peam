@@ -25,8 +25,9 @@ use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::MetricsRegistry;
 use crate::networking::P2pCommand;
 use crate::slot::{
-    ACCEPTANCE_INTERVAL_INDEX, INTERVALS_PER_SLOT, SAFE_TARGET_INTERVAL_INDEX, SLOT_DURATION_SECS,
-    Slot, interval_index_from_unix_millis, slot_index_from_unix_millis, unix_now_millis,
+    ACCEPTANCE_INTERVAL_INDEX, AGGREGATION_INTERVAL_INDEX, ATTESTATION_INTERVAL_INDEX,
+    INTERVALS_PER_SLOT, SAFE_TARGET_INTERVAL_INDEX, SLOT_DURATION_SECS, Slot,
+    interval_index_from_unix_millis, slot_index_from_unix_millis, unix_now_millis,
 };
 use crate::ssz::{HashTreeRoot, SszEncode};
 use crate::storage::FileStore;
@@ -36,6 +37,12 @@ use crate::types::collections::SszList;
 use crate::types::uint::Uint64;
 
 use super::head::{aggregate_attestations, proposal_head_from_pending};
+
+#[derive(Clone)]
+pub struct PendingBlockAttestation {
+    pub attestation: Attestation,
+    pub proof: Option<AggregatedSignatureProof>,
+}
 
 #[derive(Clone)]
 pub(super) struct DevnetValidatorKeyMaterial {
@@ -122,7 +129,6 @@ pub(super) fn spawn_consensus_lifecycle_task(
     genesis_time_secs: u64,
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     pending_attestations: Arc<RwLock<Vec<Attestation>>>,
-    pending_block_attestations: Arc<RwLock<Vec<Attestation>>>,
     metrics: Arc<MetricsRegistry>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -147,10 +153,6 @@ pub(super) fn spawn_consensus_lifecycle_task(
                 metrics
                     .fc_committee_aggregation_time
                     .observe_duration(agg_start);
-                pending_block_attestations
-                    .write()
-                    .expect("pending block attestations lock")
-                    .extend(aggregated.iter().cloned());
             }
             let mut fc_guard = fork_choice.write().expect("fork choice lock");
             let Some(fc) = fc_guard.as_mut() else {
@@ -162,6 +164,7 @@ pub(super) fn spawn_consensus_lifecycle_task(
                     unresolved.push(attestation.clone());
                 }
             }
+            let finalized_slot = fc.latest_finalized().slot;
             if interval == SAFE_TARGET_INTERVAL_INDEX {
                 fc.update_safe_target();
             }
@@ -170,6 +173,7 @@ pub(super) fn spawn_consensus_lifecycle_task(
             }
             drop(fc_guard);
             if !unresolved.is_empty() {
+                unresolved.retain(|att| att.data.target.slot > finalized_slot);
                 pending_attestations
                     .write()
                     .expect("pending attestations lock")
@@ -179,16 +183,48 @@ pub(super) fn spawn_consensus_lifecycle_task(
     })
 }
 
+/// Filters loaded keys against the genesis state's validator public keys.
+///
+/// Only keys whose derived/loaded public key matches the corresponding
+/// validator's public key in the genesis state are retained.  Keys that
+/// don't match are discarded so Peam never signs with a key that other
+/// clients cannot verify against the shared genesis config.
 #[inline]
-pub(super) fn apply_devnet_pq_validator_pubkeys(
-    state: &mut State,
-    key_cache: &DevnetValidatorKeyCache,
-) {
-    for (validator, maybe_key) in state.validators.data.iter_mut().zip(key_cache.iter()) {
-        if let Some(key) = maybe_key {
-            validator.pubkey = key.pubkey;
+pub(super) fn filter_keys_against_genesis(
+    state: &State,
+    key_cache: DevnetValidatorKeyCache,
+) -> DevnetValidatorKeyCache {
+    let mut filtered: Vec<Option<DevnetValidatorKeyMaterial>> = Vec::with_capacity(key_cache.len());
+    let mut kept = 0usize;
+    let mut dropped = 0usize;
+    for (i, maybe_key) in key_cache.iter().enumerate() {
+        let Some(key) = maybe_key else {
+            filtered.push(None);
+            continue;
+        };
+        let matches = state
+            .validators
+            .data
+            .get(i)
+            .map_or(false, |v| v.pubkey == key.pubkey);
+        if matches {
+            filtered.push(Some(key.clone()));
+            kept += 1;
+        } else {
+            tracing::warn!(
+                validator_index = i,
+                "loaded key pubkey does not match genesis state; dropping"
+            );
+            filtered.push(None);
+            dropped += 1;
         }
     }
+    tracing::info!(
+        kept,
+        dropped,
+        "validator key filtering against genesis state"
+    );
+    Arc::new(filtered)
 }
 
 #[inline]
@@ -201,8 +237,10 @@ pub(super) fn spawn_signed_attestation_task(
     state: Arc<RwLock<State>>,
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     pending_attestations: Arc<RwLock<Vec<Attestation>>>,
+    pending_individual_attestations: Arc<RwLock<Vec<SignedAttestation>>>,
     devnet_validator_keys: DevnetValidatorKeyCache,
     metrics: Arc<MetricsRegistry>,
+    is_aggregator: bool,
 ) -> Option<JoinHandle<()>> {
     let Some(Some(local_key)) = devnet_validator_keys.get(local_validator_index) else {
         warn!("failed to get local signing key from cache");
@@ -224,14 +262,20 @@ pub(super) fn spawn_signed_attestation_task(
     }
 
     Some(tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(SLOT_DURATION_SECS));
+        let interval_millis = ((SLOT_DURATION_SECS * 1_000) / INTERVALS_PER_SLOT).max(1);
+        let mut ticker = tokio::time::interval(Duration::from_millis(interval_millis));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut last_signed_slot: Option<u64> = None;
 
         loop {
             ticker.tick().await;
             let Some(now_millis) = unix_now_millis() else {
                 continue;
             };
+            let interval = interval_index_from_unix_millis(genesis_time_secs, now_millis);
+            if interval != ATTESTATION_INTERVAL_INDEX {
+                continue;
+            }
             let mut slot = slot_index_from_unix_millis(genesis_time_secs, now_millis);
 
             let att_data = {
@@ -284,9 +328,12 @@ pub(super) fn spawn_signed_attestation_task(
                     source,
                 }
             };
+            if last_signed_slot == Some(slot) {
+                continue;
+            }
 
             let message_root = att_data.hash_tree_root();
-            let epoch = slot as u64;
+            let epoch = slot;
             if !local_secret_key.get_activation_interval().contains(&epoch) {
                 warn!(
                     "skipping attestation signing: key not active at epoch {}",
@@ -319,23 +366,17 @@ pub(super) fn spawn_signed_attestation_task(
                     continue;
                 }
             };
-            let mut bits = vec![false; local_validator_index + 1];
-            bits[local_validator_index] = true;
-            if let Ok(bitlist) = BitList::new(bits) {
-                pending_attestations
-                    .write()
-                    .expect("pending attestations lock")
-                    .push(Attestation {
-                        aggregation_bits: bitlist,
-                        data: att_data.clone(),
-                    });
-            }
-
             let signed = SignedAttestation {
                 validator_id: Uint64(local_validator_index as u64),
                 message: att_data,
                 signature,
             };
+            if is_aggregator {
+                pending_individual_attestations
+                    .write()
+                    .expect("pending individual attestations lock")
+                    .push(signed.clone());
+            }
             let payload = GossipAttestation {
                 attestation: signed,
             }
@@ -346,6 +387,89 @@ pub(super) fn spawn_signed_attestation_task(
                     payload,
                 })
                 .await;
+            last_signed_slot = Some(slot);
+        }
+    }))
+}
+
+#[inline]
+pub(super) fn spawn_attestation_aggregation_task(
+    genesis_time_secs: u64,
+    aggregation_topic: String,
+    p2p_tx: tokio::sync::mpsc::Sender<P2pCommand>,
+    pending_individual_attestations: Arc<RwLock<Vec<SignedAttestation>>>,
+    pending_attestations: Arc<RwLock<Vec<Attestation>>>,
+    pending_block_attestations: Arc<RwLock<Vec<PendingBlockAttestation>>>,
+    devnet_validator_keys: DevnetValidatorKeyCache,
+    local_validator_index: usize,
+    attestation_committee_count: u64,
+    metrics: Arc<MetricsRegistry>,
+) -> Option<JoinHandle<()>> {
+    Some(tokio::spawn(async move {
+        let interval_millis = ((SLOT_DURATION_SECS * 1_000) / INTERVALS_PER_SLOT).max(1);
+        let mut ticker = tokio::time::interval(Duration::from_millis(interval_millis));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let Some(now_millis) = unix_now_millis() else {
+                continue;
+            };
+            let interval = interval_index_from_unix_millis(genesis_time_secs, now_millis);
+            if interval != AGGREGATION_INTERVAL_INDEX {
+                continue;
+            }
+            if attestation_committee_count == 0 {
+                continue;
+            }
+            let slot = slot_index_from_unix_millis(genesis_time_secs, now_millis);
+            let subnet_id = (local_validator_index as u64) % attestation_committee_count;
+            let drained = {
+                let mut pending = pending_individual_attestations
+                    .write()
+                    .expect("pending individual attestations lock");
+                pending.drain(..).collect::<Vec<_>>()
+            };
+            if drained.is_empty() {
+                continue;
+            }
+
+            let aggregated = aggregate_signed_attestations(
+                drained,
+                &devnet_validator_keys,
+                &metrics,
+                slot,
+                attestation_committee_count,
+                subnet_id,
+            );
+            if aggregated.is_empty() {
+                continue;
+            }
+            for (attestation, proof) in aggregated {
+                pending_attestations
+                    .write()
+                    .expect("pending attestations lock")
+                    .push(attestation.clone());
+                pending_block_attestations
+                    .write()
+                    .expect("pending block attestations lock")
+                    .push(PendingBlockAttestation {
+                        attestation: attestation.clone(),
+                        proof: Some(proof.clone()),
+                    });
+                let payload = crate::containers::gossip::GossipAggregatedAttestation {
+                    attestation: crate::containers::attestation::SignedAggregatedAttestation {
+                        data: attestation.data.clone(),
+                        proof,
+                    },
+                }
+                .encode_ssz();
+                let _ = p2p_tx
+                    .send(P2pCommand::Publish {
+                        topic: aggregation_topic.clone(),
+                        payload,
+                    })
+                    .await;
+            }
         }
     }))
 }
@@ -370,9 +494,140 @@ fn set_bits(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
 }
 
 #[inline]
+fn aggregate_signed_attestations(
+    signed_attestations: Vec<SignedAttestation>,
+    devnet_validator_keys: &DevnetValidatorKeyCache,
+    metrics: &MetricsRegistry,
+    slot: u64,
+    attestation_committee_count: u64,
+    subnet_id: u64,
+) -> Vec<(Attestation, AggregatedSignatureProof)> {
+    #[derive(Default)]
+    struct Group {
+        data: Option<AttestationData>,
+        entries: Vec<(usize, Bytes52, crate::types::bytes::Bytes3112)>,
+    }
+
+    let mut grouped: rapidhash::RapidHashMap<[u8; 32], Group> = rapidhash::RapidHashMap::default();
+    for signed in signed_attestations {
+        if signed.message.slot.0.0 != slot {
+            continue;
+        }
+        if attestation_committee_count == 0 {
+            continue;
+        }
+        let idx = signed.validator_id.0 as usize;
+        if (signed.validator_id.0 % attestation_committee_count) != subnet_id {
+            continue;
+        }
+        let Some(Some(key_material)) = devnet_validator_keys.get(idx) else {
+            continue;
+        };
+        let message_root = signed.message.hash_tree_root();
+        let epoch = signed.message.slot.0.0 as u32;
+        if crate::crypto::pq::verify_signature(
+            &key_material.pubkey,
+            epoch,
+            &message_root,
+            &signed.signature,
+        )
+        .is_err()
+        {
+            continue;
+        }
+        let data_root = message_root;
+        let entry = grouped.entry(data_root).or_default();
+        if entry.data.is_none() {
+            entry.data = Some(signed.message.clone());
+        }
+        if entry.entries.iter().any(|(seen, _, _)| *seen == idx) {
+            continue;
+        }
+        entry
+            .entries
+            .push((idx, key_material.pubkey, signed.signature));
+    }
+
+    let mut out = Vec::new();
+    for (_root, mut group) in grouped {
+        let Some(data) = group.data.take() else {
+            continue;
+        };
+        if group.entries.is_empty() {
+            continue;
+        }
+        group.entries.sort_by_key(|(idx, _, _)| *idx);
+
+        let mut participants = Vec::with_capacity(group.entries.len());
+        let mut public_keys = Vec::with_capacity(group.entries.len());
+        let mut signatures = Vec::with_capacity(group.entries.len());
+        for (idx, pubkey, signature) in group.entries {
+            participants.push(idx);
+            public_keys.push(pubkey);
+            signatures.push(signature);
+        }
+        let Some(max_idx) = participants.iter().copied().max() else {
+            continue;
+        };
+        let mut bits = vec![false; max_idx + 1];
+        for idx in participants.iter().copied() {
+            bits[idx] = true;
+        }
+        let Ok(bitlist) = BitList::new(bits) else {
+            continue;
+        };
+
+        let message_root = data.hash_tree_root();
+        let aggregate_start = Instant::now();
+        let proof_bytes = match crate::crypto::pq::aggregate_signatures(
+            &public_keys,
+            &signatures,
+            &message_root,
+            data.slot.0.0 as u32,
+        ) {
+            Ok(bytes) => {
+                metrics
+                    .pq_aggregated_signing_time
+                    .observe_duration(aggregate_start);
+                metrics.pq_aggregated_signatures_total.inc();
+                metrics.pq_aggregated_signatures_valid_total.inc();
+                metrics
+                    .pq_attestations_in_aggregated_signatures_total
+                    .add(public_keys.len() as u64);
+                bytes
+            }
+            Err(err) => {
+                metrics.pq_aggregated_signatures_invalid_total.inc();
+                warn!("failed to aggregate attestation signatures: {err}");
+                continue;
+            }
+        };
+        let proof_data = match ByteList::<PROOF_MAX_BYTES>::new(proof_bytes) {
+            Ok(proof_data) => proof_data,
+            Err(err) => {
+                metrics.pq_aggregated_signatures_invalid_total.inc();
+                warn!("failed to encode aggregate proof bytes: {err}");
+                continue;
+            }
+        };
+        out.push((
+            Attestation {
+                aggregation_bits: bitlist.clone(),
+                data,
+            },
+            AggregatedSignatureProof {
+                participants: bitlist,
+                proof_data,
+            },
+        ));
+    }
+    out
+}
+
+#[inline]
 fn build_block_attestation_payload(
     slot: u64,
-    pending_block_attestations: &Arc<RwLock<Vec<Attestation>>>,
+    pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
     devnet_validator_keys: &DevnetValidatorKeyCache,
     metrics: &MetricsRegistry,
 ) -> (Vec<Attestation>, Vec<AggregatedSignatureProof>) {
@@ -386,11 +641,33 @@ fn build_block_attestation_payload(
         return (Vec::new(), Vec::new());
     }
 
-    let aggregated = aggregate_attestations(drained);
-    let mut attestations = Vec::with_capacity(aggregated.len().min(ATTESTATIONS_LIMIT));
-    let mut proofs = Vec::with_capacity(aggregated.len().min(ATTESTATIONS_LIMIT));
+    let mut attestations = Vec::new();
+    let mut proofs = Vec::new();
+    let mut unaggregated = Vec::new();
 
-    for attestation in aggregated.into_iter().take(ATTESTATIONS_LIMIT) {
+    for entry in drained {
+        if let Some(proof) = entry.proof {
+            let mut attestation = entry.attestation;
+            if attestation.aggregation_bits != proof.participants {
+                attestation.aggregation_bits = proof.participants.clone();
+            }
+            attestations.push(attestation);
+            proofs.push(proof);
+        } else {
+            unaggregated.push(entry.attestation);
+        }
+    }
+
+    if attestations.len() >= ATTESTATIONS_LIMIT {
+        attestations.truncate(ATTESTATIONS_LIMIT);
+        proofs.truncate(ATTESTATIONS_LIMIT);
+        return (attestations, proofs);
+    }
+
+    let remaining = ATTESTATIONS_LIMIT - attestations.len();
+    let aggregated = aggregate_attestations(unaggregated);
+
+    for attestation in aggregated.into_iter().take(remaining) {
         let participants = set_bits(&attestation.aggregation_bits);
         if participants.is_empty() {
             continue;
@@ -426,7 +703,7 @@ fn build_block_attestation_payload(
         metrics.pq_aggregated_signatures_total.inc();
         let aggregate_start = Instant::now();
         let attestation_slot = attestation.data.slot.0.0 as u32;
-        let proof_bytes = match crate::crypto::pq::sign_aggregate_concat(
+        let proof_bytes = match crate::crypto::pq::sign_aggregate(
             &public_keys,
             &secret_key_refs,
             attestation_slot,
@@ -471,7 +748,7 @@ fn produce_block_with_signatures(
     local_validator_index: usize,
     local_secret_key: &crate::crypto::pq::LeanSigSecretKey,
     proposer_target: Checkpoint,
-    pending_block_attestations: &Arc<RwLock<Vec<Attestation>>>,
+    pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
     devnet_validator_keys: &DevnetValidatorKeyCache,
     metrics: &MetricsRegistry,
 ) -> Option<(SignedBlockWithAttestation, State)> {
@@ -559,7 +836,7 @@ fn produce_block_with_signatures(
     };
 
     let proposer_message = proposer_attestation.data.hash_tree_root();
-    let epoch = slot as u64;
+    let epoch = slot;
     if !local_secret_key.get_activation_interval().contains(&epoch) {
         warn!("skipping block proposal: key not active at epoch {}", epoch);
         return None;
@@ -605,7 +882,7 @@ fn produce_block_with_signatures(
 
 #[inline]
 fn requeue_block_attestations(
-    pending_block_attestations: &Arc<RwLock<Vec<Attestation>>>,
+    pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
     attestations: &[Attestation],
 ) {
     if attestations.is_empty() {
@@ -614,7 +891,15 @@ fn requeue_block_attestations(
     pending_block_attestations
         .write()
         .expect("pending block attestations lock")
-        .extend(attestations.iter().cloned());
+        .extend(
+            attestations
+                .iter()
+                .cloned()
+                .map(|attestation| PendingBlockAttestation {
+                    attestation,
+                    proof: None,
+                }),
+        );
 }
 
 #[inline]
@@ -627,7 +912,7 @@ pub(super) fn spawn_block_production_task(
     state: Arc<RwLock<State>>,
     store: Arc<RwLock<FileStore>>,
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
-    pending_block_attestations: Arc<RwLock<Vec<Attestation>>>,
+    pending_block_attestations: Arc<RwLock<Vec<PendingBlockAttestation>>>,
     devnet_validator_keys: DevnetValidatorKeyCache,
     metrics: Arc<MetricsRegistry>,
 ) -> Option<JoinHandle<()>> {

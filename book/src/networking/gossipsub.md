@@ -7,8 +7,9 @@
 Topics follow the pattern `leanconsensus/<network>/<object>/<encoding>`, e.g.:
 
 ```
-leanconsensus/devnet2/block/ssz_snappy
-leanconsensus/devnet2/attestation/ssz_snappy
+leanconsensus/devnet3/blocks/ssz_snappy
+leanconsensus/devnet3/attestation_0/ssz_snappy
+leanconsensus/devnet3/aggregation/ssz_snappy
 ```
 
 Topics are configured via `allowed_topics` in the config file. Each topic can be assigned a score weight via `topic_scores` and a validator kind via `topic_validators`.
@@ -20,7 +21,8 @@ Topics are configured via `allowed_topics` in the config file. Each topic can be
 ```rust
 pub enum LeanGossipsubMessage {
     Block(GossipBlock),
-    Attestation(GossipAttestation),
+    AttestationSubnet { subnet_id: u64, attestation: GossipAttestation },
+    AggregatedAttestation(GossipAggregatedAttestation),
 }
 ```
 
@@ -37,6 +39,7 @@ Inbound messages pass through a multi-stage validation pipeline before being rel
 5. **Content validation** — dispatched to the registered `GossipSignatureVerifier` for the topic:
    - `block` topics: structural checks (proof count, proposer slot, participant count) + optional PQ signature verification.
    - `attestation` topics: participant index range and bit consistency.
+   - `aggregation` topics: aggregate participant/proof structure plus optional PQ signature verification.
 6. **Fork-choice integration** — accepted blocks are passed to `ForkChoiceStore`.
 
 ## Gossip verifiers

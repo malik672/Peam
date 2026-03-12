@@ -2,17 +2,15 @@ use peam::containers::block::{
     Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
 };
 use peam::containers::req_resp::{
-    BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse,
-    MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Ping, Pong, Status,
+    BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, MAX_BLOCKS_PER_REQUEST,
+    MAX_BLOCKS_PER_ROOT_REQUEST, Ping, Pong, Status,
 };
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::ValidatorIndex;
 use peam::slot::Slot;
 use peam::ssz::{HashTreeRoot, SszDecode, SszEncode};
-use peam::storage::{MemoryStore, Store};
 use peam::types::bytes::Bytes32;
 use peam::types::collections::SszList;
-use peam::types::uint::Uint64 as U64;
 use peam::types::uint::Uint64;
 
 fn compute_state_root_for_block(state: &State, block: &Block) -> Bytes32 {
@@ -87,33 +85,6 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
 }
 
 #[test]
-#[ignore = "test fixture uses placeholder proposer signature; pq crypto covered elsewhere"]
-fn blocks_by_root_processes_signed_blocks() {
-    let v = peam::containers::validator::Validator {
-        pubkey: peam::types::bytes::Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let validators = Validators::new(vec![v]).unwrap();
-    let mut state = State::generate_genesis(U64(0), validators);
-    let signed = signed_block_for_state(&state, 1);
-    let blocks = SszList::<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>::new(vec![signed])
-        .expect("blocks");
-    let resp = BlocksByRootResponse { blocks };
-    let decoded = BlocksByRootResponse::decode_ssz(&resp.encode_ssz()).unwrap();
-
-    let mut store = MemoryStore::new();
-    for (idx, block) in decoded.blocks.data.iter().enumerate() {
-        let root = Bytes32::from([idx as u8; 32]);
-        store
-            .put_signed_block(root, block.clone(), &mut state)
-            .expect("process signed block");
-    }
-
-    assert!(store.get_block_by_slot(1).is_some());
-}
-
-#[test]
 fn status_roundtrip() {
     let status = Status {
         fork_digest: Bytes32::from([1u8; 32]),
@@ -169,13 +140,4 @@ fn blocks_by_root_roundtrip() {
     let encoded = req.encode_ssz();
     let decoded = BlocksByRootRequest::decode_ssz(&encoded).unwrap();
     assert_eq!(decoded, req);
-
-    let blocks = SszList::<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>::new(vec![
-        dummy_signed_block(),
-    ])
-    .expect("blocks");
-    let resp = BlocksByRootResponse { blocks };
-    let encoded = resp.encode_ssz();
-    let decoded = BlocksByRootResponse::decode_ssz(&encoded).unwrap();
-    assert_eq!(decoded, resp);
 }

@@ -13,7 +13,6 @@
 //! |--------------|---------|
 //! | `gossipsub`  | Pub/sub block and attestation propagation |
 //! | `identify`   | Peer protocol/address advertisement |
-//! | `ping`       | Liveness probing |
 //! | `reqresp`    | Typed request/response (status, blocks-by-root) |
 //! | `mdns`       | Local-network peer discovery |
 
@@ -36,7 +35,6 @@ use libp2p::gossipsub::{
 use libp2p::identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent};
 use libp2p::identity::Keypair;
 use libp2p::mdns::{Config as MdnsConfig, Event as MdnsEvent, tokio::Behaviour as Mdns};
-use libp2p::ping::{Behaviour as Ping, Config as PingConfig, Event as PingEvent};
 use libp2p::quic;
 use libp2p::request_response::{
     Behaviour as RequestResponse, Codec as RequestResponseCodec, Config as RequestResponseConfig,
@@ -45,6 +43,7 @@ use libp2p::request_response::{
 use libp2p::swarm::{Swarm, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Transport};
 use libp2p_swarm_derive::NetworkBehaviour;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use snap::raw::{Decoder as RawDecoder, Encoder as RawEncoder, decompress_len};
 use snap::{read::FrameDecoder, write::FrameEncoder};
 use tokio::sync::mpsc;
@@ -148,9 +147,9 @@ pub struct P2pService {
     swarm: Swarm<LeanBehaviour>,
     events: EventBus,
     outbound: mpsc::Receiver<P2pCommand>,
-    topic_scores: std::collections::HashMap<String, i64>,
-    allowed_topics: std::collections::HashSet<String>,
-    topic_validators: std::collections::HashMap<String, super::GossipValidatorKind>,
+    topic_scores: RapidHashMap<String, i64>,
+    allowed_topics: RapidHashSet<String>,
+    topic_validators: RapidHashMap<String, super::GossipValidatorKind>,
     signature_verifier: Arc<dyn super::GossipSignatureVerifier>,
     reqresp_handler: Arc<dyn crate::networking::ReqRespHandler>,
     gossip_context: Arc<dyn crate::networking::GossipContext>,
@@ -179,7 +178,6 @@ pub enum P2pCommand {
 pub struct LeanBehaviour {
     gossipsub: Gossipsub,
     identify: Identify,
-    ping: Ping,
     reqresp_status: RequestResponse<LeanReqRespCodec>,
     reqresp_blocks: RequestResponse<LeanReqRespCodec>,
     mdns: Mdns,
@@ -271,6 +269,8 @@ pub struct LeanRequest {
 pub struct LeanResponse {
     /// Protocol ID string.
     pub protocol: String,
+    /// Req/resp response code (0 = success).
+    pub response_code: u8,
     /// Raw SSZ-encoded response payload.
     pub payload: Vec<u8>,
 }
@@ -351,6 +351,7 @@ impl RequestResponseCodec for LeanReqRespCodec {
             // Treat this as an empty response instead of a transport error.
             return Ok(LeanResponse {
                 protocol: protocol.0.clone(),
+                response_code: 0,
                 payload: Vec::new(),
             });
         }
@@ -386,6 +387,7 @@ impl RequestResponseCodec for LeanReqRespCodec {
         }
         Ok(LeanResponse {
             protocol: protocol.0.clone(),
+            response_code,
             payload,
         })
     }
@@ -412,14 +414,18 @@ impl RequestResponseCodec for LeanReqRespCodec {
         &mut self,
         _: &LeanReqRespProtocol,
         io: &mut T,
-        LeanResponse { protocol, payload }: LeanResponse,
+        LeanResponse {
+            protocol,
+            response_code,
+            payload,
+        }: LeanResponse,
     ) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
         let mut framed = Vec::with_capacity(payload.len() + 17);
         let _ = protocol;
-        framed.push(0); // ResponseCode::Success
+        framed.push(response_code);
         encode_uvi_len(payload.len(), &mut framed);
         framed.extend_from_slice(&snappy_frame_compress(&payload)?);
         futures::AsyncWriteExt::write_all(io, &framed).await?;
@@ -494,7 +500,6 @@ impl P2pService {
             "eth2/1.0.0".to_string(),
             keypair.public(),
         ));
-        let ping = Ping::new(PingConfig::new().with_interval(Duration::from_secs(10)));
         let reqresp_status_protocols = [LeanSupportedProtocol::StatusV1.protocol_id()]
             .into_iter()
             .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
@@ -511,7 +516,6 @@ impl P2pService {
         let mut behaviour = LeanBehaviour {
             gossipsub,
             identify,
-            ping,
             reqresp_status,
             reqresp_blocks,
             mdns,
@@ -545,9 +549,10 @@ impl P2pService {
             }
         }
 
-        let allowed_topics = config.allowed_topics.iter().cloned().collect();
-        let topic_scores = config.topic_scores.into_iter().collect();
-        let topic_validators = config.topic_validators.into_iter().collect();
+        let allowed_topics: RapidHashSet<String> = config.allowed_topics.iter().cloned().collect();
+        let topic_scores: RapidHashMap<String, i64> = config.topic_scores.into_iter().collect();
+        let topic_validators: RapidHashMap<String, super::GossipValidatorKind> =
+            config.topic_validators.into_iter().collect();
         let signature_verifier = config.signature_verifier;
         let reqresp_handler = config.reqresp_handler;
         let gossip_context = config.gossip_context;
@@ -583,7 +588,7 @@ impl P2pService {
 
     /// Runs the swarm event loop until the outbound command channel is closed.
     ///
-    /// Interleaves swarm events (gossip, identify, ping, req/resp, mDNS) with
+    /// Interleaves swarm events (gossip, identify, req/resp, mDNS) with
     /// outbound [`P2pCommand`]s from the higher-level networking layer.
     pub async fn run(mut self) {
         loop {
@@ -671,14 +676,26 @@ impl P2pService {
                         });
                         return;
                     }
-                    let response_payload = match LeanSupportedProtocol::parse_protocol_id(&protocol)
+                    let mut response_to_send: Option<LeanResponse> = None;
+                    match LeanSupportedProtocol::parse_protocol_id(&protocol)
                         .and_then(|kind| LeanRequestMessage::decode_ssz(kind, &payload).ok())
                     {
-                        Some(request) => self
-                            .reqresp_handler
-                            .on_request(request)
-                            .map(|response| response.encode_ssz())
-                            .unwrap_or_default(),
+                        Some(request) => {
+                            if let Some(response) = self.reqresp_handler.on_request(request) {
+                                response_to_send = Some(LeanResponse {
+                                    protocol: protocol.clone(),
+                                    response_code: 0,
+                                    payload: response.encode_ssz(),
+                                });
+                            } else {
+                                debug!(
+                                    "reqresp_no_response_chunk peer={} protocol={} bytes={}",
+                                    peer,
+                                    protocol,
+                                    payload.len()
+                                );
+                            }
+                        }
                         None => {
                             warn!(
                                 "reqresp_request_decode_failed peer={} protocol={} bytes={}",
@@ -686,42 +703,49 @@ impl P2pService {
                                 protocol,
                                 payload.len()
                             );
-                            Vec::new()
+                            response_to_send = Some(LeanResponse {
+                                protocol: protocol.clone(),
+                                response_code: 1, // ResponseCode::InvalidRequest
+                                payload: b"invalid request".to_vec(),
+                            });
                         }
-                    };
+                    }
                     self.events.emit(NetworkEvent::ReqRespRequest {
                         peer_id: peer.to_string(),
                         protocol: protocol.clone(),
                         payload: payload.clone(),
                     });
 
-                    let send_result = if use_blocks_behaviour {
-                        self.swarm.behaviour_mut().reqresp_blocks.send_response(
-                            channel,
-                            LeanResponse {
-                                protocol,
-                                payload: response_payload,
-                            },
-                        )
-                    } else {
-                        self.swarm.behaviour_mut().reqresp_status.send_response(
-                            channel,
-                            LeanResponse {
-                                protocol,
-                                payload: response_payload,
-                            },
-                        )
-                    };
+                    if let Some(response) = response_to_send {
+                        let send_result = if use_blocks_behaviour {
+                            self.swarm
+                                .behaviour_mut()
+                                .reqresp_blocks
+                                .send_response(channel, response)
+                        } else {
+                            self.swarm
+                                .behaviour_mut()
+                                .reqresp_status
+                                .send_response(channel, response)
+                        };
 
-                    if let Err(err) = send_result {
-                        warn!("reqresp_send_response_failed peer={} err={:?}", peer, err);
+                        if let Err(err) = send_result {
+                            warn!("reqresp_send_response_failed peer={} err={:?}", peer, err);
+                        }
                     }
                 }
                 RequestResponseMessage::Response { response, .. } => {
                     // Inbound req/resp response.
-                    let LeanResponse { protocol, payload } = response;
+                    let LeanResponse {
+                        protocol,
+                        response_code,
+                        payload,
+                    } = response;
                     if payload.is_empty() {
-                        debug!("reqresp_response_eos peer={} protocol={}", peer, protocol);
+                        debug!(
+                            "reqresp_response_eos peer={} protocol={} code={}",
+                            peer, protocol, response_code
+                        );
                         return;
                     }
                     if payload.len() > self.max_reqresp_bytes {
@@ -800,7 +824,6 @@ impl P2pService {
     /// - Valid gossip: topic-score increment (default +1)
     /// - Successful req/resp response: +1
     /// - Oversized req/resp payload: −25
-    /// - Ping failure: emit `PeerDisconnected`
     fn on_swarm_event(&mut self, event: SwarmEvent<LeanBehaviourEvent>) {
         match event {
             SwarmEvent::ConnectionEstablished {
@@ -853,7 +876,7 @@ impl P2pService {
                 let topic_hash = message.topic.clone();
                 let topic = topic_hash.to_string();
                 let lean_kind =
-                    crate::networking::gossipsub::lean::kind_from_topic_hash(&topic_hash).ok();
+                    crate::networking::gossipsub::kind_from_topic_hash(&topic_hash).ok();
                 let valid = lean_kind.is_some() || self.allowed_topics.contains(&topic);
                 self.events.emit(NetworkEvent::GossipValidated {
                     topic: topic.clone(),
@@ -961,11 +984,6 @@ impl P2pService {
                     peer_id: peer_id.to_string(),
                     inbound: true,
                 });
-            }
-            SwarmEvent::Behaviour(LeanBehaviourEvent::Ping(PingEvent { peer, result, .. })) => {
-                if result.is_err() {
-                    tracing::warn!("ping_failed peer_id={peer} err={:?}", result.err());
-                }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {

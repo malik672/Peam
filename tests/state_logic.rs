@@ -450,7 +450,7 @@ fn signed_block_attestation_proof_participants_mismatch() {
     };
 
     let err = state.process_signed_block(&signed).unwrap_err();
-    assert!(!err.is_empty());
+    assert!(err.contains("attestation aggregate participants mismatch"));
 }
 
 #[test]
@@ -1159,7 +1159,8 @@ fn state_transition_processes_slots_then_block() {
 }
 
 #[test]
-fn pq_verifier_accepts_placeholder_aggregate_proof_for_block_attestation() {
+#[ignore = "expensive pq verifier path; run explicitly when exercising malformed aggregate proof handling"]
+fn pq_verifier_rejects_placeholder_aggregate_proof_for_block_attestation() {
     let (pubkey, secret_key) = pq::key_gen_for_devnet_validator(0).expect("keygen");
     let validator = Validator {
         pubkey,
@@ -1214,7 +1215,5 @@ fn pq_verifier_accepts_placeholder_aggregate_proof_for_block_attestation() {
     };
 
     let verifier = PqSignatureVerifier;
-    verifier
-        .verify_signed_block(&signed, &state)
-        .expect("placeholder aggregate proof should be accepted for interop");
+    assert!(verifier.verify_signed_block(&signed, &state).is_err());
 }

@@ -26,7 +26,6 @@ use crate::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopi
 pub fn kind_from_topic_hash(topic: &TopicHash) -> Result<GossipValidatorKind, GossipsubError> {
     match LeanGossipTopic::from_topic_hash(topic)?.kind {
         LeanGossipTopicKind::Block => Ok(GossipValidatorKind::Block),
-        LeanGossipTopicKind::Attestation => Ok(GossipValidatorKind::Attestation),
         LeanGossipTopicKind::AggregatedAttestation => {
             Ok(GossipValidatorKind::AggregatedAttestation)
         }

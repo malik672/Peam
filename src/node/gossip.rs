@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use libp2p::gossipsub::TopicHash;
 
-use crate::containers::attestation::{Attestation, VALIDATOR_REGISTRY_LIMIT};
+use crate::containers::attestation::{Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT};
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
@@ -16,12 +16,7 @@ use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
 use tracing::warn;
 
-#[inline]
-fn single_validator_bitlist(validator_index: usize) -> Option<BitList<VALIDATOR_REGISTRY_LIMIT>> {
-    let mut bits = vec![false; validator_index + 1];
-    bits[validator_index] = true;
-    BitList::new(bits).ok()
-}
+use super::tasks::PendingBlockAttestation;
 
 #[inline]
 fn bitlist_has_any_set(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> bool {
@@ -134,12 +129,9 @@ fn enqueue_proposer_attestation_from_signed_block(
 ///   yet set) or calls `ForkChoiceStore::on_block`. Silently ignored on
 ///   decode or import failure.
 ///
-/// - **Attestation / AttestationSubnet** — reconstructs a single-validator
-///   [`Attestation`] from the `SignedAttestation`, bounds-checks the validator
-///   index, and appends it to `pending_attestations`. A separate lifecycle task
-///   promotes these votes into fork-choice at interval boundaries.
-///   Silently ignored if the validator index is out of range or the bitlist
-///   construction fails.
+/// - **Attestation / AttestationSubnet** — bounds-checks the validator index,
+///   and (when running as an aggregator) enqueues the signed attestation for
+///   aggregation and later gossip on the `/aggregation` topic.
 #[inline]
 pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
     topic: &str,
@@ -148,6 +140,9 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
     store: &Arc<RwLock<S>>,
     fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
     pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
+    pending_individual_attestations: &Arc<RwLock<Vec<SignedAttestation>>>,
+    pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
+    is_aggregator: bool,
     metrics: &Arc<MetricsRegistry>,
 ) {
     let topic_hash = TopicHash::from_raw(topic.to_string());
@@ -169,7 +164,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 root,
                 signed.clone(),
                 &mut state_guard,
-                &metrics,
+                metrics,
             ) {
                 Ok(()) => {
                     log_imported_block_attestation_payload_sample(
@@ -202,32 +197,6 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 }
             }
         }
-        LeanGossipsubMessage::Attestation(att) => {
-            let att_start = Instant::now();
-            let att = &att.attestation;
-            let idx = att.validator_id.0 as usize;
-            if idx >= VALIDATOR_REGISTRY_LIMIT {
-                metrics.fc_attestations_invalid_total.inc();
-                return;
-            }
-            if let Some(bitlist) = single_validator_bitlist(idx) {
-                let pending = Attestation {
-                    aggregation_bits: bitlist,
-                    data: att.message.clone(),
-                };
-                log_pending_attestation_sample("from_gossip_attestation", &pending);
-                pending_attestations
-                    .write()
-                    .expect("pending attestations lock")
-                    .push(pending);
-                metrics.fc_attestations_valid_total.inc();
-                metrics
-                    .fc_attestation_validation_time
-                    .observe_duration(att_start);
-            } else {
-                metrics.fc_attestations_invalid_total.inc();
-            }
-        }
         LeanGossipsubMessage::AttestationSubnet { attestation, .. } => {
             let att_start = Instant::now();
             let att = &attestation.attestation;
@@ -236,22 +205,15 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 metrics.fc_attestations_invalid_total.inc();
                 return;
             }
-            if let Some(bitlist) = single_validator_bitlist(idx) {
-                let pending = Attestation {
-                    aggregation_bits: bitlist,
-                    data: att.message.clone(),
-                };
-                log_pending_attestation_sample("from_gossip_attestation_subnet", &pending);
-                pending_attestations
+            if is_aggregator {
+                pending_individual_attestations
                     .write()
-                    .expect("pending attestations lock")
-                    .push(pending);
+                    .expect("pending individual attestations lock")
+                    .push(att.clone());
                 metrics.fc_attestations_valid_total.inc();
                 metrics
                     .fc_attestation_validation_time
                     .observe_duration(att_start);
-            } else {
-                metrics.fc_attestations_invalid_total.inc();
             }
         }
         LeanGossipsubMessage::AggregatedAttestation(attestation) => {
@@ -270,6 +232,16 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 .write()
                 .expect("pending attestations lock")
                 .push(pending);
+            pending_block_attestations
+                .write()
+                .expect("pending block attestations lock")
+                .push(PendingBlockAttestation {
+                    attestation: Attestation {
+                        aggregation_bits: att.proof.participants.clone(),
+                        data: att.data.clone(),
+                    },
+                    proof: Some(att.proof.clone()),
+                });
             metrics.fc_attestations_valid_total.inc();
             metrics
                 .fc_attestation_validation_time

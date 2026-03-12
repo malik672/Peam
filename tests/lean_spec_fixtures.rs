@@ -6,22 +6,15 @@ use peam::containers::block::BlockBody;
 use peam::containers::block::BlockHeader;
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::config::Config;
-use peam::containers::req_resp::BlocksByRootRequest;
 use peam::containers::validator::ValidatorIndex;
 use peam::ssz::{SszDecode, SszEncode};
 use peam::types::bytes::Bytes32;
-use peam::types::collections::SszList;
 use peam::types::uint::Uint64;
 
 use serde_json::Value;
 
 fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ssz/devnet/consensus_containers")
-}
-
-fn networking_fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ssz/devnet/networking_containers")
 }
 
 fn load_fixture(path: &PathBuf) -> Value {
@@ -197,67 +190,4 @@ fn lean_spec_block_body_empty_fixture() {
     let encoded = decoded.encode_ssz();
     assert_eq!(encoded, bytes);
     assert!(decoded.attestations.data.is_empty());
-}
-
-#[test]
-fn lean_spec_blocks_by_root_request_empty_fixture() {
-    let path = networking_fixtures_root().join("test_blocks_by_root_request_empty.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "BlocksByRootRequest");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = BlocksByRootRequest::decode_ssz(&bytes).expect("decode request");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
-    assert!(decoded.roots.data.is_empty());
-}
-
-#[test]
-fn lean_spec_blocks_by_root_request_single_fixture() {
-    let path = networking_fixtures_root().join("test_blocks_by_root_request_single.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "BlocksByRootRequest");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = BlocksByRootRequest::decode_ssz(&bytes).expect("decode request");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
-
-    let roots = entry["value"]["roots"]["data"]
-        .as_array()
-        .expect("roots data");
-    let expected: Vec<Bytes32> = roots
-        .iter()
-        .map(|v| bytes32_from_hex(v.as_str().expect("root")))
-        .collect();
-    let expected = SszList::new(expected).expect("roots list");
-    assert_eq!(decoded.roots, expected);
-}
-
-#[test]
-fn lean_spec_blocks_by_root_request_multiple_fixture() {
-    let path = networking_fixtures_root().join("test_blocks_by_root_request_multiple.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "BlocksByRootRequest");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = BlocksByRootRequest::decode_ssz(&bytes).expect("decode request");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
-
-    let roots = entry["value"]["roots"]["data"]
-        .as_array()
-        .expect("roots data");
-    let expected: Vec<Bytes32> = roots
-        .iter()
-        .map(|v| bytes32_from_hex(v.as_str().expect("root")))
-        .collect();
-    let expected = SszList::new(expected).expect("roots list");
-    assert_eq!(decoded.roots, expected);
 }

@@ -40,27 +40,30 @@ struct InnerPeerManager {
 }
 
 impl PeerManager {
-    #[inline]
-    fn build(events: EventBus, metrics: Option<Arc<MetricsRegistry>>) -> Self {
+    /// Creates a new [`PeerManager`] that emits events on `events`.
+    pub fn new(events: EventBus) -> Self {
         Self {
             inner: Arc::new(InnerPeerManager {
                 peers: Mutex::new(HashSet::new()),
                 scores: Mutex::new(HashMap::new()),
                 events,
                 peer_count: AtomicUsize::new(0),
-                metrics,
+                metrics: None,
             }),
         }
     }
 
-    /// Creates a new [`PeerManager`] that emits events on `events`.
-    pub fn new(events: EventBus) -> Self {
-        Self::build(events, None)
-    }
-
     /// Creates a new [`PeerManager`] with a shared metrics registry.
     pub fn with_metrics(events: EventBus, metrics: Arc<MetricsRegistry>) -> Self {
-        Self::build(events, Some(metrics))
+        Self {
+            inner: Arc::new(InnerPeerManager {
+                peers: Mutex::new(HashSet::new()),
+                scores: Mutex::new(HashMap::new()),
+                events,
+                peer_count: AtomicUsize::new(0),
+                metrics: Some(metrics),
+            }),
+        }
     }
 
     /// Registers `peer_id` as connected, initialising its score to 0.

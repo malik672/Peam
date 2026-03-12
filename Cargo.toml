@@ -10,7 +10,7 @@ redb = "3.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
-libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux", "quic", "gossipsub", "request-response", "identify", "ping", "mdns", "secp256k1"] }
+libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux", "quic", "gossipsub", "request-response", "identify", "mdns", "secp256k1"] }
 futures = "0.3"
 async-trait = "0.1"
 libp2p-swarm-derive = "0.35.1"
@@ -21,21 +21,6 @@ rand = { version = "0.9" }
 snap = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
-
-[patch."https://github.com/leanEthereum/fiat-shamir.git"]
-fiat-shamir = { path = "./fiat-shamir" }
-
-[patch."https://github.com/leanEthereum/multilinear-toolkit.git"]
-multilinear-toolkit = { path = "./vendor/multilinear-toolkit" }
-
-[patch."https://github.com/leanEthereum/leanMultisig.git"]
-lean-multisig = { path = "./vendor/leanMultisig" }
-
-[patch."https://github.com/TomWambsgans/whir-p3"]
-whir-p3 = { path = "./whir-p3" }
-
-[patch."https://github.com/TomWambsgans/whir-p3.git"]
-whir-p3 = { path = "./whir-p3" }
 
 [build-dependencies]
 sha2 = "0.10"

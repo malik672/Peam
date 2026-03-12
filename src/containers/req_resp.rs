@@ -45,11 +45,6 @@ pub struct BlocksByRootRequest {
     pub roots: SszList<Bytes32, MAX_BLOCKS_PER_ROOT_REQUEST>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BlocksByRootResponse {
-    pub blocks: SszList<SignedBlockWithAttestation, MAX_BLOCKS_PER_REQUEST>,
-}
-
 impl SszEncode for Status {
     fn encode_ssz(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 + 32 + 8 + 32 + 8);
@@ -291,39 +286,22 @@ impl HashTreeRoot for BlocksByRangeResponse {
 
 impl SszEncode for BlocksByRootRequest {
     fn encode_ssz(&self) -> Vec<u8> {
-        let body = self.roots.encode_ssz();
-        let mut out = Vec::with_capacity(4 + body.len());
-        unsafe { out.set_len(4 + body.len()) };
-        unsafe { write_bytes_at(&mut out, 0, &4u32.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut out, 4, &body) };
-        out
+        self.roots.encode_ssz()
     }
 }
 
 impl SszDecode for BlocksByRootRequest {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&bytes[0..4]);
-        let offset = u32::from_le_bytes(buf) as usize;
         Ok(Self {
-            roots: SszList::decode_ssz(&bytes[offset..])?,
+            roots: SszList::decode_ssz(bytes)?,
         })
     }
 }
 
 impl BlocksByRootRequest {
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() < 4 {
-            return Err("BlocksByRootRequest missing offset table".to_string());
-        }
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&bytes[0..4]);
-        let offset = u32::from_le_bytes(buf) as usize;
-        if offset != 4 || offset > bytes.len() {
-            return Err("BlocksByRootRequest offset is invalid".to_string());
-        }
         Ok(Self {
-            roots: SszList::decode_ssz_checked(&bytes[offset..])?,
+            roots: SszList::decode_ssz_checked(bytes)?,
         })
     }
 }
@@ -331,50 +309,5 @@ impl BlocksByRootRequest {
 impl HashTreeRoot for BlocksByRootRequest {
     fn hash_tree_root(&self) -> [u8; 32] {
         self.roots.hash_tree_root()
-    }
-}
-
-impl SszEncode for BlocksByRootResponse {
-    fn encode_ssz(&self) -> Vec<u8> {
-        let body = self.blocks.encode_ssz();
-        let mut out = Vec::with_capacity(4 + body.len());
-        unsafe { out.set_len(4 + body.len()) };
-        unsafe { write_bytes_at(&mut out, 0, &4u32.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut out, 4, &body) };
-        out
-    }
-}
-
-impl SszDecode for BlocksByRootResponse {
-    fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&bytes[0..4]);
-        let offset = u32::from_le_bytes(buf) as usize;
-        Ok(Self {
-            blocks: SszList::decode_ssz(&bytes[offset..])?,
-        })
-    }
-}
-
-impl BlocksByRootResponse {
-    pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() < 4 {
-            return Err("BlocksByRootResponse missing offset table".to_string());
-        }
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&bytes[0..4]);
-        let offset = u32::from_le_bytes(buf) as usize;
-        if offset != 4 || offset > bytes.len() {
-            return Err("BlocksByRootResponse offset is invalid".to_string());
-        }
-        Ok(Self {
-            blocks: SszList::decode_ssz_checked(&bytes[offset..])?,
-        })
-    }
-}
-
-impl HashTreeRoot for BlocksByRootResponse {
-    fn hash_tree_root(&self) -> [u8; 32] {
-        self.blocks.hash_tree_root()
     }
 }

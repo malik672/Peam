@@ -17,8 +17,6 @@ use crate::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopi
 pub enum LeanGossipsubMessage {
     /// A full signed block received on the block topic.
     Block(Box<GossipBlock>),
-    /// An attestation received on the global attestation topic.
-    Attestation(Box<GossipAttestation>),
     /// An attestation received on a per-subnet attestation topic.
     AttestationSubnet {
         subnet_id: u64,
@@ -39,9 +37,6 @@ impl LeanGossipsubMessage {
         match LeanGossipTopic::from_topic_hash(topic)?.kind {
             LeanGossipTopicKind::Block => Ok(Self::Block(Box::new(
                 GossipBlock::decode_ssz_checked(data).map_err(GossipsubError::from)?,
-            ))),
-            LeanGossipTopicKind::Attestation => Ok(Self::Attestation(Box::new(
-                GossipAttestation::decode_ssz_checked(data).map_err(GossipsubError::from)?,
             ))),
             LeanGossipTopicKind::AggregatedAttestation => {
                 Ok(Self::AggregatedAttestation(Box::new(

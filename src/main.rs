@@ -26,7 +26,9 @@ fn to_hex(bytes: &[u8]) -> String {
 
 #[tokio::main]
 async fn main() {
-    let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let mut args = env::args().skip(1);
     let mut config_path: Option<PathBuf> = None;

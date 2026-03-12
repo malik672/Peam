@@ -100,6 +100,8 @@ fn gossip_block_updates_fork_choice_head() {
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
     let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+    let pending_individual_attestations = Arc::new(RwLock::new(Vec::new()));
+    let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
     let metrics = Arc::new(MetricsRegistry::new());
 
     let (signed, _post, root) = {
@@ -109,7 +111,7 @@ fn gossip_block_updates_fork_choice_head() {
     let gossip = GossipBlock { block: signed };
     let payload = gossip.encode_ssz();
     let topic = LeanGossipTopic {
-        fork: "devnet2".to_string(),
+        fork: "devnet3".to_string(),
         kind: LeanGossipTopicKind::Block,
     }
     .to_string();
@@ -121,6 +123,9 @@ fn gossip_block_updates_fork_choice_head() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &pending_individual_attestations,
+        &pending_block_attestations,
+        false,
         &metrics,
     );
     let fc = fork_choice.read().expect("fork choice lock");
@@ -130,7 +135,7 @@ fn gossip_block_updates_fork_choice_head() {
 
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
-fn gossip_attestation_updates_fork_choice_votes() {
+fn gossip_attestation_enqueues_for_aggregation_when_aggregator() {
     let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
     let v = Validator {
         pubkey,
@@ -142,6 +147,8 @@ fn gossip_attestation_updates_fork_choice_votes() {
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
     let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+    let pending_individual_attestations = Arc::new(RwLock::new(Vec::new()));
+    let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
     let metrics = Arc::new(MetricsRegistry::new());
 
     let (signed, _post, root) = {
@@ -151,7 +158,7 @@ fn gossip_attestation_updates_fork_choice_votes() {
     let gossip = GossipBlock { block: signed };
     let payload = gossip.encode_ssz();
     let topic = LeanGossipTopic {
-        fork: "devnet2".to_string(),
+        fork: "devnet3".to_string(),
         kind: LeanGossipTopicKind::Block,
     }
     .to_string();
@@ -163,6 +170,9 @@ fn gossip_attestation_updates_fork_choice_votes() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &pending_individual_attestations,
+        &pending_block_attestations,
+        false,
         &metrics,
     );
 
@@ -190,8 +200,8 @@ fn gossip_attestation_updates_fork_choice_votes() {
     };
     let att_payload = gossip_att.encode_ssz();
     let att_topic = LeanGossipTopic {
-        fork: "devnet2".to_string(),
-        kind: LeanGossipTopicKind::Attestation,
+        fork: "devnet3".to_string(),
+        kind: LeanGossipTopicKind::AttestationSubnet(0),
     }
     .to_string();
 
@@ -202,11 +212,16 @@ fn gossip_attestation_updates_fork_choice_votes() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &pending_individual_attestations,
+        &pending_block_attestations,
+        true,
         &metrics,
     );
-    let fc = fork_choice.read().expect("fork choice lock");
-    let fc = fc.as_ref().expect("fork choice");
-    assert_eq!(fc.head(), root);
+    let pending = pending_individual_attestations
+        .read()
+        .expect("pending individual attestations lock");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message.head.root, root);
 }
 
 #[test]
@@ -222,6 +237,8 @@ fn gossip_block_enqueues_proposer_attestation_for_future_aggregation() {
     let store = Arc::new(RwLock::new(MemoryStore::new()));
     let fork_choice = Arc::new(RwLock::new(None));
     let pending_attestations = Arc::new(RwLock::new(Vec::new()));
+    let pending_individual_attestations = Arc::new(RwLock::new(Vec::new()));
+    let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
     let metrics = Arc::new(MetricsRegistry::new());
 
     let (signed, _post, _root) = {
@@ -232,7 +249,7 @@ fn gossip_block_enqueues_proposer_attestation_for_future_aggregation() {
     let gossip = GossipBlock { block: signed };
     let payload = gossip.encode_ssz();
     let topic = LeanGossipTopic {
-        fork: "devnet2".to_string(),
+        fork: "devnet3".to_string(),
         kind: LeanGossipTopicKind::Block,
     }
     .to_string();
@@ -244,6 +261,9 @@ fn gossip_block_enqueues_proposer_attestation_for_future_aggregation() {
         &store,
         &fork_choice,
         &pending_attestations,
+        &pending_individual_attestations,
+        &pending_block_attestations,
+        false,
         &metrics,
     );
 

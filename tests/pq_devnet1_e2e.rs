@@ -65,8 +65,7 @@ fn pq_multisig_aggregate_sign_and_verify_roundtrip() {
     let (pk1, sk1) = pq::key_gen_for_devnet_validator(1).expect("k1");
 
     let message = [0x5Au8; 32];
-    let aggregate =
-        pq::sign_aggregate_concat(&[pk0, pk1], &[&sk0, &sk1], 1, &message).expect("aggregate");
+    let aggregate = pq::sign_aggregate(&[pk0, pk1], &[&sk0, &sk1], 1, &message).expect("aggregate");
     pq::verify_aggregate_signature(&[pk0, pk1], &message, &aggregate, 1).expect("verify");
 }
 

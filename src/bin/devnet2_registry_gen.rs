@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,6 +8,7 @@ use peam::crypto::pq::key_gen_for_devnet_validator;
 
 const DEFAULT_VALIDATORS: usize = 3;
 const DEFAULT_NODE_MAP: &str = "peam_0:0,peer1_0:1,peer2_0:2";
+const DEFAULT_ATTESTATION_SUBNETS: u64 = 1;
 
 #[derive(Clone)]
 struct ValidatorMaterial {
@@ -18,12 +19,12 @@ struct ValidatorMaterial {
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!(
-        "  devnet2_registry_gen --out <dir> --genesis-time <u64> [--validators <usize>] [--node-map <name:i,name:j,...>]"
+        "  devnet2_registry_gen --out <dir> --genesis-time <u64> [--validators <usize>] [--node-map <name:i,name:j,...>] [--attestation-subnets <u64>]"
     );
     eprintln!();
     eprintln!("Example:");
     eprintln!(
-        "  devnet2_registry_gen --out /tmp/devnet --genesis-time 1772472000 --validators 3 --node-map peam_0:0,peer1_0:1,peer2_0:2"
+        "  devnet2_registry_gen --out /tmp/devnet --genesis-time 1772472000 --validators 3 --node-map peam_0:0,peer1_0:1,peer2_0:2 --attestation-subnets 1"
     );
 }
 
@@ -73,6 +74,7 @@ fn main() {
     let mut genesis_time: Option<u64> = None;
     let mut validator_count = DEFAULT_VALIDATORS;
     let mut node_map_raw = DEFAULT_NODE_MAP.to_string();
+    let mut attestation_subnets = DEFAULT_ATTESTATION_SUBNETS;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -123,6 +125,22 @@ fn main() {
                 }
                 node_map_raw = value;
             }
+            "--attestation-subnets" => {
+                let value = args.next().unwrap_or_default();
+                if value.is_empty() {
+                    eprintln!("Missing value for --attestation-subnets");
+                    print_usage();
+                    std::process::exit(2);
+                }
+                attestation_subnets = value.parse::<u64>().unwrap_or_else(|err| {
+                    eprintln!("Invalid --attestation-subnets {value}: {err}");
+                    std::process::exit(2);
+                });
+                if attestation_subnets == 0 {
+                    eprintln!("--attestation-subnets must be > 0");
+                    std::process::exit(2);
+                }
+            }
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -166,6 +184,19 @@ fn main() {
             }
         }
     }
+    let mut mapped_validator_indexes = Vec::new();
+    for indexes in node_map.values() {
+        mapped_validator_indexes.extend(indexes.iter().copied());
+    }
+    mapped_validator_indexes.sort_unstable();
+    mapped_validator_indexes.dedup();
+    let mut aggregator_validators: BTreeSet<usize> = BTreeSet::new();
+    let mut per_subnet_first_validator: BTreeMap<u64, usize> = BTreeMap::new();
+    for idx in mapped_validator_indexes {
+        let subnet_id = (idx as u64) % attestation_subnets;
+        let first = per_subnet_first_validator.entry(subnet_id).or_insert(idx);
+        aggregator_validators.insert(*first);
+    }
 
     let hash_sig_dir = out_dir.join("hash-sig-keys");
     ensure_dir(&hash_sig_dir).unwrap_or_else(|err| {
@@ -205,7 +236,7 @@ fn main() {
         let pk_bytes = pubkey.as_array();
         let pk_filename = format!("validator_{idx}_pk.ssz");
         let pk_path = hash_sig_dir.join(&pk_filename);
-        fs::write(&pk_path, &pk_bytes).unwrap_or_else(|err| {
+        fs::write(&pk_path, pk_bytes).unwrap_or_else(|err| {
             eprintln!("failed writing {}: {err}", pk_path.display());
             std::process::exit(1);
         });
@@ -284,11 +315,23 @@ fn main() {
 
     let mut validator_config_lines = Vec::new();
     validator_config_lines.push("validators:".to_string());
-    for (node_index, node) in node_map.keys().enumerate() {
+    for (node_index, (node, indexes)) in node_map.iter().enumerate() {
+        let is_aggregator = indexes
+            .iter()
+            .any(|index| aggregator_validators.contains(index));
         validator_config_lines.push(format!("  - name: \"{node}\""));
         validator_config_lines.push(format!(
             "    privkey: \"{}\"",
             synthetic_node_privkey_hex(node_index)
+        ));
+        validator_config_lines.push(format!(
+            "    is_aggregator: {}",
+            if is_aggregator { "true" } else { "false" }
+        ));
+        validator_config_lines.push("    enrFields:".to_string());
+        validator_config_lines.push(format!(
+            "      is_aggregator: {}",
+            if is_aggregator { "true" } else { "false" }
         ));
     }
     let validator_config_path = out_dir.join("validator-config.yaml");

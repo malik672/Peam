@@ -19,8 +19,7 @@
 //! └──────────────┴─────────┴──────┴──────────────┴───────────────┴─────────┘
 //! ```
 //!
-//! A missing magic prefix is treated as the legacy raw-SSZ format for
-//! backwards compatibility.
+//! All on-disk objects must use the LEANSTRG blob envelope.
 //!
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

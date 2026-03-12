@@ -20,8 +20,8 @@
 
 use rapidhash::RapidHashMap;
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use crate::containers::block::SignedBlockWithAttestation;
@@ -302,8 +302,6 @@ impl State {
         if block.parent_root != Bytes32::from(expected_parent) {
             return Err("block parent root does not match latest header root".to_string());
         }
-
-        // Interop parity (EthLambda/Zeam): for the first post-genesis import,
         // seed checkpoint roots with the parent anchor root so attestation
         // source/target roots line up across clients.
         if self.latest_block_header.slot == Slot(Uint64(0)) {
@@ -327,6 +325,21 @@ impl State {
             unsafe { data.set_len(start + add) };
             for i in 0..add {
                 unsafe { write_at(data, start + i, Bytes32::zero()) };
+            }
+        }
+
+        // Extend justified_slots to cover all slots up to (block.slot - 1).
+        // matches across clients, even before attestation processing grows it.
+        let last_materialized = block_slot.saturating_sub(1);
+        let fin_slot = self.latest_finalized.slot.0.0;
+        if last_materialized > fin_slot {
+            let required_len = (last_materialized - fin_slot) as usize;
+            if required_len > self.justified_slots.len() {
+                self.justified_slots.len = required_len;
+                let byte_len = (required_len + 7) / 8;
+                if self.justified_slots.data.len() < byte_len {
+                    self.justified_slots.data.resize(byte_len, 0u8);
+                }
             }
         }
 
@@ -403,14 +416,7 @@ impl State {
 
         let computed_root = Bytes32::from(self.hash_tree_root());
         if computed_root != block.state_root {
-            if pq::allow_unverified_aggregate_proofs() {
-                log_unverified_state_root_once(computed_root, block.state_root);
-                // Preserve parent-root continuity with external clients when
-                // running in relaxed interop mode.
-                self.latest_block_header.state_root = block.state_root;
-            } else {
-                return Err("block state root does not match computed state root".to_string());
-            }
+            return Err("block state root does not match computed state root".to_string());
         } else {
             self.latest_block_header.state_root = computed_root;
         }
@@ -463,12 +469,12 @@ impl State {
         let trace_attestations = attestation_trace_enabled();
         let pre_justified_slot = self.latest_justified.slot;
         let pre_finalized_slot = self.latest_finalized.slot;
+
+        let mut finalized_slot = self.latest_finalized.slot;
         let mut stats = AttestationDecisionStats::default();
         let total_attestations = attestations.data.len();
 
-        let interop_relaxed = pq::allow_unverified_aggregate_proofs();
         for att in attestations.data.iter() {
-            let finalized_slot = self.latest_finalized.slot;
             if att.data.slot > self.slot {
                 if trace_attestations {
                     stats.future_slot += 1;
@@ -476,35 +482,11 @@ impl State {
                 }
                 continue;
             }
-            if att.data.target.slot < att.data.source.slot {
+            if att.data.target.slot <= att.data.source.slot {
                 if trace_attestations {
                     stats.target_below_source += 1;
                     log_attestation_decision_sample(
                         "target_below_source",
-                        att,
-                        self.slot,
-                        finalized_slot,
-                    );
-                }
-                continue;
-            }
-            if att.data.head.slot < att.data.target.slot {
-                if trace_attestations {
-                    stats.head_below_target += 1;
-                    log_attestation_decision_sample(
-                        "head_below_target",
-                        att,
-                        self.slot,
-                        finalized_slot,
-                    );
-                }
-                continue;
-            }
-            if att.data.slot < att.data.head.slot {
-                if trace_attestations {
-                    stats.slot_below_head += 1;
-                    log_attestation_decision_sample(
-                        "slot_below_head",
                         att,
                         self.slot,
                         finalized_slot,
@@ -525,122 +507,45 @@ impl State {
                 }
                 continue;
             }
-            if !is_known_chain_root(
-                self,
-                &att.data.head.root,
-                latest_header_root,
-                &historical_root_slots,
-            ) {
-                if trace_attestations {
-                    stats.unknown_head_root += 1;
-                    log_attestation_decision_sample(
-                        "unknown_head_root",
-                        att,
-                        self.slot,
-                        finalized_slot,
-                    );
-                }
-                // Interop mode: other clients can carry head roots that are not
-                // yet mapped in our local root index. Keep processing as long as
-                // source/target checks still pass below.
-                if !interop_relaxed {
-                    continue;
-                }
-            }
-            let mut source_slot = chain_root_slot(
+            let source_slot = chain_root_slot(
                 self,
                 att.data.source.root,
                 latest_header_root,
                 &historical_root_slots,
             );
-            let mut effective_source_root = att.data.source.root;
             if source_slot != Some(att.data.source.slot) {
-                let remapped_root = if interop_relaxed {
-                    local_chain_root_for_slot(
-                        self,
+                if trace_attestations {
+                    stats.source_root_slot_mismatch += 1;
+                    log_attestation_slot_mismatch_sample(
+                        "source_root_slot_mismatch",
+                        att,
+                        self.slot,
+                        finalized_slot,
+                        source_slot,
                         att.data.source.slot,
-                        latest_header_root,
-                        &historical_root_slots,
-                    )
-                } else {
-                    None
-                };
-                if let Some(local_root) = remapped_root {
-                    source_slot = Some(att.data.source.slot);
-                    effective_source_root = local_root;
-                } else {
-                    if trace_attestations {
-                        stats.source_root_slot_mismatch += 1;
-                        log_attestation_slot_mismatch_sample(
-                            "source_root_slot_mismatch",
-                            att,
-                            self.slot,
-                            finalized_slot,
-                            source_slot,
-                            att.data.source.slot,
-                        );
-                    }
-                    continue;
+                    );
                 }
+                continue;
             }
-            let mut target_slot = chain_root_slot(
+            let target_slot = chain_root_slot(
                 self,
                 att.data.target.root,
                 latest_header_root,
                 &historical_root_slots,
             );
-            let mut effective_target_root = att.data.target.root;
             if target_slot != Some(att.data.target.slot) {
-                let remapped_root = if interop_relaxed {
-                    local_chain_root_for_slot(
-                        self,
+                if trace_attestations {
+                    stats.target_root_slot_mismatch += 1;
+                    log_attestation_slot_mismatch_sample(
+                        "target_root_slot_mismatch",
+                        att,
+                        self.slot,
+                        finalized_slot,
+                        target_slot,
                         att.data.target.slot,
-                        latest_header_root,
-                        &historical_root_slots,
-                    )
-                } else {
-                    None
-                };
-                if let Some(local_root) = remapped_root {
-                    target_slot = Some(att.data.target.slot);
-                    effective_target_root = local_root;
-                } else {
-                    if trace_attestations {
-                        stats.target_root_slot_mismatch += 1;
-                        log_attestation_slot_mismatch_sample(
-                            "target_root_slot_mismatch",
-                            att,
-                            self.slot,
-                            finalized_slot,
-                            target_slot,
-                            att.data.target.slot,
-                        );
-                    }
-                    continue;
+                    );
                 }
-            }
-            if interop_relaxed {
-                // Mixed-client interop: normalize vote checkpoints to local
-                // roots for the declared slots so votes can aggregate across
-                // clients that use different roots for the same slot.
-                if let Some(local_source_root) = local_chain_root_for_slot(
-                    self,
-                    att.data.source.slot,
-                    latest_header_root,
-                    &historical_root_slots,
-                ) {
-                    effective_source_root = local_source_root;
-                    source_slot = Some(att.data.source.slot);
-                }
-                if let Some(local_target_root) = local_chain_root_for_slot(
-                    self,
-                    att.data.target.slot,
-                    latest_header_root,
-                    &historical_root_slots,
-                ) {
-                    effective_target_root = local_target_root;
-                    target_slot = Some(att.data.target.slot);
-                }
+                continue;
             }
             if !slot::is_justifiable_after(att.data.target.slot, finalized_slot)? {
                 if trace_attestations {
@@ -688,15 +593,10 @@ impl State {
                 stats.eligible_votes += 1;
             }
 
-            let vote_target_root = if interop_relaxed {
-                interop_vote_root_for_slot(att.data.target.slot)
-            } else {
-                effective_target_root
-            };
             let votes_map = justification_votes
                 .get_or_insert_with(|| decode_justification_votes(self, total_validators));
             let votes = votes_map
-                .entry(vote_target_root)
+                .entry(att.data.target.root)
                 .or_insert_with(|| JustificationVotes::new(total_validators));
             merge_participant_votes_from_bits(votes, &att.aggregation_bits, total_validators);
             if 3 * votes.count < 2 * total_validators {
@@ -726,7 +626,7 @@ impl State {
             }
 
             self.latest_justified = Checkpoint {
-                root: effective_target_root,
+                root: att.data.target.root,
                 slot: att.data.target.slot,
             };
             set_justified_slot(
@@ -734,20 +634,13 @@ impl State {
                 finalized_slot,
                 att.data.target.slot,
             )?;
-            votes_map.remove(&vote_target_root);
+            votes_map.remove(&att.data.target.root);
 
-            let should_finalize_source = if interop_relaxed {
-                // Interop mode: mixed-client vote streams can jump target slots.
-                // Advance finality once a supermajority for a valid vote is reached.
-                att.data.source.slot > self.latest_finalized.slot
-            } else {
-                // Strict mode: keep canonical 3sf-mini finality progression.
-                is_next_valid_justifiable_slot(
-                    att.data.source.slot,
-                    att.data.target.slot,
-                    finalized_slot,
-                ) && att.data.source.slot > self.latest_finalized.slot
-            };
+            let should_finalize_source = is_next_valid_justifiable_slot(
+                att.data.source.slot,
+                att.data.target.slot,
+                finalized_slot,
+            ) && att.data.source.slot > finalized_slot;
             if should_finalize_source {
                 if trace_attestations {
                     stats.finalized_updates += 1;
@@ -760,13 +653,13 @@ impl State {
                 }
                 let old_finalized = self.latest_finalized.slot;
                 self.latest_finalized = Checkpoint {
-                    root: effective_source_root,
+                    root: att.data.source.root,
                     slot: att.data.source.slot,
                 };
                 // Invariant: source.slot > old_finalized, so delta is strictly positive.
                 let delta = (self.latest_finalized.slot.0.0 - old_finalized.0.0) as usize;
                 shift_justified_window(&mut self.justified_slots, delta);
-                let finalized_slot = self.latest_finalized.slot;
+                finalized_slot = self.latest_finalized.slot;
                 let mut missing_root_to_slot = false;
                 votes_map.retain(|root, _| {
                     match chain_root_slot(self, *root, latest_header_root, &historical_root_slots) {
@@ -1006,11 +899,6 @@ impl SignatureVerifier for PqSignatureVerifier {
             if public_keys.is_empty() {
                 return Err("attestation aggregate participants must be non-empty".to_string());
             }
-            if pq::is_placeholder_aggregate_proof(proof.proof_data.as_slice()) {
-                log_placeholder_aggregate_proof_once("state_transition");
-                continue;
-            }
-
             let message = att.data.hash_tree_root();
             if let Err(err) = pq::verify_aggregate_signature(
                 &public_keys,
@@ -1018,14 +906,6 @@ impl SignatureVerifier for PqSignatureVerifier {
                 proof.proof_data.as_slice(),
                 att.data.slot.0.0 as u32,
             ) {
-                if pq::should_accept_unverified_aggregate_proof(&err) {
-                    log_unverified_aggregate_proof_once(
-                        "state_transition",
-                        &err,
-                        proof.proof_data.as_slice().len(),
-                    );
-                    continue;
-                }
                 return Err(err);
             }
         }
@@ -1044,43 +924,6 @@ impl SignatureVerifier for PqSignatureVerifier {
         )?;
         Ok(())
     }
-}
-
-#[inline]
-fn log_placeholder_aggregate_proof_once(context: &'static str) {
-    static PLACEHOLDER_PROOF_WARN_ONCE: Once = Once::new();
-    PLACEHOLDER_PROOF_WARN_ONCE.call_once(|| {
-        tracing::warn!(
-            context,
-            min_bytes = pq::MIN_VERIFIABLE_AGGREGATE_PROOF_BYTES,
-            "accepting placeholder aggregate proof bytes for interop"
-        );
-    });
-}
-
-#[inline]
-fn log_unverified_aggregate_proof_once(context: &'static str, err: &str, proof_bytes: usize) {
-    static UNVERIFIED_PROOF_WARN_ONCE: Once = Once::new();
-    UNVERIFIED_PROOF_WARN_ONCE.call_once(|| {
-        tracing::warn!(
-            context,
-            err = %err,
-            proof_bytes,
-            "accepting unverified aggregate proof under interop policy"
-        );
-    });
-}
-
-#[inline]
-fn log_unverified_state_root_once(computed_root: Bytes32, expected_root: Bytes32) {
-    static UNVERIFIED_STATE_ROOT_WARN_ONCE: Once = Once::new();
-    UNVERIFIED_STATE_ROOT_WARN_ONCE.call_once(|| {
-        tracing::warn!(
-            computed_root = ?computed_root,
-            expected_root = ?expected_root,
-            "accepting block with non-matching state root under interop policy"
-        );
-    });
 }
 
 #[derive(Default)]
@@ -1426,9 +1269,6 @@ fn chain_root_slot(
     latest_header_root: Bytes32,
     historical_root_slots: &RapidHashMap<Bytes32, Slot>,
 ) -> Option<Slot> {
-    if let Some(slot) = interop_vote_slot(root) {
-        return Some(slot);
-    }
     if root == state.latest_finalized.root {
         return Some(state.latest_finalized.slot);
     }
@@ -1439,71 +1279,6 @@ fn chain_root_slot(
         return Some(state.latest_block_header.slot);
     }
     historical_root_slots.get(&root).copied()
-}
-
-#[inline]
-fn interop_vote_root_for_slot(slot: Slot) -> Bytes32 {
-    let mut out = [0u8; 32];
-    out[0..8].copy_from_slice(b"PVOTESLT");
-    out[8..16].copy_from_slice(&slot.0.0.to_be_bytes());
-    Bytes32::from(out)
-}
-
-#[inline]
-fn interop_vote_slot(root: Bytes32) -> Option<Slot> {
-    let bytes = root.as_array();
-    if &bytes[0..8] != b"PVOTESLT" {
-        return None;
-    }
-    let mut slot_bytes = [0u8; 8];
-    slot_bytes.copy_from_slice(&bytes[8..16]);
-    Some(Slot(Uint64(u64::from_be_bytes(slot_bytes))))
-}
-
-#[inline]
-fn local_chain_root_for_slot(
-    state: &State,
-    slot: Slot,
-    latest_header_root: Bytes32,
-    historical_root_slots: &RapidHashMap<Bytes32, Slot>,
-) -> Option<Bytes32> {
-    if slot == state.latest_finalized.slot && state.latest_finalized.root != Bytes32::zero() {
-        return Some(state.latest_finalized.root);
-    }
-    if slot == state.latest_justified.slot && state.latest_justified.root != Bytes32::zero() {
-        return Some(state.latest_justified.root);
-    }
-    if slot == state.latest_block_header.slot {
-        return Some(latest_header_root);
-    }
-    let slot_index = slot.0.0 as usize;
-    if let Some(root) = state.historical_block_hashes.data.get(slot_index).copied()
-        && root != Bytes32::zero()
-    {
-        return Some(root);
-    }
-    historical_root_slots
-        .iter()
-        .find_map(|(root, mapped_slot)| (*mapped_slot == slot).then_some(*root))
-}
-
-#[inline]
-fn is_known_chain_root(
-    state: &State,
-    root: &Bytes32,
-    latest_header_root: Bytes32,
-    historical_root_slots: &RapidHashMap<Bytes32, Slot>,
-) -> bool {
-    if *root == Bytes32::zero() {
-        return false;
-    }
-    if *root == state.latest_justified.root
-        || *root == state.latest_finalized.root
-        || *root == latest_header_root
-    {
-        return true;
-    }
-    historical_root_slots.contains_key(root)
 }
 
 #[inline]

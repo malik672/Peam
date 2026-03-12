@@ -25,7 +25,8 @@ topic_scores=peam/gossip:2,peam/blocks:-1
 topic_validators=peam/gossip=block,peam/blocks=attestation
 max_gossip_bytes=12345
 max_reqresp_bytes=67890
-allow_unverified_aggregate_proofs=true
+is_aggregator=true
+attestation_committee_count=8
 validator_count=400
 storage_dir=node_store
 metrics=true
@@ -71,7 +72,8 @@ metrics_port=18080
     );
     assert_eq!(settings.max_gossip_bytes, 12345);
     assert_eq!(settings.max_reqresp_bytes, 67890);
-    assert!(settings.allow_unverified_aggregate_proofs);
+    assert!(settings.is_aggregator);
+    assert_eq!(settings.attestation_committee_count, 8);
     assert_eq!(settings.validator_count, 400);
     assert_eq!(settings.storage_dir, Some("node_store".to_string()));
     assert!(settings.metrics);
@@ -92,7 +94,7 @@ fn resolves_metrics_identity_from_validators_yaml() {
 
     let config_path = dir.join("node.conf");
     fs::write(&config_path, "genesis_time=42\n").expect("write config");
-    fs::write(&dir.join("validators.yaml"), "peam_0:\n- 0\nream_0:\n- 1\n")
+    fs::write(dir.join("validators.yaml"), "peam_0:\n- 0\nream_0:\n- 1\n")
         .expect("write validators");
 
     let settings = NodeSettings {
@@ -112,7 +114,8 @@ fn resolves_metrics_identity_from_validators_yaml() {
         topic_validators: Vec::new(),
         max_gossip_bytes: 2_000_000,
         max_reqresp_bytes: 4_000_000,
-        allow_unverified_aggregate_proofs: false,
+        is_aggregator: false,
+        attestation_committee_count: 1,
         validator_count: 2,
         local_validator_index: 1,
         storage_dir: None,
@@ -141,7 +144,7 @@ fn resolves_metrics_identity_from_validator_config_when_needed() {
     let config_path = dir.join("node.conf");
     fs::write(&config_path, "genesis_time=42\n").expect("write config");
     fs::write(
-        &dir.join("validator-config.yaml"),
+        dir.join("validator-config.yaml"),
         "validators:\n  - name: \"peam_0\"\n    privkey: \"0x01\"\n  - name: \"ethlambda_0\"\n    privkey: \"0x02\"\n",
     )
     .expect("write validator-config");
@@ -163,7 +166,8 @@ fn resolves_metrics_identity_from_validator_config_when_needed() {
         topic_validators: Vec::new(),
         max_gossip_bytes: 2_000_000,
         max_reqresp_bytes: 4_000_000,
-        allow_unverified_aggregate_proofs: false,
+        is_aggregator: false,
+        attestation_committee_count: 1,
         validator_count: 2,
         local_validator_index: 1,
         storage_dir: None,
@@ -176,6 +180,33 @@ fn resolves_metrics_identity_from_validator_config_when_needed() {
         resolve_metrics_identity(&config_path, &settings).expect("resolve identity");
     assert_eq!(node_name, "ethlambda_0");
     assert_eq!(client_name, "ethlambda");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validator_config_enr_fields_override_local_aggregator_flag() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_validator_cfg_override_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("node.conf");
+    fs::write(
+        &config_path,
+        "genesis_time=42\nis_aggregator=false\nlocal_validator_index=0\nvalidator_config_path=validator-config.yaml\n",
+    )
+    .expect("write config");
+    fs::write(
+        dir.join("validator-config.yaml"),
+        "validators:\n  - name: \"peam_0\"\n    privkey: \"0x01\"\n    enrFields:\n      is_aggregator: true\n",
+    )
+    .expect("write validator-config");
+
+    let (_config, settings) = load_node_settings(&config_path).expect("parse config");
+    assert!(settings.is_aggregator);
 
     let _ = fs::remove_dir_all(&dir);
 }

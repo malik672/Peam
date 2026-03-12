@@ -10,7 +10,7 @@ use lean_multisig::{
 use leansig::{MESSAGE_LENGTH, serialization::Serializable, signature::SignatureScheme};
 use rand::{SeedableRng, rngs::StdRng};
 use ssz::{Decode, Encode};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::hash::Hasher;
 
 use crate::types::bytes::{Bytes52, Bytes3112};
 
@@ -30,38 +30,6 @@ pub type LeanSigSecretKey = <LeanSigScheme as SignatureScheme>::SecretKey;
 
 /// Narrow per-key active signing interval used for local devnet key material.
 const DEVNET_KEY_ACTIVE_EPOCHS: usize = 8;
-/// Proofs shorter than this are treated as placeholder proofs by interop clients.
-///
-/// EthLambda currently accepts these as "no-op" aggregate proofs on devnet paths.
-pub const MIN_VERIFIABLE_AGGREGATE_PROOF_BYTES: usize = 10;
-static ALLOW_UNVERIFIED_AGGREGATE_PROOFS: AtomicBool = AtomicBool::new(false);
-
-/// Enables or disables relaxed acceptance of non-verifiable aggregate proofs.
-///
-/// This is intended for cross-client devnet interop only.
-#[inline]
-pub fn set_allow_unverified_aggregate_proofs(enabled: bool) {
-    ALLOW_UNVERIFIED_AGGREGATE_PROOFS.store(enabled, Ordering::Relaxed);
-}
-
-/// Returns whether relaxed aggregate-proof acceptance is enabled.
-#[inline]
-pub fn allow_unverified_aggregate_proofs() -> bool {
-    ALLOW_UNVERIFIED_AGGREGATE_PROOFS.load(Ordering::Relaxed)
-}
-
-/// Classifies aggregate-proof verifier/decode failures that are accepted in
-/// relaxed interop mode.
-#[inline]
-pub fn is_interop_unverified_aggregate_error(err: &str) -> bool {
-    err.contains("failed to decode aggregate signature") || err.contains("Invalid proof")
-}
-
-/// Returns `true` when `err` should be accepted under relaxed interop policy.
-#[inline]
-pub fn should_accept_unverified_aggregate_proof(err: &str) -> bool {
-    allow_unverified_aggregate_proofs() && is_interop_unverified_aggregate_error(err)
-}
 
 /// Pre-computes aggregation proving artifacts.
 pub fn setup_aggregate_prover() {
@@ -118,10 +86,7 @@ pub fn sign_message(
 }
 
 /// Aggregates signatures using leanMultisig.
-///
-/// This function keeps the legacy name to avoid touching higher-level call sites.
-/// It no longer returns naive `sig_0 || sig_1 || ...` bytes.
-pub fn sign_aggregate_concat(
+pub fn sign_aggregate(
     public_keys: &[Bytes52],
     secret_keys: &[&LeanSigSecretKey],
     epoch: u32,
@@ -154,12 +119,53 @@ pub fn sign_aggregate_concat(
 }
 
 #[inline]
+fn hash_bytes_list<T: AsRef<[u8]>>(items: &[T]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_usize(items.len());
+    for item in items {
+        hasher.write(item.as_ref());
+    }
+    hasher.finish()
+}
+
+#[inline]
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(bytes);
+    hasher.finish()
+}
+
+#[inline]
+fn maybe_log_aggregate_io(
+    phase: &'static str,
+    public_keys: &[Bytes52],
+    message: &[u8; MESSAGE_LENGTH],
+    epoch: u32,
+) {
+    if std::env::var("LEAN_XMSS_IO_DEBUG").as_deref().ok() != Some("1") {
+        return;
+    }
+    let pubkeys_hash = hash_bytes_list(public_keys);
+    let message_hash = hash_bytes(message);
+    tracing::info!(
+        target: "xmss_io",
+        phase,
+        epoch,
+        pubkeys_len = public_keys.len(),
+        pubkeys_hash,
+        message_hash,
+        "xmss aggregate io"
+    );
+}
+
+#[inline]
 fn aggregate_signatures_impl(
     public_keys: &[Bytes52],
     signatures: &[Bytes3112],
     message: &[u8; MESSAGE_LENGTH],
     epoch: u32,
 ) -> Result<Vec<u8>, String> {
+    maybe_log_aggregate_io("prove", public_keys, message, epoch);
     let pub_keys = public_keys
         .iter()
         .map(public_key_from_bytes)
@@ -253,6 +259,10 @@ pub fn verify_aggregate_signature(
     if public_keys.is_empty() {
         return Err("aggregate signature participants must be non-empty".to_string());
     }
+    if aggregate_signature_bytes.len() < 8 {
+        return Err("failed to decode aggregate signature: proof too short".to_string());
+    }
+    maybe_log_aggregate_io("verify", public_keys, message, epoch);
 
     let aggregate = Devnet2XmssAggregateSignature::from_ssz_bytes(aggregate_signature_bytes)
         .map_err(|err| format!("failed to decode aggregate signature: {err:?}"))?;
@@ -262,29 +272,4 @@ pub fn verify_aggregate_signature(
         .collect::<Result<Vec<_>, _>>()?;
     xmss_verify_aggregated_signatures(&pub_keys, message, &aggregate, epoch)
         .map_err(|err| format!("failed to verify aggregated signatures: {err}"))
-}
-
-/// Returns `true` when aggregate-proof bytes are a devnet placeholder and should
-/// be treated as "verification not available yet" for cross-client interop.
-#[inline]
-pub fn is_placeholder_aggregate_proof(aggregate_signature_bytes: &[u8]) -> bool {
-    aggregate_signature_bytes.len() < MIN_VERIFIABLE_AGGREGATE_PROOF_BYTES
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_interop_unverified_aggregate_error;
-
-    #[test]
-    fn classifies_interop_aggregate_errors() {
-        assert!(is_interop_unverified_aggregate_error(
-            "failed to decode aggregate signature: DecodeError"
-        ));
-        assert!(is_interop_unverified_aggregate_error(
-            "failed to verify aggregated signatures: Invalid proof"
-        ));
-        assert!(!is_interop_unverified_aggregate_error(
-            "aggregate signature participants must be non-empty"
-        ));
-    }
 }

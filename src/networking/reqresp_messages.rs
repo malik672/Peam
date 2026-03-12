@@ -8,100 +8,8 @@
 //! by protocol variant.
 
 use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::checkpoint::Checkpoint;
-use crate::containers::req_resp::{BlocksByRootRequest, BlocksByRootResponse, Status};
-use crate::ssz::{SszEncode, SszFixedLen};
-use crate::types::collections::SszList;
-
-#[inline]
-fn encode_lean_status_compat(status: &Status) -> Vec<u8> {
-    // REAM lean status wire format:
-    // struct Status { finalized: Checkpoint, head: Checkpoint } (80 bytes).
-    let mut out = Vec::with_capacity(Checkpoint::fixed_len() * 2);
-    out.extend_from_slice(
-        &Checkpoint {
-            root: status.finalized_root,
-            slot: crate::slot::Slot(status.finalized_epoch),
-        }
-        .encode_ssz(),
-    );
-    out.extend_from_slice(
-        &Checkpoint {
-            root: status.head_root,
-            slot: crate::slot::Slot(status.head_slot),
-        }
-        .encode_ssz(),
-    );
-    out
-}
-
-#[inline]
-fn decode_lean_status_compat(data: &[u8]) -> Result<Status, String> {
-    if data.len() == Status::fixed_len() {
-        return Status::decode_ssz_checked(data);
-    }
-    let cp_len = Checkpoint::fixed_len();
-    if data.len() != cp_len * 2 {
-        return Err(format!(
-            "unsupported status payload length: {} (expected {} or {})",
-            data.len(),
-            Status::fixed_len(),
-            cp_len * 2
-        ));
-    }
-    let finalized = Checkpoint::decode_ssz_checked(&data[0..cp_len])?;
-    let head = Checkpoint::decode_ssz_checked(&data[cp_len..(cp_len * 2)])?;
-    Ok(Status {
-        fork_digest: crate::types::bytes::Bytes32::zero(),
-        finalized_root: finalized.root,
-        finalized_epoch: finalized.slot.0,
-        head_root: head.root,
-        head_slot: head.slot.0,
-    })
-}
-
-#[inline]
-fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootRequest, String> {
-    // Disambiguate by prefix when possible:
-    // - peam historical wrapper starts with offset=4.
-    // - REAM transparent list has no offset prefix.
-    if data.len() >= 4 {
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&data[..4]);
-        let prefix = u32::from_le_bytes(buf) as usize;
-        if prefix == 4
-            && let Ok(req) = BlocksByRootRequest::decode_ssz_checked(data)
-        {
-            return Ok(req);
-        }
-    }
-    let roots = SszList::decode_ssz_checked(data)?;
-    Ok(BlocksByRootRequest { roots })
-}
-
-#[inline]
-fn decode_blocks_by_root_response_compat(
-    data: &[u8],
-) -> Result<SignedBlockWithAttestation, String> {
-    // REAM sends one SignedBlockWithAttestation per chunk. Decode this first
-    // to avoid permissive wrapper decoding from interpreting single-block bytes
-    // as a malformed list.
-    if let Ok(single) = SignedBlockWithAttestation::decode_ssz_checked(data) {
-        return Ok(single);
-    }
-
-    // Fallback for peam's historical wrapper form.
-    if let Ok(resp) = BlocksByRootResponse::decode_ssz_checked(data) {
-        return resp
-            .blocks
-            .data
-            .into_iter()
-            .next()
-            .ok_or_else(|| "empty BlocksByRoot response payload".to_string());
-    }
-
-    Err("unsupported BlocksByRoot response payload".to_string())
-}
+use crate::containers::req_resp::{BlocksByRootRequest, Status};
+use crate::ssz::SszEncode;
 
 /// All req/resp protocols supported by the lean-Ethereum node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,9 +55,6 @@ impl LeanSupportedProtocol {
             && parts[1] == "req"
             && parts[4] == "ssz_snappy"
         {
-            (parts[2], parts[3])
-        } else if parts.len() == 4 && parts[0] == "peam" && parts[1] == "reqresp" {
-            // Legacy local format retained for backward compatibility.
             (parts[2], parts[3])
         } else {
             return None;
@@ -200,8 +105,7 @@ impl LeanRequestMessage {
     /// SSZ-encodes the inner message.
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
-            LeanRequestMessage::Status(status) => encode_lean_status_compat(status),
-            // Canonical SSZ container payload (offset + roots list).
+            LeanRequestMessage::Status(status) => status.encode_ssz(),
             LeanRequestMessage::BlocksByRoot(req) => req.encode_ssz(),
         }
     }
@@ -213,11 +117,11 @@ impl LeanRequestMessage {
     /// Returns `Err` if decoding fails for the selected protocol.
     pub fn decode_ssz(protocol: LeanSupportedProtocol, data: &[u8]) -> Result<Self, String> {
         match protocol {
-            LeanSupportedProtocol::StatusV1 => {
-                Ok(LeanRequestMessage::Status(decode_lean_status_compat(data)?))
-            }
+            LeanSupportedProtocol::StatusV1 => Ok(LeanRequestMessage::Status(
+                Status::decode_ssz_checked(data)?,
+            )),
             LeanSupportedProtocol::BlocksByRootV1 => Ok(LeanRequestMessage::BlocksByRoot(
-                decode_blocks_by_root_request_compat(data)?,
+                BlocksByRootRequest::decode_ssz_checked(data)?,
             )),
         }
     }
@@ -236,7 +140,7 @@ impl LeanResponseMessage {
     /// SSZ-encodes the inner message.
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
-            LeanResponseMessage::Status(status) => encode_lean_status_compat(status),
+            LeanResponseMessage::Status(status) => status.encode_ssz(),
             LeanResponseMessage::BlocksByRoot(block) => block.encode_ssz(),
         }
     }
@@ -249,10 +153,10 @@ impl LeanResponseMessage {
     pub fn decode_ssz(protocol: LeanSupportedProtocol, data: &[u8]) -> Result<Self, String> {
         match protocol {
             LeanSupportedProtocol::StatusV1 => Ok(LeanResponseMessage::Status(
-                decode_lean_status_compat(data)?,
+                Status::decode_ssz_checked(data)?,
             )),
             LeanSupportedProtocol::BlocksByRootV1 => Ok(LeanResponseMessage::BlocksByRoot(
-                decode_blocks_by_root_response_compat(data)?,
+                SignedBlockWithAttestation::decode_ssz_checked(data)?,
             )),
         }
     }
