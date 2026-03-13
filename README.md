@@ -28,22 +28,24 @@ cargo test
 ```
 
 ## Docker
-Build from the monorepo root (`../`) so patched path dependencies are available in build context.
+Build from the Peam repo root.
 
 ```bash
-# from repo root
-make docker-build-peam
+docker build -t peam:local .
 ```
 
-Default image tags:
-- `ghcr.io/leanethereum/peam:latest`
-- `ghcr.io/leanethereum/peam:latest-devnet3`
+Published images:
+- `ghcr.io/malik672/peam:latest`
+- `ghcr.io/malik672/peam:sha-<commit>`
+- `ghcr.io/malik672/peam:<tag>` for pushed release/devnet tags
 
-For multi-arch push with OCI labels (`org.opencontainers.*`):
+The GitHub Actions workflow at [`.github/workflows/docker_publish.yml`](./.github/workflows/docker_publish.yml)
+publishes multi-arch images to GHCR on `master`, on pushed tags, and on manual dispatch.
+
+For a local multi-arch build:
 
 ```bash
-# from repo root
-make docker-buildx-push-peam
+docker buildx build --platform linux/amd64,linux/arm64 -t peam:local .
 ```
 
 ## Devnet status

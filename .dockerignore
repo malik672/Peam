@@ -1,0 +1,11 @@
+.git
+.github
+.tmp
+target
+**/target
+data
+deserialization_dumps
+book/book
+summary.md
+BENCHMARKS.md
+codex.txt
