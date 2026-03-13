@@ -385,9 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn simple_verifier_accepts_placeholder_aggregate_proof() {
-        // Avoid `setup_aggregate_verifier` in tests; placeholder path does not
-        // require aggregate verifier initialization.
+    fn simple_verifier_rejects_placeholder_aggregate_proof() {
         let verifier = SimpleGossipVerifier {
             pubkeys: vec![Bytes52::from([0u8; 52])],
         };
@@ -401,7 +399,7 @@ mod tests {
             proof_data: ByteList::<PROOF_MAX_BYTES>::new(Vec::new()).expect("proof bytes"),
         };
 
-        assert!(verifier.verify_attestation_signature(&attestation, &proof));
+        assert!(!verifier.verify_attestation_signature(&attestation, &proof));
     }
 
     #[test]
