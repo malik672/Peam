@@ -5,10 +5,7 @@ WORKDIR /workspace
 
 FROM chef AS planner
 
-# Include manifests and local path dependencies used by peam.
 COPY Cargo.toml Cargo.lock build.rs ./
-COPY fiat-shamir ./fiat-shamir
-COPY whir-p3 ./whir-p3
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -18,8 +15,6 @@ COPY --from=planner /workspace/recipe.json ./recipe.json
 COPY --from=planner /workspace/Cargo.toml ./Cargo.toml
 COPY --from=planner /workspace/Cargo.lock ./Cargo.lock
 COPY --from=planner /workspace/build.rs ./build.rs
-COPY --from=planner /workspace/fiat-shamir ./fiat-shamir
-COPY --from=planner /workspace/whir-p3 ./whir-p3
 
 RUN cargo chef cook --release --locked --recipe-path recipe.json
 
