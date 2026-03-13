@@ -4,7 +4,7 @@
 //! ```text
 //! /{TOPIC_PREFIX}/{fork}/{kind}/{ENCODING_POSTFIX}
 //! ```
-//! e.g. `/leanconsensus/devnet3/blocks/ssz_snappy`.
+//! e.g. `/leanconsensus/devnet0/block/ssz_snappy`.
 //!
 //! [`LeanGossipTopic`] represents a parsed topic and converts to/from libp2p
 //! [`TopicHash`] and [`IdentTopic`].
@@ -19,7 +19,7 @@ pub const TOPIC_PREFIX: &str = "leanconsensus";
 pub const ENCODING_POSTFIX: &str = "ssz_snappy";
 
 /// Canonical topic name segment for full signed blocks.
-pub const LEAN_BLOCK_TOPIC: &str = "blocks";
+pub const LEAN_BLOCK_TOPIC: &str = "block";
 /// Topic name segment for aggregated-attestation gossip.
 pub const LEAN_AGGREGATION_TOPIC: &str = "aggregation";
 /// Prefix for per-subnet attestation topics.
@@ -83,7 +83,7 @@ impl LeanGossipTopic {
     }
 }
 
-/// Renders the full topic string, e.g. `/leanconsensus/devnet3/blocks/ssz_snappy`.
+/// Renders the full topic string, e.g. `/leanconsensus/devnet0/block/ssz_snappy`.
 impl std::fmt::Display for LeanGossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let topic_name = match &self.kind {

@@ -19,6 +19,9 @@ pub enum NetworkEvent {
     PeerBanned { peer_id: String, reason: String },
     /// A gossipsub message was received from the network.
     GossipMessage { topic: String, payload: Vec<u8> },
+    /// A gossipsub message was ignored because it referenced roots that may
+    /// become known shortly after import/sync catches up.
+    GossipDeferredUnknownRoots { topic: String, payload: Vec<u8> },
     /// A gossipsub message passed (`valid: true`) or failed (`valid: false`) validation.
     GossipValidated { topic: String, valid: bool },
     /// An inbound req/resp request arrived from a peer.

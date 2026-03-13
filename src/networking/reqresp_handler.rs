@@ -7,8 +7,9 @@
 //! - [`StoreReqRespHandler`] — serves requests from a live [`Store`] and
 //!   [`State`].
 
-use std::sync::{Arc, RwLock};
-use tracing::debug;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
+use tracing::{debug, info};
 
 use crate::containers::req_resp::Status;
 use crate::ssz::HashTreeRoot;
@@ -67,8 +68,10 @@ impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
     /// Falls back to `latest_block_header` values when the store has no head.
     #[inline]
     fn build_status(&self) -> Status {
+        static STATUS_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let state = self.state.read().expect("state lock");
         let store = self.store.read().expect("store lock");
+        let store_head = store.head();
         let (head_root, head_slot) = store
             .head()
             .and_then(|root| {
@@ -83,10 +86,25 @@ impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
                 )
             });
         let finalized_root = store.finalized().unwrap_or(state.latest_finalized.root);
+        if head_slot.0 == 0 {
+            let counter = STATUS_LOGS.get_or_init(|| AtomicUsize::new(0));
+            if counter.fetch_add(1, Ordering::Relaxed) < 64 {
+                info!(
+                    store_head = ?store_head,
+                    status_head_root = ?head_root,
+                    status_head_slot = head_slot.0,
+                    status_finalized_root = ?finalized_root,
+                    status_finalized_slot = state.latest_finalized.slot.0.0,
+                    state_slot = state.slot.0.0,
+                    state_latest_header_slot = state.latest_block_header.slot.0.0,
+                    state_latest_header_root = ?Bytes32::from(state.latest_block_header.hash_tree_root()),
+                    "reqresp build_status returning genesis-like view"
+                );
+            }
+        }
         Status {
-            fork_digest: Bytes32::zero(),
             finalized_root,
-            finalized_epoch: state.latest_finalized.slot.0,
+            finalized_slot: state.latest_finalized.slot.0,
             head_root,
             head_slot,
         }

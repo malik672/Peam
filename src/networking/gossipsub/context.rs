@@ -12,10 +12,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::containers::state::State;
+use crate::storage::{FileStore, Store};
 use crate::slot::{Slot, slot_index_from_unix_millis, unix_now_millis};
 use crate::ssz::HashTreeRoot;
 use crate::types::bytes::Bytes32;
 use crate::types::uint::Uint64;
+
+const RECENT_ROOT_CACHE_LEN: usize = 200;
 
 /// Provides slot-related context to gossip validators.
 ///
@@ -59,6 +62,8 @@ impl GossipContext for NoopGossipContext {
 pub struct StateGossipContext {
     state: Arc<RwLock<State>>,
     slot_clock: Option<Arc<AtomicU64>>,
+    store: Option<Arc<RwLock<FileStore>>>,
+    recent_roots: RwLock<RecentRootCache>,
 }
 
 impl StateGossipContext {
@@ -67,6 +72,8 @@ impl StateGossipContext {
         Self {
             state,
             slot_clock: None,
+            store: None,
+            recent_roots: RwLock::new(RecentRootCache::default()),
         }
     }
 
@@ -75,6 +82,22 @@ impl StateGossipContext {
         Self {
             state,
             slot_clock: Some(slot_clock),
+            store: None,
+            recent_roots: RwLock::new(RecentRootCache::default()),
+        }
+    }
+
+    /// Creates a new context backed by a strict slot ticker and store fallback.
+    pub fn with_slot_clock_and_store(
+        state: Arc<RwLock<State>>,
+        slot_clock: Arc<AtomicU64>,
+        store: Arc<RwLock<FileStore>>,
+    ) -> Self {
+        Self {
+            state,
+            slot_clock: Some(slot_clock),
+            store: Some(store),
+            recent_roots: RwLock::new(RecentRootCache::default()),
         }
     }
 }
@@ -103,13 +126,139 @@ impl GossipContext for StateGossipContext {
         let Ok(guard) = self.state.read() else {
             return false;
         };
-        if *root == Bytes32::from(guard.latest_block_header.hash_tree_root())
-            || *root == guard.latest_justified.root
-            || *root == guard.latest_finalized.root
-        {
+        let snapshot = ContextSnapshot::from_state(&guard);
+        if snapshot.knows_direct_root(root) {
             return true;
         }
-        guard.historical_block_hashes.data.iter().any(|v| v == root)
+        if let Ok(mut recent_roots) = self.recent_roots.write() {
+            recent_roots.refresh_from_state(&guard);
+            if recent_roots.contains(root) {
+                return true;
+            }
+        }
+        drop(guard);
+        self.knows_block_root_cold(root, snapshot)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ContextSnapshot {
+    latest_header_root: Bytes32,
+    latest_header_slot: u64,
+    latest_justified_root: Bytes32,
+    latest_justified_slot: u64,
+    latest_finalized_root: Bytes32,
+    latest_finalized_slot: u64,
+    state_slot: u64,
+}
+
+impl ContextSnapshot {
+    #[inline]
+    fn from_state(state: &State) -> Self {
+        Self {
+            latest_header_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+            latest_header_slot: state.latest_block_header.slot.0.0,
+            latest_justified_root: state.latest_justified.root,
+            latest_justified_slot: state.latest_justified.slot.0.0,
+            latest_finalized_root: state.latest_finalized.root,
+            latest_finalized_slot: state.latest_finalized.slot.0.0,
+            state_slot: state.slot.0.0,
+        }
+    }
+
+    #[inline]
+    fn knows_direct_root(&self, root: &Bytes32) -> bool {
+        *root == self.latest_header_root
+            || *root == self.latest_justified_root
+            || *root == self.latest_finalized_root
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RecentRootEntry {
+    slot: u64,
+    root: Bytes32,
+}
+
+#[derive(Clone)]
+struct RecentRootCache {
+    entries: [Option<RecentRootEntry>; RECENT_ROOT_CACHE_LEN],
+    latest_header_slot: u64,
+    state_slot: u64,
+}
+
+impl Default for RecentRootCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; RECENT_ROOT_CACHE_LEN],
+            latest_header_slot: u64::MAX,
+            state_slot: u64::MAX,
+        }
+    }
+}
+
+impl RecentRootCache {
+    #[inline]
+    fn refresh_from_state(&mut self, state: &State) {
+        let latest_header_slot = state.latest_block_header.slot.0.0;
+        let state_slot = state.slot.0.0;
+        if self.latest_header_slot == latest_header_slot && self.state_slot == state_slot {
+            return;
+        }
+
+        self.entries = [None; RECENT_ROOT_CACHE_LEN];
+        let latest_header_root = Bytes32::from(state.latest_block_header.hash_tree_root());
+        self.insert(latest_header_slot, latest_header_root);
+
+        let historical = &state.historical_block_hashes.data;
+        let start = historical.len().saturating_sub(RECENT_ROOT_CACHE_LEN);
+        for (slot, root) in historical.iter().copied().enumerate().skip(start) {
+            if root == Bytes32::zero() {
+                continue;
+            }
+            self.insert(slot as u64, root);
+        }
+
+        self.latest_header_slot = latest_header_slot;
+        self.state_slot = state_slot;
+    }
+
+    #[inline]
+    fn insert(&mut self, slot: u64, root: Bytes32) {
+        let idx = (slot as usize) % RECENT_ROOT_CACHE_LEN;
+        self.entries[idx] = Some(RecentRootEntry { slot, root });
+    }
+
+    #[inline]
+    fn contains(&self, root: &Bytes32) -> bool {
+        self.entries
+            .iter()
+            .flatten()
+            .any(|entry| entry.root == *root && self.entries[(entry.slot as usize) % RECENT_ROOT_CACHE_LEN].is_some())
+    }
+}
+
+impl StateGossipContext {
+    #[cold]
+    fn knows_block_root_cold(&self, root: &Bytes32, snapshot: ContextSnapshot) -> bool {
+        let db_hit = self
+            .store
+            .as_ref()
+            .and_then(|store| store.read().ok().map(|guard| guard.get_block(root).is_some()))
+            .unwrap_or(false);
+        tracing::trace!(
+            queried_root = ?root,
+            db_hit,
+            latest_header_root = ?snapshot.latest_header_root,
+            latest_header_slot = snapshot.latest_header_slot,
+            latest_justified_root = ?snapshot.latest_justified_root,
+            latest_justified_slot = snapshot.latest_justified_slot,
+            latest_finalized_root = ?snapshot.latest_finalized_root,
+            latest_finalized_slot = snapshot.latest_finalized_slot,
+            state_slot = snapshot.state_slot,
+            "peam gossip root cold lookup"
+        );
+        db_hit
     }
 }
 

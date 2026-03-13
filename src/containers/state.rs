@@ -23,6 +23,7 @@ use rapidhash::RapidHashMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use tracing::{info, warn};
 
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::block::{Attestations, Block, BlockHeader};
@@ -389,11 +390,17 @@ impl State {
     ) -> Result<(), String> {
         let total_start = Instant::now();
         let old_finalized = self.latest_finalized;
+        let pre_slot = self.slot.0.0;
+        let pre_header_slot = self.latest_block_header.slot.0.0;
+        let pre_header_root = Bytes32::from(self.latest_block_header.hash_tree_root());
+        let pre_justified = self.latest_justified;
+        let pre_finalized = self.latest_finalized;
 
         let slots_start = Instant::now();
         let slots_before = self.slot.0.0;
         self.process_slots(block.slot)?;
         let slots_after = self.slot.0.0;
+        let post_slots_root = Bytes32::from(self.hash_tree_root());
         metrics.observe_slots_processing_time(slots_start);
         let advanced_slots = slots_after - slots_before;
         metrics.add_slots_processed(advanced_slots);
@@ -401,6 +408,7 @@ impl State {
         let block_start = Instant::now();
         let header = block.header();
         self.process_block_header_assuming_slot(header)?;
+        let post_header_root = Bytes32::from(self.hash_tree_root());
 
         let body_root = block.body.hash_tree_root();
         if header.body_root != Bytes32::from(body_root) {
@@ -410,12 +418,38 @@ impl State {
         let att_start = Instant::now();
         let att_count = block.body.attestations.data.len();
         self.process_attestations(&block.body.attestations)?;
+        let post_attestations_root = Bytes32::from(self.hash_tree_root());
         metrics.observe_attestations_processing_time(att_start);
         metrics.add_attestations_processed(att_count as u64);
         metrics.observe_block_processing_time(block_start);
 
         let computed_root = Bytes32::from(self.hash_tree_root());
         if computed_root != block.state_root {
+            warn!(
+                block_slot = block.slot.0.0,
+                block_parent = ?block.parent_root,
+                block_state_root = ?block.state_root,
+                computed_state_root = ?computed_root,
+                pre_slot,
+                pre_header_slot,
+                pre_header_root = ?pre_header_root,
+                pre_justified_slot = pre_justified.slot.0.0,
+                pre_justified_root = ?pre_justified.root,
+                pre_finalized_slot = pre_finalized.slot.0.0,
+                pre_finalized_root = ?pre_finalized.root,
+                post_slots_root = ?post_slots_root,
+                post_header_root = ?post_header_root,
+                post_attestations_root = ?post_attestations_root,
+                post_slot = self.slot.0.0,
+                post_header_slot = self.latest_block_header.slot.0.0,
+                post_header_root = ?Bytes32::from(self.latest_block_header.hash_tree_root()),
+                post_justified_slot = self.latest_justified.slot.0.0,
+                post_justified_root = ?self.latest_justified.root,
+                post_finalized_slot = self.latest_finalized.slot.0.0,
+                post_finalized_root = ?self.latest_finalized.root,
+                body_attestations = att_count,
+                "state transition state-root mismatch trace"
+            );
             return Err("block state root does not match computed state root".to_string());
         } else {
             self.latest_block_header.state_root = computed_root;
@@ -613,6 +647,7 @@ impl State {
                 }
                 continue;
             }
+            let vote_count = votes.count;
             if trace_attestations {
                 stats.justified_updates += 1;
                 log_vote_threshold_sample(
@@ -620,11 +655,10 @@ impl State {
                     att,
                     self.slot,
                     finalized_slot,
-                    votes.count,
+                    vote_count,
                     total_validators,
                 );
             }
-
             self.latest_justified = Checkpoint {
                 root: att.data.target.root,
                 slot: att.data.target.slot,
@@ -636,11 +670,33 @@ impl State {
             )?;
             votes_map.remove(&att.data.target.root);
 
-            let should_finalize_source = is_next_valid_justifiable_slot(
+            let next_valid_justifiable = is_next_valid_justifiable_slot(
                 att.data.source.slot,
                 att.data.target.slot,
                 finalized_slot,
-            ) && att.data.source.slot > finalized_slot;
+            );
+            let source_ahead_of_finalized = att.data.source.slot > finalized_slot;
+            let should_finalize_source = next_valid_justifiable && source_ahead_of_finalized;
+            if finality_trace_enabled() {
+                info!(
+                    target: "peam::containers::state",
+                    source_slot = att.data.source.slot.0.0,
+                    source_root = ?att.data.source.root,
+                    target_slot = att.data.target.slot.0.0,
+                    target_root = ?att.data.target.root,
+                    head_slot = att.data.head.slot.0.0,
+                    head_root = ?att.data.head.root,
+                    state_slot = self.slot.0.0,
+                    pre_justified_slot = self.latest_justified.slot.0.0,
+                    pre_finalized_slot = finalized_slot.0.0,
+                    vote_count,
+                    total_validators,
+                    next_valid_justifiable,
+                    source_ahead_of_finalized,
+                    should_finalize_source,
+                    "peam finality decision"
+                );
+            }
             if should_finalize_source {
                 if trace_attestations {
                     stats.finalized_updates += 1;
@@ -951,6 +1007,21 @@ fn attestation_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         std::env::var("PEAM_TRACE_ATTESTATIONS")
+            .ok()
+            .map(|value| match value.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => false,
+            })
+            .unwrap_or(false)
+    })
+}
+
+#[inline]
+fn finality_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PEAM_TRACE_FINALITY")
             .ok()
             .map(|value| match value.to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => true,

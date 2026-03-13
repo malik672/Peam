@@ -203,7 +203,7 @@ impl Networking {
             .allowed_topics
             .first()
             .cloned()
-            .unwrap_or_else(|| "/leanconsensus/devnet3/blocks/ssz_snappy".to_string());
+            .unwrap_or_else(|| "/leanconsensus/devnet0/block/ssz_snappy".to_string());
         let p2p_config = P2pConfig {
             listen_addr,
             bootnodes,
@@ -354,32 +354,32 @@ impl Default for NetworkingConfig {
             listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
             node_key_path: None,
             allowed_topics: vec![
-                "/leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
-                "/leanconsensus/devnet3/attestation_0/ssz_snappy".to_string(),
-                "/leanconsensus/devnet3/aggregation/ssz_snappy".to_string(),
+                "/leanconsensus/devnet0/block/ssz_snappy".to_string(),
+                "/leanconsensus/devnet0/attestation_0/ssz_snappy".to_string(),
+                "/leanconsensus/devnet0/aggregation/ssz_snappy".to_string(),
             ],
             topic_scores: vec![
-                ("/leanconsensus/devnet3/blocks/ssz_snappy".to_string(), 2),
+                ("/leanconsensus/devnet0/block/ssz_snappy".to_string(), 2),
                 (
-                    "/leanconsensus/devnet3/attestation_0/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet0/attestation_0/ssz_snappy".to_string(),
                     1,
                 ),
                 (
-                    "/leanconsensus/devnet3/aggregation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet0/aggregation/ssz_snappy".to_string(),
                     1,
                 ),
             ],
             topic_validators: vec![
                 (
-                    "/leanconsensus/devnet3/blocks/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet0/block/ssz_snappy".to_string(),
                     GossipValidatorKind::Block,
                 ),
                 (
-                    "/leanconsensus/devnet3/attestation_0/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet0/attestation_0/ssz_snappy".to_string(),
                     GossipValidatorKind::Attestation,
                 ),
                 (
-                    "/leanconsensus/devnet3/aggregation/ssz_snappy".to_string(),
+                    "/leanconsensus/devnet0/aggregation/ssz_snappy".to_string(),
                     GossipValidatorKind::AggregatedAttestation,
                 ),
             ],

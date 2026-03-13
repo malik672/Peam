@@ -280,9 +280,8 @@ async fn ream_status_request_response_smoke() {
     wait_for_peer_connected(events_2.subscribe()).await;
 
     let status = LeanRequestMessage::Status(Status {
-        fork_digest: Bytes32::zero(),
         finalized_root: Bytes32::zero(),
-        finalized_epoch: Uint64(0),
+        finalized_slot: Uint64(0),
         head_root: Bytes32::zero(),
         head_slot: Uint64(0),
     });
@@ -312,7 +311,7 @@ async fn ream_status_request_response_smoke() {
                 .expect("decode");
             match msg {
                 LeanResponseMessage::Status(status) => {
-                    assert_eq!(status.fork_digest, peam::types::bytes::Bytes32::zero());
+                    assert_eq!(status.finalized_root, peam::types::bytes::Bytes32::zero());
                 }
                 _ => panic!("unexpected response"),
             }

@@ -110,6 +110,14 @@ pub fn merkleize_tree_root(chunks: &[Bytes32]) -> Bytes32 {
     hash_nodes(&e, &f)
 }
 
+// width fixed to 4 for 4 field roots
+#[inline]
+pub fn merkleize_tree_root_4(chunks: &[Bytes32]) -> Bytes32 {
+    let a = hash_nodes(&chunks[0], &chunks[1]);
+    let b = hash_nodes(&chunks[2], &chunks[3]);
+    hash_nodes(&a, &b)
+}
+
 // width fixed to 4 for 3 field roots
 #[inline]
 pub fn merkleize_tree_root_3(chunks: &[Bytes32]) -> Bytes32 {

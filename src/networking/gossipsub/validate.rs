@@ -20,6 +20,8 @@ use crate::networking::gossipsub::context::GossipContext;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::types::bitlist::BitList;
 
+pub const UNKNOWN_CHAIN_ROOTS_IGNORE_REASON: &str = "attestation references unknown chain roots";
+
 /// The outcome of a gossip validation step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationResult {
@@ -29,6 +31,11 @@ pub enum ValidationResult {
     Ignore(String),
     /// Message is invalid; the sender should be penalised; carries a reason.
     Reject(String),
+}
+
+#[inline]
+pub fn is_retryable_unknown_roots_ignore(reason: &str) -> bool {
+    reason == UNKNOWN_CHAIN_ROOTS_IGNORE_REASON
 }
 
 /// Runs basic (context-free) validation on a decoded gossipsub message.
@@ -164,30 +171,15 @@ fn validate_block_with_context(
             return ValidationResult::Ignore("block from future slot".to_string());
         }
     }
-    let proposer_check = validate_attestation_with_context(
-        &SignedAttestation {
-            validator_id: crate::types::uint::Uint64(0),
-            message: block.message.proposer_attestation.data.clone(),
-            signature: crate::types::bytes::Bytes3112::zero(),
-        },
-        context,
+    // Block gossip should be admitted based on block ancestry and block-local
+    // structure. Embedded attestations are processed after block import, once
+    // the imported block can make their referenced head roots known.
+    let proposer_check = validate_attestation_fields(
+        &block.message.proposer_attestation.data,
+        Some(block.message.block.slot.0.0),
     );
     if !matches!(proposer_check, ValidationResult::Accept) {
         return proposer_check;
-    }
-    for att in block.message.block.body.attestations.data.iter() {
-        let check = validate_attestation_fields(&att.data, Some(block.message.block.slot.0.0));
-        if !matches!(check, ValidationResult::Accept) {
-            return check;
-        }
-        if !context.knows_block_root(&att.data.head.root)
-            || !context.knows_block_root(&att.data.source.root)
-            || !context.knows_block_root(&att.data.target.root)
-        {
-            return ValidationResult::Ignore(
-                "attestation references unknown chain roots".to_string(),
-            );
-        }
     }
     ValidationResult::Accept
 }
@@ -221,11 +213,24 @@ fn validate_attestation_data_with_context(
     if msg.head.slot < msg.target.slot {
         return ValidationResult::Reject("attestation head below target".to_string());
     }
-    if !context.knows_block_root(&msg.head.root)
-        || !context.knows_block_root(&msg.source.root)
-        || !context.knows_block_root(&msg.target.root)
-    {
-        return ValidationResult::Ignore("attestation references unknown chain roots".to_string());
+    let knows_head = context.knows_block_root(&msg.head.root);
+    let knows_source = context.knows_block_root(&msg.source.root);
+    let knows_target = context.knows_block_root(&msg.target.root);
+    if !knows_head || !knows_source || !knows_target {
+        tracing::info!(
+            attestation_slot = ?msg.slot,
+            head_slot = ?msg.head.slot,
+            source_slot = ?msg.source.slot,
+            target_slot = ?msg.target.slot,
+            head_root = ?msg.head.root,
+            source_root = ?msg.source.root,
+            target_root = ?msg.target.root,
+            knows_head,
+            knows_source,
+            knows_target,
+            "peam attestation ignored due to unknown roots"
+        );
+        return ValidationResult::Ignore(UNKNOWN_CHAIN_ROOTS_IGNORE_REASON.to_string());
     }
     if let Some(current_slot) = context.current_slot() {
         if msg.slot.0.0 > current_slot.0.0 + 1 {
@@ -262,9 +267,17 @@ fn validate_subnet_attestation_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::containers::attestation::{Attestation, AggregatedSignatureProof};
+    use crate::containers::block::{
+        AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures, BlockWithAttestation,
+        SignedBlockWithAttestation,
+    };
     use crate::containers::checkpoint::Checkpoint;
+    use crate::containers::validator::ValidatorIndex;
     use crate::networking::gossipsub::context::GossipContext;
     use crate::slot::Slot;
+    use crate::types::bitlist::BitList;
+    use crate::types::bytes::ByteList;
     use crate::types::bytes::{Bytes32, Bytes3112};
     use crate::types::uint::Uint64;
 
@@ -305,6 +318,49 @@ mod tests {
                 },
             },
             signature: Bytes3112::zero(),
+        }
+    }
+
+    fn block_with_unknown_attestation_roots(slot: u64, parent_root: Bytes32) -> SignedBlockWithAttestation {
+        let attestation = Attestation {
+            aggregation_bits: BitList::new(vec![true]).expect("bitlist"),
+            data: AttestationData {
+                slot: Slot(Uint64(slot)),
+                source: Checkpoint {
+                    root: Bytes32::from([1; 32]),
+                    slot: Slot(Uint64(slot.saturating_sub(4))),
+                },
+                target: Checkpoint {
+                    root: Bytes32::from([2; 32]),
+                    slot: Slot(Uint64(slot.saturating_sub(1))),
+                },
+                head: Checkpoint {
+                    root: Bytes32::from([9; 32]),
+                    slot: Slot(Uint64(slot)),
+                },
+            },
+        };
+        SignedBlockWithAttestation {
+            message: BlockWithAttestation {
+                block: Block {
+                    slot: Slot(Uint64(slot)),
+                    proposer_index: ValidatorIndex(Uint64(0)),
+                    parent_root,
+                    state_root: Bytes32::zero(),
+                    body: BlockBody {
+                        attestations: Attestations::new(vec![attestation.clone()]).expect("attestations"),
+                    },
+                },
+                proposer_attestation: attestation,
+            },
+            signature: BlockSignatures {
+                attestation_signatures: AttestationSignatures::new(vec![AggregatedSignatureProof {
+                    participants: BitList::new(vec![true]).expect("participants"),
+                    proof_data: ByteList::new(vec![0]).expect("proof bytes"),
+                }])
+                .expect("attestation signatures"),
+                proposer_signature: Bytes3112::zero(),
+            },
         }
     }
 
@@ -368,5 +424,35 @@ mod tests {
         // With committee count set to 1, validator 0 must publish on subnet 0.
         let res = validate_subnet_attestation_basic(1, &att);
         assert!(matches!(res, ValidationResult::Reject(_)));
+    }
+
+    #[test]
+    fn block_context_accepts_block_when_embedded_attestation_head_is_not_known_yet() {
+        let parent_root = Bytes32::from([7; 32]);
+        let ctx = MockContext {
+            current: Some(Slot(Uint64(10))),
+            finalized: Some(Slot(Uint64(5))),
+            known: [parent_root, Bytes32::from([1; 32]), Bytes32::from([2; 32])]
+                .into_iter()
+                .collect(),
+        };
+        let signed = block_with_unknown_attestation_roots(10, parent_root);
+        let res = validate_block_with_context(&signed, &ctx);
+        assert!(matches!(res, ValidationResult::Accept));
+    }
+
+    #[test]
+    fn block_context_still_ignores_unknown_parent() {
+        let parent_root = Bytes32::from([7; 32]);
+        let ctx = MockContext {
+            current: Some(Slot(Uint64(10))),
+            finalized: Some(Slot(Uint64(5))),
+            known: [Bytes32::from([1; 32]), Bytes32::from([2; 32])]
+                .into_iter()
+                .collect(),
+        };
+        let signed = block_with_unknown_attestation_roots(10, parent_root);
+        let res = validate_block_with_context(&signed, &ctx);
+        assert!(matches!(res, ValidationResult::Ignore(_)));
     }
 }

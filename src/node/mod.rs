@@ -106,6 +106,8 @@ pub struct Node {
     aggregation_task: Option<JoinHandle<()>>,
     /// Handle to the status/backfill sync task.
     sync_task: Option<JoinHandle<()>>,
+    /// Handle to the deferred attestation-gossip retry task.
+    deferred_gossip_task: Option<JoinHandle<()>>,
     /// True while the node is actively catching up from peers.
     is_syncing: Arc<AtomicBool>,
     /// Peer-reported head slot currently targeted by the sync loop.
@@ -293,6 +295,7 @@ expected {:?}, got {:?}",
             block_task: None,
             aggregation_task: None,
             sync_task: None,
+            deferred_gossip_task: None,
             is_syncing: Arc::new(AtomicBool::new(false)),
             sync_target_slot: Arc::new(AtomicU64::new(0)),
             sync_pending_depth: Arc::new(AtomicU64::new(0)),
@@ -374,9 +377,10 @@ expected {:?}, got {:?}",
             self.store.clone(),
         ));
         let slot_clock = spawn_strict_slot_clock(self.config.genesis_time.0);
-        let gossip_context = Arc::new(StateGossipContext::with_slot_clock(
+        let gossip_context = Arc::new(StateGossipContext::with_slot_clock_and_store(
             self.state.clone(),
             slot_clock,
+            self.store.clone(),
         ));
 
         let committee_count = self.settings.attestation_committee_count.max(1);
@@ -387,6 +391,13 @@ expected {:?}, got {:?}",
             &self.settings.topic_validators,
             self.settings.is_aggregator,
             local_subnet,
+        );
+        tracing::info!(
+            is_aggregator = self.settings.is_aggregator,
+            local_subnet,
+            configured_topics = ?self.settings.allowed_topics,
+            active_topics = ?allowed_topics,
+            "peam networking topics resolved"
         );
         let net_config = NetworkingConfig {
             discovery_interval_secs: self.settings.discovery_interval_secs,
@@ -423,23 +434,37 @@ expected {:?}, got {:?}",
             let pending_block_attestations = self.pending_block_attestations.clone();
             let is_aggregator = self.settings.is_aggregator;
             let metrics = self.metrics.clone();
+            let deferred_gossip = Arc::new(RwLock::new(Vec::new()));
+            let deferred_gossip_rx = deferred_gossip.clone();
             tokio::spawn(async move {
                 loop {
                     let Ok(event) = rx.recv().await else { continue };
-                    if let crate::networking::NetworkEvent::GossipMessage { topic, payload } = event
-                    {
-                        handle_gossip_event(
-                            &topic,
-                            &payload,
-                            &state,
-                            &store,
-                            &fork_choice,
-                            &pending_attestations,
-                            &pending_individual_attestations,
-                            &pending_block_attestations,
-                            is_aggregator,
-                            &metrics,
-                        );
+                    match event {
+                        crate::networking::NetworkEvent::GossipMessage { topic, payload } => {
+                            handle_gossip_event(
+                                &topic,
+                                &payload,
+                                &state,
+                                &store,
+                                &fork_choice,
+                                &pending_attestations,
+                                &pending_individual_attestations,
+                                &pending_block_attestations,
+                                is_aggregator,
+                                &metrics,
+                            );
+                        }
+                        crate::networking::NetworkEvent::GossipDeferredUnknownRoots {
+                            topic,
+                            payload,
+                        } => {
+                            gossip::queue_deferred_unknown_root_gossip(
+                                &deferred_gossip_rx,
+                                topic,
+                                payload,
+                            );
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -456,6 +481,18 @@ expected {:?}, got {:?}",
                 self.is_syncing.clone(),
                 self.sync_target_slot.clone(),
                 self.sync_pending_depth.clone(),
+                self.metrics.clone(),
+            ));
+            self.deferred_gossip_task = Some(gossip::spawn_deferred_gossip_retry_task(
+                self.state.clone(),
+                self.store.clone(),
+                self.fork_choice.clone(),
+                self.pending_attestations.clone(),
+                self.pending_individual_attestations.clone(),
+                self.pending_block_attestations.clone(),
+                deferred_gossip,
+                net_config.gossip_context.clone(),
+                self.settings.is_aggregator,
                 self.metrics.clone(),
             ));
         }
@@ -595,6 +632,9 @@ expected {:?}, got {:?}",
         if let Some(task) = self.sync_task.take() {
             task.abort();
         }
+        if let Some(task) = self.deferred_gossip_task.take() {
+            task.abort();
+        }
         info!("node stopped");
         Ok(())
     }
@@ -650,7 +690,7 @@ fn select_aggregation_topic(allowed_topics: &[String]) -> Option<String> {
 fn select_block_topic(allowed_topics: &[String]) -> Option<String> {
     allowed_topics
         .iter()
-        .find(|topic| topic.contains("/blocks/"))
+        .find(|topic| topic.contains("/block/"))
         .cloned()
 }
 
@@ -660,7 +700,7 @@ fn filter_topics_for_role(
     topic_scores: &[(String, i64)],
     topic_validators: &[(String, crate::networking::GossipValidatorKind)],
     is_aggregator: bool,
-    _local_attestation_subnet: u64,
+    local_attestation_subnet: u64,
 ) -> (
     Vec<String>,
     Vec<(String, i64)>,
@@ -673,7 +713,10 @@ fn filter_topics_for_role(
             topic_validators.to_vec(),
         );
     }
-    let should_keep = |topic: &str| !topic.contains("/attestation_");
+    let local_attestation_fragment = format!("/attestation_{local_attestation_subnet}/");
+    let should_keep = |topic: &str| {
+        !topic.contains("/attestation_") || topic.contains(&local_attestation_fragment)
+    };
     let allowed = allowed_topics
         .iter()
         .filter(|topic| should_keep(topic))

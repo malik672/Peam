@@ -34,9 +34,9 @@ PEER2_CMD="${PEER2_CMD:-}"
 PEER3_CMD="${PEER3_CMD:-}"
 
 # Topic domain defaults to the canonical devnet3 namespace.
-TOPIC_DOMAIN="${TOPIC_DOMAIN:-devnet3}"
+TOPIC_DOMAIN="${TOPIC_DOMAIN:-devnet0}"
 
-BLOCK_TOPIC="/leanconsensus/$TOPIC_DOMAIN/blocks/ssz_snappy"
+BLOCK_TOPIC="/leanconsensus/$TOPIC_DOMAIN/block/ssz_snappy"
 AGGREGATION_TOPIC="/leanconsensus/$TOPIC_DOMAIN/aggregation/ssz_snappy"
 if ! [[ "$ATTESTATION_COMMITTEE_COUNT" =~ ^[0-9]+$ ]] || [[ "$ATTESTATION_COMMITTEE_COUNT" -le 0 ]]; then
   echo "Invalid ATTESTATION_COMMITTEE_COUNT=$ATTESTATION_COMMITTEE_COUNT (must be integer > 0)"

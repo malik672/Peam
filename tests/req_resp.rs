@@ -87,9 +87,8 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
 #[test]
 fn status_roundtrip() {
     let status = Status {
-        fork_digest: Bytes32::from([1u8; 32]),
         finalized_root: Bytes32::from([2u8; 32]),
-        finalized_epoch: Uint64(3),
+        finalized_slot: Uint64(3),
         head_root: Bytes32::from([4u8; 32]),
         head_slot: Uint64(5),
     };

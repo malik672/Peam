@@ -280,24 +280,24 @@ pub(super) fn spawn_signed_attestation_task(
 
             let att_data = {
                 let guard = state.read().expect("state lock");
-                let head_root = proposal_head_from_pending(&fork_choice, &pending_attestations)
-                    .unwrap_or_else(|| Bytes32::from(guard.latest_block_header.hash_tree_root()));
                 let source = guard.latest_justified;
                 let finalized_slot = guard.latest_finalized.slot;
+                let pending_head_root = proposal_head_from_pending(&fork_choice, &pending_attestations);
 
                 let (mut head, target) = {
                     let fc_guard = fork_choice.read().expect("fork choice lock");
                     if let Some(fc) = fc_guard.as_ref() {
+                        let head_root = pending_head_root.unwrap_or_else(|| fc.head());
                         let head = fc.checkpoint_for_root(head_root).unwrap_or(Checkpoint {
                             root: head_root,
-                            slot: guard.slot,
+                            slot: Slot(Uint64(fc.head_slot())),
                         });
                         let target = fc.attestation_target(finalized_slot).unwrap_or(source);
                         (head, target)
                     } else {
                         (
                             Checkpoint {
-                                root: head_root,
+                                root: Bytes32::from(guard.latest_block_header.hash_tree_root()),
                                 slot: guard.slot,
                             },
                             source,

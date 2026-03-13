@@ -39,11 +39,12 @@ async fn request_root_from_peer(
         Err(_) => return false,
     };
     let request = LeanRequestMessage::BlocksByRoot(BlocksByRootRequest { roots });
+    let payload = request.encode_ssz();
     p2p_tx
         .send(P2pCommand::SendRequest {
             peer,
             protocol: LeanSupportedProtocol::BlocksByRootV1.protocol_id(),
-            payload: request.encode_ssz(),
+            payload,
         })
         .await
         .is_ok()
@@ -294,9 +295,9 @@ pub(crate) fn spawn_status_sync_task(
                                 "sync status peer={} local_head={} local_finalized={} remote_head={} remote_finalized={}",
                                 peer_id,
                                 local_head_slot,
-                                local_status.finalized_epoch.0,
+                                local_status.finalized_slot.0,
                                 remote_status.head_slot.0,
-                                remote_status.finalized_epoch.0
+                                remote_status.finalized_slot.0
                             );
                             let current_target = sync_target_slot.load(Ordering::Relaxed);
                             let remote_head_known = {
@@ -339,7 +340,8 @@ pub(crate) fn spawn_status_sync_task(
                             pending.set_target(peer_id.clone(), remote_status.head_root);
                             debug!(
                                 "sync requesting root={:?} from peer={}",
-                                remote_status.head_root, peer_id
+                                remote_status.head_root,
+                                peer_id,
                             );
                             let requested = request_root_with_fanout(
                                 &p2p_tx,
@@ -399,6 +401,8 @@ pub(crate) fn spawn_status_sync_task(
 
                             let parent_root = signed.message.block.parent_root;
                             let signed_slot = signed.message.block.slot;
+                            let signed_root =
+                                crate::types::bytes::Bytes32::from(signed.message.block.hash_tree_root());
                             pending.fetched_chain_newest_to_oldest.push(signed);
                             sync_pending_depth.store(
                                 pending.fetched_chain_newest_to_oldest.len() as u64,
@@ -424,7 +428,48 @@ pub(crate) fn spawn_status_sync_task(
                                         signed_slot,
                                     )
                             };
+                            debug!(
+                                "sync blocks_by_root accepted root={:?} slot={} parent={:?} depth={} target_root={:?} peer={} parent_known_or_anchor={}",
+                                signed_root,
+                                signed_slot.0.0,
+                                parent_root,
+                                pending.fetched_chain_newest_to_oldest.len(),
+                                target_root,
+                                peer_id,
+                                parent_known_or_anchor
+                            );
                             if parent_known_or_anchor {
+                                let oldest = pending
+                                    .fetched_chain_newest_to_oldest
+                                    .last()
+                                    .map(|block| {
+                                        (
+                                            crate::types::bytes::Bytes32::from(
+                                                block.message.block.hash_tree_root(),
+                                            ),
+                                            block.message.block.slot.0.0,
+                                            block.message.block.parent_root,
+                                        )
+                                    });
+                                let newest = pending
+                                    .fetched_chain_newest_to_oldest
+                                    .first()
+                                    .map(|block| {
+                                        (
+                                            crate::types::bytes::Bytes32::from(
+                                                block.message.block.hash_tree_root(),
+                                            ),
+                                            block.message.block.slot.0.0,
+                                            block.message.block.parent_root,
+                                        )
+                                    });
+                                debug!(
+                                    "sync importing chain depth={} oldest={:?} newest={:?} peer={}",
+                                    pending.fetched_chain_newest_to_oldest.len(),
+                                    oldest,
+                                    newest,
+                                    peer_id
+                                );
                                 let imported = import_backfill_chain(
                                     &state,
                                     &store,
@@ -462,6 +507,14 @@ pub(crate) fn spawn_status_sync_task(
 
                             pending.pending_root = Some(parent_root);
                             pending.pending_since = Some(Instant::now());
+                            debug!(
+                                "sync chaining parent request child_root={:?} child_slot={} parent_root={:?} depth={} peer={}",
+                                signed_root,
+                                signed_slot.0.0,
+                                parent_root,
+                                pending.fetched_chain_newest_to_oldest.len(),
+                                peer_id
+                            );
                             if !in_flight_roots.insert(parent_root) {
                                 debug!(
                                     "sync dedup skipped scheduling already in-flight parent root={:?} peer={}",
@@ -471,7 +524,8 @@ pub(crate) fn spawn_status_sync_task(
                             }
                             debug!(
                                 "sync backfill requesting parent root={:?} from peer={}",
-                                parent_root, peer_id
+                                parent_root,
+                                peer_id,
                             );
                             let requested = request_root_with_fanout(
                                 &p2p_tx,

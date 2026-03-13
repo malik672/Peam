@@ -8,8 +8,36 @@
 //! by protocol variant.
 
 use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::req_resp::{BlocksByRootRequest, Status};
-use crate::ssz::SszEncode;
+use crate::containers::req_resp::{BlocksByRootRequest, BlocksByRootResponse, Status};
+use crate::ssz::{SszDecode, SszEncode};
+use crate::types::collections::SszList;
+
+#[inline]
+fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootRequest, String> {
+    if let Ok(req) = BlocksByRootRequest::decode_ssz(data) {
+        return Ok(req);
+    }
+    let roots = SszList::decode_ssz(data)?;
+    Ok(BlocksByRootRequest { roots })
+}
+
+#[inline]
+fn decode_blocks_by_root_response_compat(
+    data: &[u8],
+) -> Result<SignedBlockWithAttestation, String> {
+    if let Ok(single) = SignedBlockWithAttestation::decode_ssz(data) {
+        return Ok(single);
+    }
+    if let Ok(resp) = BlocksByRootResponse::decode_ssz(data) {
+        return resp
+            .blocks
+            .data
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty BlocksByRoot response payload".to_string());
+    }
+    Err("unsupported BlocksByRoot response payload".to_string())
+}
 
 /// All req/resp protocols supported by the lean-Ethereum node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,11 +145,11 @@ impl LeanRequestMessage {
     /// Returns `Err` if decoding fails for the selected protocol.
     pub fn decode_ssz(protocol: LeanSupportedProtocol, data: &[u8]) -> Result<Self, String> {
         match protocol {
-            LeanSupportedProtocol::StatusV1 => Ok(LeanRequestMessage::Status(
-                Status::decode_ssz_checked(data)?,
-            )),
+            LeanSupportedProtocol::StatusV1 => {
+                Ok(LeanRequestMessage::Status(Status::decode_ssz(data)?))
+            }
             LeanSupportedProtocol::BlocksByRootV1 => Ok(LeanRequestMessage::BlocksByRoot(
-                BlocksByRootRequest::decode_ssz_checked(data)?,
+                decode_blocks_by_root_request_compat(data)?,
             )),
         }
     }
@@ -152,11 +180,11 @@ impl LeanResponseMessage {
     /// Returns `Err` if decoding fails for the selected protocol.
     pub fn decode_ssz(protocol: LeanSupportedProtocol, data: &[u8]) -> Result<Self, String> {
         match protocol {
-            LeanSupportedProtocol::StatusV1 => Ok(LeanResponseMessage::Status(
-                Status::decode_ssz_checked(data)?,
-            )),
+            LeanSupportedProtocol::StatusV1 => {
+                Ok(LeanResponseMessage::Status(Status::decode_ssz(data)?))
+            }
             LeanSupportedProtocol::BlocksByRootV1 => Ok(LeanResponseMessage::BlocksByRoot(
-                SignedBlockWithAttestation::decode_ssz_checked(data)?,
+                decode_blocks_by_root_response_compat(data)?,
             )),
         }
     }

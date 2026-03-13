@@ -37,9 +37,8 @@ pub(super) fn build_local_status(
         .finalized()
         .unwrap_or(state_guard.latest_finalized.root);
     Status {
-        fork_digest: Bytes32::zero(),
         finalized_root,
-        finalized_epoch: state_guard.latest_finalized.slot.0,
+        finalized_slot: state_guard.latest_finalized.slot.0,
         head_root,
         head_slot,
     }
@@ -59,6 +58,9 @@ pub(super) fn import_backfill_chain(
     let oldest = fetched_newest_to_oldest
         .last()
         .expect("non-empty checked above");
+    let newest = fetched_newest_to_oldest
+        .first()
+        .expect("non-empty checked above");
 
     let mut state_guard = state.write().expect("state lock");
     let mut store_guard = store.write().expect("store lock");
@@ -77,6 +79,19 @@ pub(super) fn import_backfill_chain(
         },
         );
     let parent_root = oldest.message.block.parent_root;
+    debug!(
+        "sync import chain start depth={} oldest_root={:?} oldest_slot={} oldest_parent={:?} newest_root={:?} newest_slot={} live_slot={} live_head_root={:?} anchor_slot={} anchor_header_root={:?}",
+        fetched_newest_to_oldest.len(),
+        Bytes32::from(oldest.message.block.hash_tree_root()),
+        oldest.message.block.slot.0.0,
+        parent_root,
+        Bytes32::from(newest.message.block.hash_tree_root()),
+        newest.message.block.slot.0.0,
+        state_guard.slot.0.0,
+        Bytes32::from(state_guard.latest_block_header.hash_tree_root()),
+        sync_anchor_state.slot.0.0,
+        Bytes32::from(sync_anchor_state.latest_block_header.hash_tree_root())
+    );
     let mut replay_state = if parent_root == Bytes32::zero() {
         sync_anchor_state.clone()
     } else {
@@ -106,6 +121,11 @@ pub(super) fn import_backfill_chain(
     for signed in fetched_newest_to_oldest.iter().rev() {
         let root = Bytes32::from(signed.message.block.hash_tree_root());
         if store_guard.get_block(&root).is_some() {
+            debug!(
+                "sync import skipping already-known block root={:?} slot={}",
+                root,
+                signed.message.block.slot.0.0
+            );
             continue;
         }
         if trace_attestations {
@@ -113,6 +133,14 @@ pub(super) fn import_backfill_chain(
         }
         let block = &signed.message.block;
         let expected_parent = Bytes32::from(replay_state.latest_block_header.hash_tree_root());
+        debug!(
+            "sync import replay step root={:?} slot={} parent={:?} replay_slot={} expected_parent={:?}",
+            root,
+            block.slot.0.0,
+            block.parent_root,
+            replay_state.slot.0.0,
+            expected_parent
+        );
         if replay_state.slot >= block.slot {
             // Remote peers may return anchor/genesis blocks (slot 0, parent 0x00..00)
             // during backfill. These are non-importable via state_transition and can
@@ -130,7 +158,7 @@ pub(super) fn import_backfill_chain(
             );
             return false;
         }
-        if let Err(err) = store_guard.put_signed_block(root, signed.clone(), &mut replay_state) {
+        if let Err(err) = store_guard.put_backfill_signed_block(root, signed.clone(), &mut replay_state) {
             warn!(
                 "sync import failed root={root:?} err={err} replay_slot={} block_slot={} expected_parent={expected_parent:?} block_parent={:?}",
                 replay_state.slot.0.0, block.slot.0.0, block.parent_root

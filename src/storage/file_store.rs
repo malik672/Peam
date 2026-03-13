@@ -36,11 +36,14 @@
 //! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::canonical_db::CanonicalDb;
 use super::pending::PendingSlotCache;
 use super::*;
+use crate::containers::checkpoint::Checkpoint;
 use crate::ssz::{HashTreeRoot, SszEncode};
 
 /// A disk-backed [`Store`] with canonical+pending slot indexes as truth.
@@ -309,22 +312,42 @@ impl FileStore {
         &mut self,
         root: Bytes32,
         signed: &SignedBlockWithAttestation,
-        state: &State,
+        persisted_state: &State,
+        meta_justified: Checkpoint,
+        meta_finalized: Checkpoint,
     ) -> Result<(), String> {
+        static PERSIST_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let block = signed.message.block.clone();
         let slot = block.slot.0.0;
         let state_root = block.state_root;
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
-        let state_blob = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
+        let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
 
         self.head = Some(root);
-        self.justified = Some(state.latest_justified.root);
-        self.finalized = Some(state.latest_finalized.root);
-        self.finalized_slot = Some(state.latest_finalized.slot.0.0);
+        self.justified = Some(meta_justified.root);
+        self.finalized = Some(meta_finalized.root);
+        self.finalized_slot = Some(meta_finalized.slot.0.0);
         self.set_meta_dirty();
 
-        let fin_slot = state.latest_finalized.slot.0.0;
+        let counter = PERSIST_LOGS.get_or_init(|| AtomicUsize::new(0));
+        if counter.fetch_add(1, Ordering::Relaxed) < 64 {
+            tracing::info!(
+                block_root = ?root,
+                block_slot = slot,
+                parent_root = ?block.parent_root,
+                state_root = ?state_root,
+                head_root = ?self.head,
+                justified_root = ?self.justified,
+                finalized_root = ?self.finalized,
+                finalized_slot = self.finalized_slot.unwrap_or(0),
+                state_slot = persisted_state.slot.0.0,
+                latest_header_slot = persisted_state.latest_block_header.slot.0.0,
+                "persisted signed block bundle"
+            );
+        }
+
+        let fin_slot = meta_finalized.slot.0.0;
         let block_canonical = self.index_block_slot(slot, root, state_root);
         self.index_state_slot(slot, state_root);
         let promoted = self.promote_finalized_slot_in_memory(fin_slot);
@@ -388,10 +411,10 @@ impl FileStore {
     ) -> Result<(), String> {
         let import_start = metrics.map(|_| Instant::now());
         let result = (|| {
-            let pre_import_slot = state.slot;
+            let pre_import_head_slot = state.latest_block_header.slot;
+            let pre_import_head_root = Bytes32::from(state.latest_block_header.hash_tree_root());
             let pre_import_justified = state.latest_justified;
             let pre_import_finalized = state.latest_finalized;
-            let mut imported_from_fallback = false;
             let process_result = if let Some(metrics) = metrics {
                 state.process_signed_block_with_metrics(&signed, metrics)
             } else {
@@ -401,28 +424,39 @@ impl FileStore {
                 if !err.contains("block parent root does not match latest header root") {
                     return Err(err);
                 }
-                let replayed = self.replay_signed_block_from_parent(&signed, metrics)?;
-                *state = replayed;
-                imported_from_fallback = true;
-            }
-            if imported_from_fallback {
-                tracing::info!(
+                tracing::warn!(
                     block_root = ?root,
                     block_slot = signed.message.block.slot.0.0,
-                    parent_root = ?signed.message.block.parent_root,
-                    "imported block via parent-state replay fallback"
+                    block_parent = ?signed.message.block.parent_root,
+                    live_head_slot = pre_import_head_slot.0.0,
+                    live_head_root = ?pre_import_head_root,
+                    parent_matches_live_head = signed.message.block.parent_root == pre_import_head_root,
+                    "rejecting non-linear block import"
                 );
+                return Err(err);
             }
-            if state.slot < pre_import_slot {
-                return Err("imported block would regress local state slot".to_string());
-            }
-            if state.latest_finalized.slot < pre_import_finalized.slot {
-                state.latest_finalized = pre_import_finalized;
-            }
-            if state.latest_justified.slot < pre_import_justified.slot {
-                state.latest_justified = pre_import_justified;
-            }
-            self.persist_signed_block_bundle_from_state(root, &signed, state)
+            let exact_post_state = state.clone();
+            let meta_finalized = if exact_post_state.latest_finalized.slot < pre_import_finalized.slot
+            {
+                pre_import_finalized
+            } else {
+                exact_post_state.latest_finalized
+            };
+            let meta_justified = if exact_post_state.latest_justified.slot < pre_import_justified.slot
+            {
+                pre_import_justified
+            } else {
+                exact_post_state.latest_justified
+            };
+            state.latest_finalized = meta_finalized;
+            state.latest_justified = meta_justified;
+            self.persist_signed_block_bundle_from_state(
+                root,
+                &signed,
+                &exact_post_state,
+                meta_justified,
+                meta_finalized,
+            )
         })();
 
         if let (Some(metrics), Some(start)) = (metrics, import_start) {
@@ -430,6 +464,60 @@ impl FileStore {
         }
 
         result
+    }
+
+    #[inline]
+    pub(crate) fn put_backfill_signed_block(
+        &mut self,
+        root: Bytes32,
+        signed: SignedBlockWithAttestation,
+        state: &mut State,
+    ) -> Result<(), String> {
+        let pre_import_slot = state.slot;
+        let pre_import_head_slot = state.latest_block_header.slot;
+        let pre_import_head_root = Bytes32::from(state.latest_block_header.hash_tree_root());
+        let mut imported_from_fallback = false;
+        let process_result = state.process_signed_block(&signed);
+        if let Err(err) = process_result {
+            if !err.contains("block parent root does not match latest header root") {
+                return Err(err);
+            }
+            tracing::warn!(
+                block_root = ?root,
+                block_slot = signed.message.block.slot.0.0,
+                block_parent = ?signed.message.block.parent_root,
+                live_head_slot = pre_import_head_slot.0.0,
+                live_head_root = ?pre_import_head_root,
+                parent_matches_live_head = signed.message.block.parent_root == pre_import_head_root,
+                "backfill import hit parent mismatch, replaying from parent state"
+            );
+            let replayed = self.replay_signed_block_from_parent(&signed, None)?;
+            *state = replayed;
+            imported_from_fallback = true;
+        }
+        if imported_from_fallback {
+            tracing::info!(
+                block_root = ?root,
+                block_slot = signed.message.block.slot.0.0,
+                parent_root = ?signed.message.block.parent_root,
+                live_head_slot = pre_import_head_slot.0.0,
+                live_head_root = ?pre_import_head_root,
+                replayed_head_slot = state.latest_block_header.slot.0.0,
+                replayed_head_root = ?Bytes32::from(state.latest_block_header.hash_tree_root()),
+                branch_mix = signed.message.block.parent_root != pre_import_head_root,
+                "imported backfill block via parent-state replay fallback"
+            );
+        }
+        if state.slot < pre_import_slot {
+            return Err("imported block would regress local state slot".to_string());
+        }
+        self.persist_signed_block_bundle_from_state(
+            root,
+            &signed,
+            state,
+            state.latest_justified,
+            state.latest_finalized,
+        )
     }
 
     pub fn put_prevalidated_signed_block_with_metrics(
@@ -455,13 +543,28 @@ impl FileStore {
             }
 
             *state = post_state;
-            if state.latest_finalized.slot < pre_import_finalized.slot {
-                state.latest_finalized = pre_import_finalized;
-            }
-            if state.latest_justified.slot < pre_import_justified.slot {
-                state.latest_justified = pre_import_justified;
-            }
-            self.persist_signed_block_bundle_from_state(root, signed, state)
+            let exact_post_state = state.clone();
+            let meta_finalized = if exact_post_state.latest_finalized.slot < pre_import_finalized.slot
+            {
+                pre_import_finalized
+            } else {
+                exact_post_state.latest_finalized
+            };
+            let meta_justified = if exact_post_state.latest_justified.slot < pre_import_justified.slot
+            {
+                pre_import_justified
+            } else {
+                exact_post_state.latest_justified
+            };
+            state.latest_finalized = meta_finalized;
+            state.latest_justified = meta_justified;
+            self.persist_signed_block_bundle_from_state(
+                root,
+                signed,
+                &exact_post_state,
+                meta_justified,
+                meta_finalized,
+            )
         })();
         metrics
             .block_import_end_to_end_time

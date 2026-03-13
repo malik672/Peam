@@ -527,7 +527,13 @@ impl P2pService {
         }
         for topic in topics {
             let ident = IdentTopic::new(topic);
-            let _ = behaviour.gossipsub.subscribe(&ident);
+            let topic_name = ident.to_string();
+            let subscribed = behaviour.gossipsub.subscribe(&ident);
+            tracing::info!(
+                topic = %topic_name,
+                subscribed = ?subscribed,
+                "peam gossipsub subscription"
+            );
         }
 
         let transport = quic::tokio::Transport::new(quic::Config::new(&keypair))
@@ -677,35 +683,79 @@ impl P2pService {
                         return;
                     }
                     let mut response_to_send: Option<LeanResponse> = None;
-                    match LeanSupportedProtocol::parse_protocol_id(&protocol)
-                        .and_then(|kind| LeanRequestMessage::decode_ssz(kind, &payload).ok())
-                    {
-                        Some(request) => {
-                            if let Some(response) = self.reqresp_handler.on_request(request) {
-                                response_to_send = Some(LeanResponse {
-                                    protocol: protocol.clone(),
-                                    response_code: 0,
-                                    payload: response.encode_ssz(),
-                                });
-                            } else {
-                                debug!(
-                                    "reqresp_no_response_chunk peer={} protocol={} bytes={}",
+                    match LeanSupportedProtocol::parse_protocol_id(&protocol) {
+                        Some(kind) => match LeanRequestMessage::decode_ssz(kind, &payload) {
+                            Ok(request) => {
+                                if let Some(response) = self.reqresp_handler.on_request(request) {
+                                    response_to_send = Some(LeanResponse {
+                                        protocol: protocol.clone(),
+                                        response_code: 0,
+                                        payload: response.encode_ssz(),
+                                    });
+                                } else {
+                                    debug!(
+                                        "reqresp_no_response_chunk peer={} protocol={} bytes={}",
+                                        peer,
+                                        protocol,
+                                        payload.len()
+                                    );
+                                    response_to_send = Some(match kind {
+                                        // BlocksByRoot misses are normal. Return an empty success
+                                        // response so the peer can treat it as end-of-stream.
+                                        LeanSupportedProtocol::BlocksByRootV1 => LeanResponse {
+                                            protocol: protocol.clone(),
+                                            response_code: 0,
+                                            payload: Vec::new(),
+                                        },
+                                        LeanSupportedProtocol::StatusV1 => LeanResponse {
+                                            protocol: protocol.clone(),
+                                            response_code: 1, // ResponseCode::InvalidRequest
+                                            payload: b"invalid request".to_vec(),
+                                        },
+                                    });
+                                }
+                            }
+                            Err(err) => {
+                                let prefix = payload
+                                    .iter()
+                                    .take(8)
+                                    .map(|byte| format!("{byte:02x}"))
+                                    .collect::<Vec<_>>()
+                                    .join("");
+                                warn!(
+                                    "reqresp_request_decode_failed peer={} protocol={} bytes={} prefix={} err={}",
                                     peer,
                                     protocol,
-                                    payload.len()
+                                    payload.len(),
+                                    prefix,
+                                    err
                                 );
+                                response_to_send = Some(LeanResponse {
+                                    protocol: protocol.clone(),
+                                    response_code: 1, // ResponseCode::InvalidRequest
+                                    //runtime waste
+                                    payload: b"invalid request".to_vec(),
+                                });
                             }
-                        }
+                        },
                         None => {
+                            let prefix = payload
+                                .iter()
+                                .take(8)
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<Vec<_>>()
+                                .join("");
                             warn!(
-                                "reqresp_request_decode_failed peer={} protocol={} bytes={}",
+                                "reqresp_request_decode_failed peer={} protocol={} bytes={} prefix={} err=unsupported protocol",
                                 peer,
                                 protocol,
-                                payload.len()
+                                payload.len(),
+                                prefix,
                             );
                             response_to_send = Some(LeanResponse {
                                 protocol: protocol.clone(),
                                 response_code: 1, // ResponseCode::InvalidRequest
+                                //runtime waste
                                 payload: b"invalid request".to_vec(),
                             });
                         }
@@ -940,6 +990,12 @@ impl P2pService {
                     ) {
                         ValidationResult::Accept => {}
                         ValidationResult::Ignore(reason) => {
+                            if crate::networking::gossipsub::validate::is_retryable_unknown_roots_ignore(&reason) {
+                                self.events.emit(NetworkEvent::GossipDeferredUnknownRoots {
+                                    topic: topic.clone(),
+                                    payload: message.data.clone(),
+                                });
+                            }
                             self.events.emit(NetworkEvent::PeerScored {
                                 peer_id: propagation_source.to_string(),
                                 score: -1,

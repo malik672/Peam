@@ -155,15 +155,8 @@ impl ForkChoiceStore {
             self.head = root;
             self.head_slot = slot;
         }
-        if self.head != old_head {
-            let new_parent = self
-                .parents
-                .get(&self.head)
-                .copied()
-                .unwrap_or(Bytes32::zero());
-            if new_parent != old_head {
-                self.reorgs_total += 1;
-            }
+        if self.head_change_is_reorg(old_head, self.head) {
+            self.reorgs_total += 1;
         }
         self.refresh_safe_target();
         Ok(())
@@ -195,15 +188,8 @@ impl ForkChoiceStore {
             self.head = head;
             self.head_slot = head_block.message.block.slot.0.0;
         }
-        if self.head != old_head {
-            let new_parent = self
-                .parents
-                .get(&self.head)
-                .copied()
-                .unwrap_or(Bytes32::zero());
-            if new_parent != old_head {
-                self.reorgs_total += 1;
-            }
+        if self.head_change_is_reorg(old_head, self.head) {
+            self.reorgs_total += 1;
         }
         self.refresh_safe_target();
     }
@@ -449,7 +435,11 @@ impl ForkChoiceStore {
             }
         }
 
-        self.checkpoint_for_root(target_root)
+        let target = self.checkpoint_for_root(target_root)?;
+        if target.slot < self.latest_justified.slot {
+            return Some(self.latest_justified);
+        }
+        Some(target)
     }
 
     /// Walk from `old_head` and `new_head` to their common ancestor and return
@@ -481,6 +471,24 @@ impl ForkChoiceStore {
         }
         depth
     }
+
+    #[inline]
+    fn head_change_is_reorg(&self, old_head: Bytes32, new_head: Bytes32) -> bool {
+        if old_head == new_head {
+            return false;
+        }
+        let mut node = new_head;
+        loop {
+            if node == old_head {
+                return false;
+            }
+            match self.parents.get(&node) {
+                Some(parent) if *parent != Bytes32::zero() => node = *parent,
+                _ => return true,
+            }
+        }
+    }
+
 }
 
 #[inline]

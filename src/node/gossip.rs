@@ -1,8 +1,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use libp2p::gossipsub::TopicHash;
+use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 
 use crate::containers::attestation::{Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT};
 use crate::containers::block::SignedBlockWithAttestation;
@@ -10,6 +12,11 @@ use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::MetricsRegistry;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
+use crate::networking::gossipsub::validate::{
+    ValidationResult, is_retryable_unknown_roots_ignore, validate_basic_message,
+    validate_with_context,
+};
+use crate::networking::GossipContext;
 use crate::ssz::HashTreeRoot;
 use crate::storage::Store;
 use crate::types::bitlist::BitList;
@@ -17,6 +24,123 @@ use crate::types::bytes::Bytes32;
 use tracing::warn;
 
 use super::tasks::PendingBlockAttestation;
+
+const DEFERRED_GOSSIP_MAX_ENTRIES: usize = 256;
+const DEFERRED_GOSSIP_TTL: Duration = Duration::from_secs(6);
+const DEFERRED_GOSSIP_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+
+#[derive(Clone)]
+pub struct DeferredGossipMessage {
+    pub topic: String,
+    pub payload: Vec<u8>,
+    pub first_seen: Instant,
+    pub last_retry: Instant,
+}
+
+#[inline]
+pub fn queue_deferred_unknown_root_gossip(
+    buffer: &Arc<RwLock<Vec<DeferredGossipMessage>>>,
+    topic: String,
+    payload: Vec<u8>,
+) {
+    let now = Instant::now();
+    let mut guard = buffer.write().expect("deferred gossip lock");
+    if guard
+        .iter()
+        .any(|entry| entry.topic == topic && entry.payload == payload)
+    {
+        return;
+    }
+    if guard.len() >= DEFERRED_GOSSIP_MAX_ENTRIES {
+        let _ = guard.remove(0);
+    }
+    guard.push(DeferredGossipMessage {
+        topic,
+        payload,
+        first_seen: now,
+        last_retry: now,
+    });
+}
+
+pub fn spawn_deferred_gossip_retry_task<S: Store + Send + Sync + 'static>(
+    state: Arc<RwLock<State>>,
+    store: Arc<RwLock<S>>,
+    fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
+    pending_attestations: Arc<RwLock<Vec<Attestation>>>,
+    pending_individual_attestations: Arc<RwLock<Vec<SignedAttestation>>>,
+    pending_block_attestations: Arc<RwLock<Vec<PendingBlockAttestation>>>,
+    deferred_gossip: Arc<RwLock<Vec<DeferredGossipMessage>>>,
+    gossip_context: Arc<dyn GossipContext>,
+    is_aggregator: bool,
+    metrics: Arc<MetricsRegistry>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(DEFERRED_GOSSIP_RETRY_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let now = Instant::now();
+            let mut ready = Vec::new();
+            {
+                let mut guard = deferred_gossip.write().expect("deferred gossip lock");
+                let mut remaining = Vec::with_capacity(guard.len());
+                for mut entry in guard.drain(..) {
+                    if now.duration_since(entry.first_seen) > DEFERRED_GOSSIP_TTL {
+                        continue;
+                    }
+                    if now.duration_since(entry.last_retry) < DEFERRED_GOSSIP_RETRY_INTERVAL {
+                        remaining.push(entry);
+                        continue;
+                    }
+                    let topic_hash = TopicHash::from_raw(entry.topic.clone());
+                    let decoded =
+                        match LeanGossipsubMessage::decode(&topic_hash, &entry.payload) {
+                            Ok(decoded) => decoded,
+                            Err(_) => continue,
+                        };
+                    match validate_basic_message(&decoded) {
+                        ValidationResult::Accept => {}
+                        ValidationResult::Ignore(reason)
+                            if is_retryable_unknown_roots_ignore(&reason) =>
+                        {
+                            entry.last_retry = now;
+                            remaining.push(entry);
+                            continue;
+                        }
+                        ValidationResult::Ignore(_) | ValidationResult::Reject(_) => continue,
+                    }
+                    match validate_with_context(&decoded, gossip_context.as_ref()) {
+                        ValidationResult::Accept => {
+                            ready.push((entry.topic, entry.payload));
+                        }
+                        ValidationResult::Ignore(reason)
+                            if is_retryable_unknown_roots_ignore(&reason) =>
+                        {
+                            entry.last_retry = now;
+                            remaining.push(entry);
+                        }
+                        ValidationResult::Ignore(_) | ValidationResult::Reject(_) => {}
+                    }
+                }
+                *guard = remaining;
+            }
+            for (topic, payload) in ready.drain(..) {
+                handle_gossip_event(
+                    &topic,
+                    &payload,
+                    &state,
+                    &store,
+                    &fork_choice,
+                    &pending_attestations,
+                    &pending_individual_attestations,
+                    &pending_block_attestations,
+                    is_aggregator,
+                    &metrics,
+                );
+            }
+        }
+    })
+}
 
 #[inline]
 fn bitlist_has_any_set(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> bool {
