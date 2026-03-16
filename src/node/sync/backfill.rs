@@ -183,11 +183,23 @@ pub(super) fn import_backfill_chain(
     }
 
     // Merge replay result into live state without allowing checkpoint/slot rollback.
+    // Only replace the full state when the replay chain agrees with the live head;
+    // otherwise gossip already imported a different block at the same slot and we
+    // must preserve the live latest_block_header to avoid breaking gossip continuity.
     let live_target_slot = state_guard.slot;
     let live_justified = state_guard.latest_justified;
     let live_finalized = state_guard.latest_finalized;
 
-    if replay_state.slot >= state_guard.slot {
+    let replay_extends_live = if replay_state.slot > state_guard.slot {
+        true
+    } else if replay_state.slot == state_guard.slot {
+        Bytes32::from(replay_state.latest_block_header.hash_tree_root())
+            == Bytes32::from(state_guard.latest_block_header.hash_tree_root())
+    } else {
+        false
+    };
+
+    if replay_extends_live {
         *state_guard = replay_state;
     } else {
         if replay_state.latest_justified.slot > state_guard.latest_justified.slot {
