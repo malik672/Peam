@@ -682,7 +682,7 @@ impl P2pService {
                         });
                         return;
                     }
-                    let mut response_to_send: Option<LeanResponse> = None;
+                    let response_to_send: Option<LeanResponse>;
                     match LeanSupportedProtocol::parse_protocol_id(&protocol) {
                         Some(kind) => match LeanRequestMessage::decode_ssz(kind, &payload) {
                             Ok(request) => {

@@ -316,6 +316,20 @@ impl FileStore {
         meta_justified: Checkpoint,
         meta_finalized: Checkpoint,
     ) -> Result<(), String> {
+        self.persist_signed_block_bundle_inner(
+            root, signed, persisted_state, meta_justified, meta_finalized, true,
+        )
+    }
+
+    fn persist_signed_block_bundle_inner(
+        &mut self,
+        root: Bytes32,
+        signed: &SignedBlockWithAttestation,
+        persisted_state: &State,
+        meta_justified: Checkpoint,
+        meta_finalized: Checkpoint,
+        update_head: bool,
+    ) -> Result<(), String> {
         static PERSIST_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let block = signed.message.block.clone();
         let slot = block.slot.0.0;
@@ -324,11 +338,13 @@ impl FileStore {
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
 
-        self.head = Some(root);
-        self.justified = Some(meta_justified.root);
-        self.finalized = Some(meta_finalized.root);
-        self.finalized_slot = Some(meta_finalized.slot.0.0);
-        self.set_meta_dirty();
+        if update_head {
+            self.head = Some(root);
+            self.justified = Some(meta_justified.root);
+            self.finalized = Some(meta_finalized.root);
+            self.finalized_slot = Some(meta_finalized.slot.0.0);
+            self.set_meta_dirty();
+        }
 
         let counter = PERSIST_LOGS.get_or_init(|| AtomicUsize::new(0));
         if counter.fetch_add(1, Ordering::Relaxed) < 64 {
@@ -424,16 +440,51 @@ impl FileStore {
                 if !err.contains("block parent root does not match latest header root") {
                     return Err(err);
                 }
-                tracing::warn!(
-                    block_root = ?root,
-                    block_slot = signed.message.block.slot.0.0,
-                    block_parent = ?signed.message.block.parent_root,
-                    live_head_slot = pre_import_head_slot.0.0,
-                    live_head_root = ?pre_import_head_root,
-                    parent_matches_live_head = signed.message.block.parent_root == pre_import_head_root,
-                    "rejecting non-linear block import"
-                );
-                return Err(err);
+                // The block builds on an older ancestor, not the current head.
+                // Replay from the parent state to import it without corrupting
+                // the live state. Only advance the live state if the block
+                // extends to a higher slot.
+                let replayed = match self.replay_signed_block_from_parent(&signed, metrics) {
+                    Ok(post) => post,
+                    Err(_) => {
+                        tracing::warn!(
+                            block_root = ?root,
+                            block_slot = signed.message.block.slot.0.0,
+                            block_parent = ?signed.message.block.parent_root,
+                            live_head_slot = pre_import_head_slot.0.0,
+                            live_head_root = ?pre_import_head_root,
+                            "rejecting non-linear block import (parent replay failed)"
+                        );
+                        return Err(err);
+                    }
+                };
+                let meta_finalized = if replayed.latest_finalized.slot < pre_import_finalized.slot {
+                    pre_import_finalized
+                } else {
+                    replayed.latest_finalized
+                };
+                let meta_justified = if replayed.latest_justified.slot < pre_import_justified.slot {
+                    pre_import_justified
+                } else {
+                    replayed.latest_justified
+                };
+                let promotes_head = replayed.slot > state.slot;
+                self.persist_signed_block_bundle_inner(
+                    root, &signed, &replayed, meta_justified, meta_finalized, promotes_head,
+                )?;
+                if promotes_head {
+                    *state = replayed;
+                    state.latest_finalized = meta_finalized;
+                    state.latest_justified = meta_justified;
+                } else {
+                    if meta_justified.slot > state.latest_justified.slot {
+                        state.latest_justified = meta_justified;
+                    }
+                    if meta_finalized.slot > state.latest_finalized.slot {
+                        state.latest_finalized = meta_finalized;
+                    }
+                }
+                return Ok(());
             }
             let exact_post_state = state.clone();
             let meta_finalized = if exact_post_state.latest_finalized.slot < pre_import_finalized.slot
