@@ -296,9 +296,14 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                         root,
                         &signed,
                     );
+                    // Use the block's exact post-state for fork choice, not
+                    // the live state — the replay fallback may have diverged.
+                    let fc_state = store_guard
+                        .get_state(&signed.message.block.state_root)
+                        .unwrap_or_else(|| state_guard.clone());
                     let mut fc = fork_choice.write().expect("fork choice lock");
                     if fc.is_none() {
-                        match ForkChoiceStore::new(signed.clone(), state_guard.clone()) {
+                        match ForkChoiceStore::new(signed.clone(), fc_state.clone()) {
                             Ok(new_fc) => {
                                 *fc = Some(new_fc);
                             }
@@ -307,7 +312,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                             }
                         }
                     } else if let Some(fc) = fc.as_mut() {
-                        if let Err(err) = fc.on_block(signed.clone(), state_guard.clone()) {
+                        if let Err(err) = fc.on_block(signed.clone(), fc_state) {
                             warn!("fork choice on_block failed root={root:?} err={err}");
                         }
                     }
