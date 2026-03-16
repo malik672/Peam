@@ -316,6 +316,20 @@ impl FileStore {
         meta_justified: Checkpoint,
         meta_finalized: Checkpoint,
     ) -> Result<(), String> {
+        self.persist_signed_block_bundle_inner(
+            root, signed, persisted_state, meta_justified, meta_finalized, true,
+        )
+    }
+
+    fn persist_signed_block_bundle_inner(
+        &mut self,
+        root: Bytes32,
+        signed: &SignedBlockWithAttestation,
+        persisted_state: &State,
+        meta_justified: Checkpoint,
+        meta_finalized: Checkpoint,
+        update_head: bool,
+    ) -> Result<(), String> {
         static PERSIST_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let block = signed.message.block.clone();
         let slot = block.slot.0.0;
@@ -324,11 +338,13 @@ impl FileStore {
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
 
-        self.head = Some(root);
-        self.justified = Some(meta_justified.root);
-        self.finalized = Some(meta_finalized.root);
-        self.finalized_slot = Some(meta_finalized.slot.0.0);
-        self.set_meta_dirty();
+        if update_head {
+            self.head = Some(root);
+            self.justified = Some(meta_justified.root);
+            self.finalized = Some(meta_finalized.root);
+            self.finalized_slot = Some(meta_finalized.slot.0.0);
+            self.set_meta_dirty();
+        }
 
         let counter = PERSIST_LOGS.get_or_init(|| AtomicUsize::new(0));
         if counter.fetch_add(1, Ordering::Relaxed) < 64 {
@@ -452,10 +468,11 @@ impl FileStore {
                 } else {
                     replayed.latest_justified
                 };
-                self.persist_signed_block_bundle_from_state(
-                    root, &signed, &replayed, meta_justified, meta_finalized,
+                let promotes_head = replayed.slot > state.slot;
+                self.persist_signed_block_bundle_inner(
+                    root, &signed, &replayed, meta_justified, meta_finalized, promotes_head,
                 )?;
-                if replayed.slot > state.slot {
+                if promotes_head {
                     *state = replayed;
                     state.latest_finalized = meta_finalized;
                     state.latest_justified = meta_justified;
