@@ -15,12 +15,11 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::app::{
-    NodeSettings, build_genesis_from_config_yaml, build_genesis_with_validator_count,
-    load_node_settings, resolve_metrics_identity,
+    NodeSettings, build_genesis_from_config_yaml_with_override, build_genesis_with_validator_count,
+    load_node_settings, resolve_local_validator_index_for_node_name, resolve_metrics_identity,
 };
 use crate::checkpoint_sync::{
-    build_anchor_block, build_anchor_signed_block, fetch_checkpoint_state,
-    verify_checkpoint_state,
+    build_anchor_block, build_anchor_signed_block, fetch_checkpoint_state, verify_checkpoint_state,
 };
 use crate::containers::attestation::Attestation;
 use crate::containers::attestation::SignedAttestation;
@@ -52,6 +51,38 @@ const PEAM_ASCII_BANNER: &str = r#"
 |_|   |_____/_/   \_\_|  |_|
 "#;
 
+fn normalize_genesis_anchor_roots(state: &mut State, anchor_root: Bytes32) {
+    if state.slot.0.0 != 0 {
+        return;
+    }
+    if state.latest_justified.slot.0.0 == 0 && state.latest_justified.root == Bytes32::zero() {
+        state.latest_justified.root = anchor_root;
+    }
+    if state.latest_finalized.slot.0.0 == 0 && state.latest_finalized.root == Bytes32::zero() {
+        state.latest_finalized.root = anchor_root;
+    }
+}
+
+fn seed_anchor_store_and_fork_choice(
+    store: &mut FileStore,
+    state: &mut State,
+) -> Result<ForkChoiceStore, String> {
+    let anchor_block = build_anchor_block(state);
+    let anchor_root = Bytes32::from(anchor_block.hash_tree_root());
+    normalize_genesis_anchor_roots(state, anchor_root);
+    let signed_anchor = build_anchor_signed_block(state, &anchor_block)?;
+    store.put_anchor_signed_block(anchor_root, &signed_anchor, state)?;
+    store.set_head(anchor_root);
+    store.set_finalized_checkpoint(Checkpoint {
+        root: anchor_root,
+        slot: anchor_block.slot,
+    });
+    store.set_justified(anchor_root);
+    let mut fc = ForkChoiceStore::new(signed_anchor, state.clone())?;
+    fc.override_checkpoint_roots(anchor_root);
+    Ok(fc)
+}
+
 /// Filesystem paths used to initialize a [`Node`].
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -59,6 +90,22 @@ pub struct NodeConfig {
     pub config_path: PathBuf,
     /// Root directory for all node data (store, keys, etc.).
     pub data_dir: PathBuf,
+    /// Optional CLI override for checkpoint sync URL.
+    pub checkpoint_sync_url: Option<String>,
+    /// Optional CLI override for libp2p listen address.
+    pub listen_addr: Option<String>,
+    /// Optional CLI override for bootnodes.
+    pub bootnodes: Option<Vec<String>>,
+    /// Optional CLI override for the shared HTTP API / metrics port.
+    pub api_port: Option<u16>,
+    /// Optional CLI override for aggregator mode.
+    pub is_aggregator: Option<bool>,
+    /// Optional CLI override for validator key directory.
+    pub validator_keys_path: Option<PathBuf>,
+    /// Optional CLI override for node identifier / validator assignment.
+    pub node_id: Option<String>,
+    /// Optional CLI override for genesis time.
+    pub genesis_time_override: Option<u64>,
 }
 
 /// The top-level beacon node: owns consensus state, block storage,
@@ -80,7 +127,7 @@ pub struct Node {
     state: Arc<RwLock<State>>,
     /// Disk-backed block store — persists signed blocks and state snapshots.
     store: Arc<RwLock<FileStore>>,
-    /// Fork-choice store — `None` until the first valid block is imported.
+    /// Fork-choice store — initialized from the local anchor once available.
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
     /// Attestations received since the last proposal head query.
     pending_attestations: Arc<RwLock<Vec<Attestation>>>,
@@ -145,7 +192,47 @@ impl Node {
     ///
     /// Returns `Err` if config loading, genesis construction, or store opening fails.
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
-        let (config, settings) = load_node_settings(&node_config.config_path)?;
+        let (mut config, mut settings) = load_node_settings(&node_config.config_path)?;
+        if let Some(url) = node_config.checkpoint_sync_url {
+            settings.checkpoint_sync_url = Some(url);
+        }
+        if let Some(listen_addr) = node_config.listen_addr {
+            settings.listen_addr = listen_addr;
+        }
+        if let Some(bootnodes) = node_config.bootnodes {
+            settings.bootnodes = bootnodes;
+        }
+        if let Some(api_port) = node_config.api_port {
+            if api_port == 0 {
+                settings.metrics = false;
+                settings.http_api = false;
+                settings.metrics_port = 0;
+            } else {
+                settings.metrics_port = api_port;
+            }
+        }
+        if let Some(is_aggregator) = node_config.is_aggregator {
+            settings.is_aggregator = is_aggregator;
+        }
+        if let Some(node_id) = node_config.node_id.as_ref() {
+            settings.metrics_node_name = Some(node_id.clone());
+            if let Some(index) = resolve_local_validator_index_for_node_name(
+                &node_config.config_path,
+                &settings,
+                node_id,
+            )? {
+                settings.local_validator_index = index;
+            } else {
+                warn!(
+                    node_id,
+                    configured_local_validator_index = settings.local_validator_index,
+                    "node-id override did not resolve a validator assignment; keeping configured local_validator_index"
+                );
+            }
+        }
+        if let Some(genesis_time_override) = node_config.genesis_time_override {
+            config.genesis_time = crate::types::uint::Uint64(genesis_time_override);
+        }
         crate::containers::attestation::set_attestation_committee_count(
             settings.attestation_committee_count,
         );
@@ -156,6 +243,9 @@ impl Node {
             validator_count = settings.validator_count,
             local_validator_index = settings.local_validator_index,
             is_aggregator = settings.is_aggregator,
+            listen_addr = %settings.listen_addr,
+            bootnodes = settings.bootnodes.len(),
+            checkpoint_sync = settings.checkpoint_sync_url.is_some(),
             "peam startup: settings applied"
         );
         let fallback_config_dir = node_config
@@ -181,11 +271,17 @@ impl Node {
                 path = %genesis_config_yaml.display(),
                 "peam startup: loading genesis from config.yaml"
             );
-            build_genesis_from_config_yaml(&genesis_config_yaml)?
+            build_genesis_from_config_yaml_with_override(
+                &genesis_config_yaml,
+                node_config.genesis_time_override,
+            )?
         } else {
             build_genesis_with_validator_count(config.clone(), settings.validator_count)?
         };
-        let hash_sig_keys_dir = config_dir.join("hash-sig-keys");
+        let hash_sig_keys_dir = node_config
+            .validator_keys_path
+            .clone()
+            .unwrap_or_else(|| config_dir.join("hash-sig-keys"));
         let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
             match build_devnet_pq_validator_keys_from_hash_sig_dir(
                 &hash_sig_keys_dir,
@@ -202,7 +298,9 @@ impl Node {
                         err
                     );
                     (
-                        build_devnet_pq_validator_keys(expected_genesis_state.validators.data.len()),
+                        build_devnet_pq_validator_keys(
+                            expected_genesis_state.validators.data.len(),
+                        ),
                         "deterministic_devnet".to_string(),
                     )
                 }
@@ -232,7 +330,11 @@ impl Node {
             );
         }
         let local_validator_index = settings.local_validator_index as usize;
-        let Some(expected) = expected_genesis_state.validators.data.get(local_validator_index) else {
+        let Some(expected) = expected_genesis_state
+            .validators
+            .data
+            .get(local_validator_index)
+        else {
             return Err(format!(
                 "local_validator_index {} out of range for {} genesis validators",
                 settings.local_validator_index,
@@ -276,6 +378,13 @@ expected {:?}, got {:?}",
         let store = Arc::new(RwLock::new(FileStore::open(&store_dir)?));
         let mut initial_state = expected_genesis_state;
         let mut initial_fork_choice: Option<ForkChoiceStore> = None;
+        let store_is_empty = {
+            let guard = store.read().expect("store lock");
+            guard.canonical_state_rows() == 0
+                && guard.canonical_block_rows() == 0
+                && guard.pending_block_rows() == 0
+                && guard.head().is_none()
+        };
         if let Some(url) = settings.checkpoint_sync_url.as_ref() {
             let store_has_data = {
                 let guard = store.read().expect("store lock");
@@ -298,31 +407,17 @@ expected {:?}, got {:?}",
                 let computed_root = Bytes32::from(tmp.hash_tree_root());
                 checkpoint_state.latest_block_header.state_root = computed_root;
             }
-            let state_root = checkpoint_state.latest_block_header.state_root;
-            let anchor_block = build_anchor_block(&checkpoint_state);
-            let anchor_root = Bytes32::from(anchor_block.hash_tree_root());
             {
                 let mut guard = store.write().expect("store lock");
-                guard.put_state(state_root, checkpoint_state.clone());
-                guard.put_block(anchor_root, anchor_block.clone());
-                guard.set_head(anchor_root);
-                guard.set_finalized_checkpoint(Checkpoint {
-                    root: anchor_root,
-                    slot: checkpoint_state.latest_block_header.slot,
-                });
-                guard.set_justified(anchor_root);
-            }
-            match build_anchor_signed_block(&checkpoint_state, &anchor_block)
-                .and_then(|signed| ForkChoiceStore::new(signed, checkpoint_state.clone()))
-            {
-                Ok(mut fc) => {
-                    fc.override_checkpoint_roots(anchor_root);
-                    initial_fork_choice = Some(fc);
-                }
-                Err(err) => {
-                    return Err(format!("checkpoint sync fork choice init failed: {err}"));
+                match seed_anchor_store_and_fork_choice(&mut guard, &mut checkpoint_state) {
+                    Ok(fc) => initial_fork_choice = Some(fc),
+                    Err(err) => {
+                        return Err(format!("checkpoint sync fork choice init failed: {err}"));
+                    }
                 }
             }
+            let state_root = checkpoint_state.latest_block_header.state_root;
+            let anchor_root = Bytes32::from(build_anchor_block(&checkpoint_state).hash_tree_root());
             tracing::info!(
                 checkpoint_sync_url = url,
                 checkpoint_slot = checkpoint_state.slot.0.0,
@@ -331,6 +426,12 @@ expected {:?}, got {:?}",
                 "checkpoint sync applied"
             );
             initial_state = checkpoint_state;
+        } else if store_is_empty {
+            let mut guard = store.write().expect("store lock");
+            match seed_anchor_store_and_fork_choice(&mut guard, &mut initial_state) {
+                Ok(fc) => initial_fork_choice = Some(fc),
+                Err(err) => return Err(format!("genesis anchor init failed: {err}")),
+            }
         }
         let state = Arc::new(RwLock::new(initial_state));
         let fork_choice = Arc::new(RwLock::new(initial_fork_choice));
@@ -430,6 +531,15 @@ expected {:?}, got {:?}",
         info!("genesis_time={}", self.config.genesis_time.0);
         let state_root = self.state.read().expect("state lock").hash_tree_root();
         info!("state_root={:?}", state_root);
+        info!(
+            sync_mode = "blocks_by_root_backfill",
+            streaming_sync = false,
+            checkpoint_sync = self.settings.checkpoint_sync_url.is_some(),
+            http_api = self.settings.http_api,
+            metrics = self.settings.metrics,
+            api_port = self.settings.metrics_port,
+            "startup runtime summary"
+        );
 
         // Default to PQ verification for gossip signatures when validator keys exist.
         let signature_verifier = {

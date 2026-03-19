@@ -1,7 +1,10 @@
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use peam::app::{NodeSettings, load_node_settings, resolve_metrics_identity};
+use peam::app::{
+    NodeSettings, load_node_settings, resolve_local_validator_index_for_node_name,
+    resolve_metrics_identity,
+};
 use peam::networking::GossipValidatorKind;
 
 #[test]
@@ -213,6 +216,81 @@ fn validator_config_enr_fields_override_local_aggregator_flag() {
 
     let (_config, settings) = load_node_settings(&config_path).expect("parse config");
     assert!(settings.is_aggregator);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn parses_genesis_yaml_as_config_with_default_node_settings() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_genesis_yaml_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("config.yaml");
+    fs::write(
+        &config_path,
+        "GENESIS_TIME: 42\nGENESIS_VALIDATORS:\n  - \"0xd1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n",
+    )
+    .expect("write genesis yaml");
+
+    let (config, settings) = load_node_settings(&config_path).expect("parse genesis yaml");
+    assert_eq!(config.genesis_time.0, 42);
+    assert_eq!(settings.metrics_port, 8080);
+    assert!(settings.http_api);
+    assert_eq!(settings.listen_addr, "/ip4/0.0.0.0/udp/9000/quic-v1");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn resolves_local_validator_index_from_node_name() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_node_id_lookup_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("node.conf");
+    fs::write(&config_path, "genesis_time=42\n").expect("write config");
+    fs::write(dir.join("validators.yaml"), "peam_0:\n- 0\npeer1_0:\n- 1\n")
+        .expect("write validators");
+
+    let settings = NodeSettings {
+        metrics: false,
+        metrics_address: "127.0.0.1".to_string(),
+        metrics_port: 8080,
+        http_api: true,
+        discovery_interval_secs: 5,
+        score_decay_interval_secs: 30,
+        score_decay_amount: 1,
+        ban_threshold: -100,
+        listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
+        node_key_path: None,
+        bootnodes: Vec::new(),
+        trusted_peers: Vec::new(),
+        allowed_topics: Vec::new(),
+        topic_scores: Vec::new(),
+        topic_validators: Vec::new(),
+        max_gossip_bytes: 2_000_000,
+        max_reqresp_bytes: 4_000_000,
+        is_aggregator: false,
+        attestation_committee_count: 1,
+        validator_count: 2,
+        local_validator_index: 0,
+        storage_dir: None,
+        validator_config_path: None,
+        metrics_node_name: None,
+        metrics_client_name: None,
+        checkpoint_sync_url: None,
+    };
+
+    let index = resolve_local_validator_index_for_node_name(&config_path, &settings, "peer1_0")
+        .expect("resolve local validator index");
+    assert_eq!(index, Some(1));
 
     let _ = fs::remove_dir_all(&dir);
 }

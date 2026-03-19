@@ -56,13 +56,30 @@ Run the node:
 cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data
 ```
 
+Run the node with checkpoint sync:
+```bash
+cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data \
+  --checkpoint-sync-url http://localhost:5052
+```
+
+Run with direct runtime overrides:
+```bash
+cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data \
+  --listen /ip4/0.0.0.0/udp/9001/quic-v1 \
+  --bootnode /ip4/127.0.0.1/udp/9000/quic-v1/p2p/<peer-id> \
+  --api-port 5052 \
+  --is-aggregator
+```
+
 To print the genesis root only (no node):
 ```bash
 cargo run --release -- --config node.conf
 ```
 
-CLI flags are intentionally minimal (`--config`, `--data-dir`, `--run`, `--genesis-time`).
-Operational settings live in the config file.
+CLI flags are still small, but now include the main leanSpec-style runtime overrides:
+`--config`, `--data-dir`, `--run`, `--genesis-time`, `--checkpoint-sync-url`,
+`--listen`, `--bootnode`, `--api-port`, and `--is-aggregator`.
+Most other operational settings still live in the config file.
 
 ### Run a multi-client devnet
 ```bash

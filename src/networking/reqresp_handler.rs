@@ -19,7 +19,6 @@ use crate::types::uint::Uint64;
 
 use super::reqresp_messages::{LeanRequestMessage, LeanResponseMessage};
 
-
 /// Handles inbound req/resp requests and optionally returns a response.
 ///
 /// Implementations must be `Send + Sync` because they are called from async
@@ -96,7 +95,7 @@ impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
                     state_slot = state.slot.0.0,
                     state_latest_header_slot = state.latest_block_header.slot.0.0,
                     state_latest_header_root = ?Bytes32::from(state.latest_block_header.hash_tree_root()),
-                    "reqresp build_status returning genesis-like view"
+                    "reqresp build_status returning anchor status snapshot"
                 );
             }
         }
@@ -118,12 +117,7 @@ impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S>
                 // Return one block per response chunk, preserving request order.
                 let store = self.store.read().expect("store lock");
                 let mut blocks = Vec::new();
-                for root in req
-                    .roots
-                    .data
-                    .iter()
-                    .take(MAX_BLOCKS_PER_ROOT_REQUEST)
-                {
+                for root in req.roots.data.iter().take(MAX_BLOCKS_PER_ROOT_REQUEST) {
                     if let Some(found) = store.get_signed_block(root) {
                         blocks.push(LeanResponseMessage::BlocksByRoot(found));
                     } else {

@@ -586,6 +586,22 @@ impl FileStore {
         )
     }
 
+    #[inline]
+    pub(crate) fn put_anchor_signed_block(
+        &mut self,
+        root: Bytes32,
+        signed: &SignedBlockWithAttestation,
+        state: &State,
+    ) -> Result<(), String> {
+        self.persist_signed_block_bundle_from_state(
+            root,
+            signed,
+            state,
+            state.latest_justified,
+            state.latest_finalized,
+        )
+    }
+
     pub fn put_prevalidated_signed_block_with_metrics(
         &mut self,
         root: Bytes32,

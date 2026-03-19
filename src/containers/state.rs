@@ -465,6 +465,20 @@ impl State {
             self.latest_block_header.state_root = computed_root;
         }
 
+        if self.latest_justified.slot > pre_justified.slot
+            || self.latest_finalized.slot > pre_finalized.slot
+        {
+            info!(
+                block_slot = block.slot.0.0,
+                block_root = ?Bytes32::from(block.hash_tree_root()),
+                pre_justified_slot = pre_justified.slot.0.0,
+                post_justified_slot = self.latest_justified.slot.0.0,
+                pre_finalized_slot = pre_finalized.slot.0.0,
+                post_finalized_slot = self.latest_finalized.slot.0.0,
+                "consensus checkpoints advanced"
+            );
+        }
+
         if self.latest_finalized.slot > old_finalized.slot {
             metrics.inc_finalizations_success();
         }

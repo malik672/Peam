@@ -115,6 +115,43 @@ fn resolve_validator_config_is_aggregator(
         .or(entry.is_aggregator))
 }
 
+#[inline]
+fn local_validator_index_from_validators_yaml(
+    validators_path: &Path,
+    node_name: &str,
+) -> Result<Option<u64>, String> {
+    if !validators_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(validators_path)
+        .map_err(|err| format!("Failed to read {}: {err}", validators_path.display()))?;
+    let by_node: std::collections::BTreeMap<String, Vec<u64>> = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("Failed to parse {}: {err}", validators_path.display()))?;
+    Ok(by_node
+        .get(node_name)
+        .and_then(|indexes| indexes.first())
+        .copied())
+}
+
+#[inline]
+fn local_validator_index_from_validator_config(
+    validator_config_path: &Path,
+    node_name: &str,
+) -> Result<Option<u64>, String> {
+    if !validator_config_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(validator_config_path)
+        .map_err(|err| format!("Failed to read {}: {err}", validator_config_path.display()))?;
+    let parsed: ValidatorConfig = serde_yaml::from_str(&raw)
+        .map_err(|err| format!("Failed to parse {}: {err}", validator_config_path.display()))?;
+    Ok(parsed
+        .validators
+        .iter()
+        .position(|entry| entry.name == node_name)
+        .map(|idx| idx as u64))
+}
+
 /// Runtime settings for a [`Node`], parsed from the config file.
 ///
 /// All fields have defaults applied by [`load_node_settings`] when the
@@ -209,6 +246,38 @@ pub struct NodeSettings {
     pub checkpoint_sync_url: Option<String>,
 }
 
+#[inline]
+fn default_node_settings() -> NodeSettings {
+    NodeSettings {
+        metrics: false,
+        metrics_address: "127.0.0.1".to_string(),
+        metrics_port: 8080,
+        http_api: true,
+        discovery_interval_secs: 5,
+        score_decay_interval_secs: 30,
+        score_decay_amount: 1,
+        ban_threshold: -100,
+        listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
+        node_key_path: None,
+        bootnodes: Vec::new(),
+        trusted_peers: Vec::new(),
+        allowed_topics: default_allowed_topics(),
+        topic_scores: default_topic_scores(),
+        topic_validators: default_topic_validators(),
+        max_gossip_bytes: 2_000_000,
+        max_reqresp_bytes: 4_000_000,
+        is_aggregator: false,
+        attestation_committee_count: 1,
+        validator_count: DEFAULT_VALIDATOR_COUNT,
+        local_validator_index: 0,
+        storage_dir: None,
+        validator_config_path: None,
+        metrics_node_name: None,
+        metrics_client_name: None,
+        checkpoint_sync_url: None,
+    }
+}
+
 /// Load only the chain [`Config`] from `path`.
 ///
 /// Accepts two formats:
@@ -286,39 +355,22 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
 
     if bytes.len() == Config::fixed_len() {
         let config = Config::decode_ssz_checked(&bytes)?;
-        let settings = NodeSettings {
-            metrics: false,
-            metrics_address: "127.0.0.1".to_string(),
-            metrics_port: 8080,
-            http_api: true,
-            discovery_interval_secs: 5,
-            score_decay_interval_secs: 30,
-            score_decay_amount: 1,
-            ban_threshold: -100,
-            listen_addr: "/ip4/0.0.0.0/udp/9000/quic-v1".to_string(),
-            node_key_path: None,
-            bootnodes: Vec::new(),
-            trusted_peers: Vec::new(),
-            allowed_topics: default_allowed_topics(),
-            topic_scores: default_topic_scores(),
-            topic_validators: default_topic_validators(),
-            max_gossip_bytes: 2_000_000,
-            max_reqresp_bytes: 4_000_000,
-            is_aggregator: false,
-            attestation_committee_count: 1,
-            validator_count: DEFAULT_VALIDATOR_COUNT,
-            local_validator_index: 0,
-            storage_dir: None,
-            validator_config_path: None,
-            metrics_node_name: None,
-            metrics_client_name: None,
-            checkpoint_sync_url: None,
-        };
+        let settings = default_node_settings();
         return Ok((config, settings));
     }
 
     let text =
         std::str::from_utf8(&bytes).map_err(|err| format!("Config is not valid UTF-8: {err}"))?;
+    if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(text)
+        && let Some(genesis_time) = doc.get("GENESIS_TIME").and_then(|v| v.as_u64())
+    {
+        return Ok((
+            Config {
+                genesis_time: Uint64(genesis_time),
+            },
+            default_node_settings(),
+        ));
+    }
     let mut genesis_time: Option<u64> = None;
     let mut discovery_interval_secs: Option<u64> = None;
     let mut metrics: Option<bool> = None;
@@ -668,6 +720,21 @@ fn node_name_from_validator_config(
     )
 }
 
+pub fn resolve_local_validator_index_for_node_name(
+    config_path: &Path,
+    settings: &NodeSettings,
+    node_name: &str,
+) -> Result<Option<u64>, String> {
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let validators_path = config_dir.join("validators.yaml");
+    if let Some(index) = local_validator_index_from_validators_yaml(&validators_path, node_name)? {
+        return Ok(Some(index));
+    }
+    let validator_config_path =
+        resolve_validator_config_path(config_path, settings.validator_config_path.as_deref());
+    local_validator_index_from_validator_config(&validator_config_path, node_name)
+}
+
 /// Resolve metrics labels (`node_name`, `client_name`) for this node.
 ///
 /// Priority:
@@ -742,14 +809,25 @@ pub fn build_genesis_with_validator_count(
 /// Parses `GENESIS_TIME` and `GENESIS_VALIDATORS` (hex-encoded 52-byte pubkeys)
 /// from the YAML config. This is the canonical genesis used by all clients.
 pub fn build_genesis_from_config_yaml(path: &Path) -> Result<State, String> {
+    build_genesis_from_config_yaml_with_override(path, None)
+}
+
+pub fn build_genesis_from_config_yaml_with_override(
+    path: &Path,
+    genesis_time_override: Option<u64>,
+) -> Result<State, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&raw)
         .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
-    let genesis_time = doc
-        .get("GENESIS_TIME")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| format!("missing GENESIS_TIME in {}", path.display()))?;
+    let genesis_time = genesis_time_override.unwrap_or_else(|| {
+        doc.get("GENESIS_TIME")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default()
+    });
+    if genesis_time == 0 {
+        return Err(format!("missing GENESIS_TIME in {}", path.display()));
+    }
     let validators_yaml = doc
         .get("GENESIS_VALIDATORS")
         .and_then(|v| v.as_sequence())
