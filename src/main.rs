@@ -7,6 +7,10 @@ use peam::node::{Node, NodeConfig};
 use peam::ssz::HashTreeRoot;
 use peam::types::uint::Uint64;
 
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  peam --config <path>");
@@ -26,8 +30,20 @@ fn to_hex(bytes: &[u8]) -> String {
 
 #[tokio::main]
 async fn main() {
+    let mut filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing::Level::INFO.into())
+        .from_env_lossy();
+    for directive in [
+        "rec_aggregation::xmss_aggregate=off",
+        "packed_pcs_commit=off",
+        "sub_protocols::generic_logup=off",
+        "air::prove=off",
+    ] {
+        filter = filter.add_directive(directive.parse().expect("valid log directive"));
+    }
+
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .try_init();
 
     let mut args = env::args().skip(1);

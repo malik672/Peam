@@ -18,6 +18,7 @@ discovery_interval_secs=7
 score_decay_interval_secs=11
 score_decay_amount=3
 ban_threshold=-50
+http_api=false
 bootnodes=/ip4/1.2.3.4/tcp/30303/p2p/12D3KooWBootA,/ip4/5.6.7.8/tcp/30303/p2p/12D3KooWBootB
 trusted_peers=/ip4/9.9.9.9/tcp/30303/p2p/12D3KooWTrustA
 allowed_topics=peam/gossip,peam/blocks
@@ -79,6 +80,7 @@ metrics_port=18080
     assert!(settings.metrics);
     assert_eq!(settings.metrics_address, "0.0.0.0".to_string());
     assert_eq!(settings.metrics_port, 18080);
+    assert!(!settings.http_api);
 
     let _ = fs::remove_file(&path);
 }
@@ -101,6 +103,7 @@ fn resolves_metrics_identity_from_validators_yaml() {
         metrics: true,
         metrics_address: "127.0.0.1".to_string(),
         metrics_port: 18080,
+        http_api: true,
         discovery_interval_secs: 5,
         score_decay_interval_secs: 30,
         score_decay_amount: 1,
@@ -122,6 +125,7 @@ fn resolves_metrics_identity_from_validators_yaml() {
         validator_config_path: None,
         metrics_node_name: None,
         metrics_client_name: None,
+        checkpoint_sync_url: None,
     };
 
     let (node_name, client_name) =
@@ -153,6 +157,7 @@ fn resolves_metrics_identity_from_validator_config_when_needed() {
         metrics: true,
         metrics_address: "127.0.0.1".to_string(),
         metrics_port: 18080,
+        http_api: true,
         discovery_interval_secs: 5,
         score_decay_interval_secs: 30,
         score_decay_amount: 1,
@@ -174,6 +179,7 @@ fn resolves_metrics_identity_from_validator_config_when_needed() {
         validator_config_path: None,
         metrics_node_name: None,
         metrics_client_name: None,
+        checkpoint_sync_url: None,
     };
 
     let (node_name, client_name) =

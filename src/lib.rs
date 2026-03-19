@@ -11,6 +11,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod app;
+pub mod checkpoint_sync;
 pub mod containers;
 pub mod crypto;
 pub mod fork_choice;

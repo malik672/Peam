@@ -20,6 +20,7 @@ enum HttpRoute {
     Health,
     FinalizedState,
     JustifiedCheckpoint,
+    ForkChoice,
     NotFound,
 }
 
@@ -358,6 +359,7 @@ pub fn spawn_metrics_server(
     node_name: String,
     client_name: String,
     bind_addr: String,
+    enable_metrics: bool,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let listener = match TcpListener::bind(&bind_addr).await {
@@ -394,6 +396,13 @@ pub fn spawn_metrics_server(
 
             let response = match route {
                 HttpRoute::Metrics => {
+                    if !enable_metrics {
+                        http_response_bytes(
+                            "404 Not Found",
+                            "text/plain; charset=utf-8",
+                            b"metrics disabled\n".to_vec(),
+                        )
+                    } else {
                     let body = {
                         let state_guard = state.read().expect("state lock");
                         let store_guard = store.read().expect("store lock");
@@ -417,6 +426,7 @@ pub fn spawn_metrics_server(
                         .into_bytes()
                     };
                     http_response_bytes("200 OK", "text/plain; version=0.0.4", body)
+                    }
                 }
                 HttpRoute::Health => {
                     http_response_bytes("200 OK", "text/plain; charset=utf-8", b"ok\n".to_vec())
@@ -452,6 +462,24 @@ pub fn spawn_metrics_server(
                             "200 OK",
                             "application/json; charset=utf-8",
                             checkpoint_json(checkpoint.slot.0.0, checkpoint.root),
+                        ),
+                        None => http_response_bytes(
+                            "503 Service Unavailable",
+                            "text/plain; charset=utf-8",
+                            b"store not initialized\n".to_vec(),
+                        ),
+                    }
+                }
+                HttpRoute::ForkChoice => {
+                    let fork_choice_snapshot = {
+                        let fc_guard = fork_choice.read().expect("fork choice lock");
+                        fc_guard.as_ref().map(fork_choice_json)
+                    };
+                    match fork_choice_snapshot {
+                        Some(body) => http_response_bytes(
+                            "200 OK",
+                            "application/json; charset=utf-8",
+                            body,
                         ),
                         None => http_response_bytes(
                             "503 Service Unavailable",
@@ -508,6 +536,7 @@ fn classify_http_route(request: &[u8]) -> HttpRoute {
         b"/checkpoints/justified"
         | b"/lean/checkpoints/justified"
         | b"/lean/v0/checkpoints/justified" => HttpRoute::JustifiedCheckpoint,
+        b"/fork_choice" | b"/lean/fork_choice" | b"/lean/v0/fork_choice" => HttpRoute::ForkChoice,
         _ => HttpRoute::NotFound,
     }
 }
@@ -581,6 +610,76 @@ fn checkpoint_json(slot: u64, root: crate::types::bytes::Bytes32) -> Vec<u8> {
     out
 }
 
+#[inline]
+fn fork_choice_json(store: &ForkChoiceStore) -> Vec<u8> {
+    let finalized = store.latest_finalized();
+    let justified = store.latest_justified();
+    let head = store.head();
+    let safe_target = store.safe_target();
+    let validator_count = store.head_validator_count();
+    let finalized_slot = finalized.slot.0.0;
+
+    let mut out = String::new();
+    out.push('{');
+
+    out.push_str("\"nodes\":[");
+    let mut first = true;
+    for node in store.node_snapshots().into_iter().filter(|n| n.slot >= finalized_slot) {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('{');
+        out.push_str("\"root\":\"0x");
+        push_hex(&mut out, node.root.as_ref());
+        out.push_str("\",\"slot\":");
+        let _ = write!(&mut out, "{}", node.slot);
+        out.push_str(",\"parent_root\":\"0x");
+        push_hex(&mut out, node.parent_root.as_ref());
+        out.push_str("\",\"proposer_index\":");
+        let _ = write!(&mut out, "{}", node.proposer_index);
+        out.push_str(",\"weight\":");
+        let _ = write!(&mut out, "{}", node.weight);
+        out.push('}');
+    }
+    out.push(']');
+
+    out.push_str(",\"head\":\"0x");
+    push_hex(&mut out, head.as_ref());
+    out.push('"');
+
+    out.push_str(",\"justified\":{");
+    out.push_str("\"slot\":");
+    let _ = write!(&mut out, "{}", justified.slot.0.0);
+    out.push_str(",\"root\":\"0x");
+    push_hex(&mut out, justified.root.as_ref());
+    out.push_str("\"}");
+
+    out.push_str(",\"finalized\":{");
+    out.push_str("\"slot\":");
+    let _ = write!(&mut out, "{}", finalized.slot.0.0);
+    out.push_str(",\"root\":\"0x");
+    push_hex(&mut out, finalized.root.as_ref());
+    out.push_str("\"}");
+
+    out.push_str(",\"safe_target\":\"0x");
+    push_hex(&mut out, safe_target.as_ref());
+    out.push('"');
+
+    out.push_str(",\"validator_count\":");
+    let _ = write!(&mut out, "{}", validator_count);
+
+    out.push('}');
+    out.into_bytes()
+}
+
+#[inline]
+fn push_hex(out: &mut String, bytes: &[u8]) {
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -606,6 +705,37 @@ fn write_counter_metric_labeled(out: &mut String, name: &str, labels: &str, valu
 fn escape_label_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
+
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(target_env = "msvc")))]
+fn write_jemalloc_metrics(out: &mut String) {
+    use tikv_jemalloc_ctl::{epoch, stats};
+
+    if epoch::advance().is_err() {
+        return;
+    }
+
+    if let Ok(value) = stats::allocated::read() {
+        write_gauge_metric(out, "lean_jemalloc_bytes_allocated", value);
+    }
+    if let Ok(value) = stats::active::read() {
+        write_gauge_metric(out, "lean_jemalloc_bytes_active", value);
+    }
+    if let Ok(value) = stats::metadata::read() {
+        write_gauge_metric(out, "lean_jemalloc_bytes_metadata", value);
+    }
+    if let Ok(value) = stats::resident::read() {
+        write_gauge_metric(out, "lean_jemalloc_bytes_resident", value);
+    }
+    if let Ok(value) = stats::mapped::read() {
+        write_gauge_metric(out, "lean_jemalloc_bytes_mapped", value);
+    }
+    if let Ok(value) = stats::retained::read() {
+        write_gauge_metric(out, "lean_jemalloc_bytes_retained", value);
+    }
+}
+
+#[cfg(not(all(any(target_os = "linux", target_os = "macos"), not(target_env = "msvc"))))]
+fn write_jemalloc_metrics(_out: &mut String) {}
 
 fn render_metrics(
     state: &State,
@@ -852,6 +982,7 @@ fn render_metrics(
         "lean_storage_pending_block_rows",
         store.pending_block_rows(),
     );
+    write_jemalloc_metrics(&mut out);
 
     // -- PQ individual signature counters --
     write_counter_metric(

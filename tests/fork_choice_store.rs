@@ -36,7 +36,7 @@ fn build_signed_block(
             data: AttestationData {
                 slot: Slot(Uint64(slot)),
                 head: Checkpoint {
-                    root: Bytes32::zero(),
+                    root: parent_root,
                     slot: Slot(Uint64(slot)),
                 },
                 target: Checkpoint {
@@ -68,6 +68,7 @@ fn build_signed_block(
     post.process_block_body(&block.body, header.body_root)
         .expect("process body");
     block.state_root = Bytes32::from(post.hash_tree_root());
+    post.latest_block_header.state_root = block.state_root;
 
     let proposer_attestation = Attestation {
         aggregation_bits: BitList::new({
@@ -79,7 +80,7 @@ fn build_signed_block(
         data: AttestationData {
             slot: block.slot,
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: parent_root,
                 slot: Slot(Uint64(slot)),
             },
             target: Checkpoint {
@@ -153,7 +154,7 @@ fn fork_choice_uses_votes_to_pick_head() {
         data: AttestationData {
             slot: Slot(Uint64(2)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: root_b,
                 slot: Slot(Uint64(2)),
             },
             target: Checkpoint {
@@ -195,7 +196,7 @@ fn proposal_head_applies_pending_votes_before_returning_head() {
         data: AttestationData {
             slot: Slot(Uint64(2)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: root_b,
                 slot: Slot(Uint64(2)),
             },
             target: Checkpoint {
@@ -236,7 +237,7 @@ fn node_proposal_helper_drains_pending_and_returns_head() {
         data: AttestationData {
             slot: Slot(Uint64(2)),
             head: Checkpoint {
-                root: Bytes32::zero(),
+                root: root_b,
                 slot: Slot(Uint64(2)),
             },
             target: Checkpoint {
@@ -254,7 +255,7 @@ fn node_proposal_helper_drains_pending_and_returns_head() {
     let pending = Arc::new(RwLock::new(vec![pending_vote]));
     let head = proposal_head_from_pending(&fc, &pending).expect("proposal head");
     assert_eq!(head, root_b);
-    assert!(pending.read().expect("pending lock").is_empty());
+    assert_eq!(pending.read().expect("pending lock").len(), 1);
 }
 
 #[test]
@@ -342,9 +343,10 @@ fn reorg_vote_shift_changes_head() {
             },
         },
     };
+    let head_before = store.head();
     store.on_attestation(&vote_a);
     // Votes are staged first and only become active after acceptance.
-    assert_ne!(store.head(), root_a);
+    assert_eq!(store.head(), head_before);
     store.accept_new_votes();
     assert_eq!(store.head(), root_a);
 

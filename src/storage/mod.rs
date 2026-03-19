@@ -23,8 +23,10 @@
 //! pending window. Pending indexes are in-memory only.
 
 use rapidhash::RapidHashMap;
+use tracing::warn;
 
 use crate::containers::block::{Block, SignedBlockWithAttestation};
+use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
 use crate::metrics::MetricsRegistry;
 use crate::types::bytes::Bytes32;
@@ -111,6 +113,10 @@ pub trait Store {
     fn finalized(&self) -> Option<Bytes32>;
     /// Sets the finalized checkpoint root.
     fn set_finalized(&mut self, root: Bytes32);
+    /// Sets the finalized checkpoint root and slot.
+    fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint) {
+        self.set_finalized(checkpoint.root);
+    }
     /// Returns the current justified checkpoint root, if any.
     fn justified(&self) -> Option<Bytes32>;
     /// Sets the justified checkpoint root.
@@ -145,6 +151,7 @@ pub struct MemoryStore {
     block_by_slot: RapidHashMap<u64, Bytes32>,
     head: Option<Bytes32>,
     finalized: Option<Bytes32>,
+    finalized_slot: Option<u64>,
     justified: Option<Bytes32>,
 }
 
@@ -194,6 +201,7 @@ impl Store for MemoryStore {
         self.head = Some(root);
         self.justified = Some(state.latest_justified.root);
         self.finalized = Some(state.latest_finalized.root);
+        self.finalized_slot = Some(state.latest_finalized.slot.0.0);
         Ok(())
     }
 
@@ -220,7 +228,37 @@ impl Store for MemoryStore {
     }
 
     fn set_finalized(&mut self, root: Bytes32) {
+        let Some(block) = self.blocks.get(&root) else {
+            warn!("set_finalized called with unknown root; ignoring");
+            return;
+        };
+        let slot = block.slot.0.0;
+        if let Some(current) = self.finalized_slot {
+            if slot < current {
+                warn!(
+                    "set_finalized regression ignored new_slot={} current_slot={}",
+                    slot, current
+                );
+                return;
+            }
+        }
         self.finalized = Some(root);
+        self.finalized_slot = Some(slot);
+    }
+
+    fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint) {
+        let slot = checkpoint.slot.0.0;
+        if let Some(current) = self.finalized_slot {
+            if slot < current {
+                warn!(
+                    "set_finalized_checkpoint regression ignored new_slot={} current_slot={}",
+                    slot, current
+                );
+                return;
+            }
+        }
+        self.finalized = Some(checkpoint.root);
+        self.finalized_slot = Some(slot);
     }
 
     fn justified(&self) -> Option<Bytes32> {

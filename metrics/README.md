@@ -5,9 +5,9 @@ Grafana + Prometheus setup for local lean devnet clients.
 ## Scrape Targets
 
 - Peam: `http://127.0.0.1:18080/metrics`
-- Peer1: `http://127.0.0.1:18081/metrics`
-- Peer2: `http://127.0.0.1:18082/metrics`
-- Peer3 (Zeam): `http://127.0.0.1:18083/metrics`
+- Ethlambda: `http://127.0.0.1:18081/metrics`
+- Zeam: `http://127.0.0.1:18082/metrics`
+- Ream: `http://127.0.0.1:18083/metrics`
 ## Run Visualizer
 
 From the repo root:

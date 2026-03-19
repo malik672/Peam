@@ -20,7 +20,8 @@
 //!
 //! Slot tables map `slot → root` (canonical index). Blob tables map
 //! `root → envelope` (the actual serialized data). Meta stores three
-//! string-keyed roots: `"head"`, `"finalized"`, `"justified"`.
+//! string-keyed roots: `"head"`, `"finalized"`, `"justified"`, plus
+//! an optional `"finalized_slot"` u64 for checkpoint sync metadata.
 //!
 //! # Transaction model
 //!
@@ -42,7 +43,8 @@ const STATE_SLOT_TABLE: TableDefinition<'static, u64, &'static [u8]> =
 /// Canonical block slot index: `slot → Bytes32 block root`.
 const BLOCK_SLOT_TABLE: TableDefinition<'static, u64, &'static [u8]> =
     TableDefinition::new("canonical_block_slot");
-/// Fork-choice metadata: `"head"|"finalized"|"justified" → Bytes32 root`.
+/// Fork-choice metadata: `"head"|"finalized"|"justified" → Bytes32 root`,
+/// plus `"finalized_slot" → u64` (LE bytes).
 const META_TABLE: TableDefinition<'static, &'static str, &'static [u8]> =
     TableDefinition::new("canonical_meta");
 /// State blobs keyed by root: `Bytes32 state_root → LEANSTRG envelope`.
@@ -203,11 +205,11 @@ impl CanonicalDb {
 
     /// Reads fork-choice metadata from `canonical_meta`.
     ///
-    /// Returns `(head, finalized, justified)` as optional roots. A missing
-    /// key yields `None` for that position (normal for a fresh DB).
+    /// Returns `(head, finalized, justified, finalized_slot)` as optional values.
+    /// A missing key yields `None` for that position (normal for a fresh DB).
     pub(super) fn load_meta(
         &self,
-    ) -> Result<(Option<Bytes32>, Option<Bytes32>, Option<Bytes32>), String> {
+    ) -> Result<(Option<Bytes32>, Option<Bytes32>, Option<Bytes32>, Option<u64>), String> {
         let read_txn = self.db.begin_read().map_err(to_string)?;
         let table = read_txn.open_table(META_TABLE).map_err(to_string)?;
 
@@ -226,7 +228,11 @@ impl CanonicalDb {
             .map_err(to_string)?
             .map(|v| bytes_to_root(v.value()))
             .transpose()?;
-        Ok((head, finalized, justified))
+        let finalized_slot = table
+            .get("finalized_slot")
+            .map_err(to_string)?
+            .and_then(|v| bytes_to_u64(v.value()).ok());
+        Ok((head, finalized, justified, finalized_slot))
     }
 
     /// Atomic full-snapshot write: clears and rewrites both slot index tables
@@ -241,6 +247,7 @@ impl CanonicalDb {
         block_index: &RapidHashMap<u64, Bytes32>,
         head: Option<Bytes32>,
         finalized: Option<Bytes32>,
+        finalized_slot: Option<u64>,
         justified: Option<Bytes32>,
     ) -> Result<(), String> {
         let write_txn = self.db.begin_write().map_err(to_string)?;
@@ -266,6 +273,7 @@ impl CanonicalDb {
             let mut meta_table = write_txn.open_table(META_TABLE).map_err(to_string)?;
             upsert_or_remove_meta(&mut meta_table, "head", head)?;
             upsert_or_remove_meta(&mut meta_table, "finalized", finalized)?;
+            upsert_or_remove_meta_u64(&mut meta_table, "finalized_slot", finalized_slot)?;
             upsert_or_remove_meta(&mut meta_table, "justified", justified)?;
         }
         write_txn.commit().map_err(to_string)
@@ -293,6 +301,7 @@ impl CanonicalDb {
         block_upserts: &[(u64, Bytes32)],
         head: Option<Bytes32>,
         finalized: Option<Bytes32>,
+        finalized_slot: Option<u64>,
         justified: Option<Bytes32>,
     ) -> Result<(), String> {
         let write_txn = self.db.begin_write().map_err(to_string)?;
@@ -336,6 +345,7 @@ impl CanonicalDb {
             let mut meta_table = write_txn.open_table(META_TABLE).map_err(to_string)?;
             upsert_or_remove_meta(&mut meta_table, "head", head)?;
             upsert_or_remove_meta(&mut meta_table, "finalized", finalized)?;
+            upsert_or_remove_meta_u64(&mut meta_table, "finalized_slot", finalized_slot)?;
             upsert_or_remove_meta(&mut meta_table, "justified", justified)?;
         }
         write_txn.commit().map_err(to_string)
@@ -466,6 +476,17 @@ fn bytes_to_root(raw: &[u8]) -> Result<Bytes32, String> {
     Ok(Bytes32::from(out))
 }
 
+/// Converts a raw `&[u8]` from redb into a `u64`. Rejects non-8-byte slices.
+#[inline]
+fn bytes_to_u64(raw: &[u8]) -> Result<u64, String> {
+    if raw.len() != 8 {
+        return Err("canonical db u64 length must be 8".to_string());
+    }
+    let mut out = [0u8; 8];
+    out.copy_from_slice(raw);
+    Ok(u64::from_le_bytes(out))
+}
+
 /// Adapter to convert any `Display` error into `String` for `map_err`.
 #[inline]
 fn to_string<E: core::fmt::Display>(err: E) -> String {
@@ -490,6 +511,23 @@ fn upsert_or_remove_meta(
     if let Some(root) = value {
         table
             .insert(key, root.as_array().as_slice())
+            .map_err(to_string)?;
+    } else {
+        let _ = table.remove(key).map_err(to_string)?;
+    }
+    Ok(())
+}
+
+/// Inserts a metadata key if `value` is `Some`, removes it if `None`.
+fn upsert_or_remove_meta_u64(
+    table: &mut redb::Table<'_, &'static str, &'static [u8]>,
+    key: &'static str,
+    value: Option<u64>,
+) -> Result<(), String> {
+    if let Some(value) = value {
+        let bytes = value.to_le_bytes();
+        table
+            .insert(key, bytes.as_ref())
             .map_err(to_string)?;
     } else {
         let _ = table.remove(key).map_err(to_string)?;

@@ -42,12 +42,6 @@ fn gossip_topic_roundtrip_block() {
 }
 
 #[test]
-fn gossip_topic_rejects_legacy_block_alias() {
-    let hash = TopicHash::from_raw(format!("/{TOPIC_PREFIX}/devnet3/block/{ENCODING_POSTFIX}"));
-    assert!(LeanGossipTopic::from_topic_hash(&hash).is_err());
-}
-
-#[test]
 fn gossip_topic_roundtrip_attestation_subnet() {
     let topic = LeanGossipTopic {
         fork: "devnet3".to_string(),

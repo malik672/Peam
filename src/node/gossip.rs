@@ -21,7 +21,7 @@ use crate::ssz::HashTreeRoot;
 use crate::storage::Store;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::tasks::PendingBlockAttestation;
 
@@ -316,6 +316,12 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                             warn!("fork choice on_block failed root={root:?} err={err}");
                         }
                     }
+                    info!(
+                        root = ?root,
+                        slot = signed.message.block.slot.0.0,
+                        parent_root = ?signed.message.block.parent_root,
+                        "gossip block imported"
+                    );
                     enqueue_proposer_attestation_from_signed_block(pending_attestations, &signed);
                     metrics
                         .fc_block_processing_time
@@ -352,6 +358,15 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 metrics.fc_attestations_invalid_total.inc();
                 return;
             }
+            info!(
+                slot = att.data.slot.0.0,
+                target_slot = att.data.target.slot.0.0,
+                target_root = ?att.data.target.root,
+                source_slot = att.data.source.slot.0.0,
+                source_root = ?att.data.source.root,
+                participants_len_bits = att.proof.participants.len(),
+                "gossip aggregated attestation received"
+            );
             let pending = Attestation {
                 aggregation_bits: att.proof.participants.clone(),
                 data: att.data.clone(),

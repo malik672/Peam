@@ -18,8 +18,13 @@ use crate::app::{
     NodeSettings, build_genesis_from_config_yaml, build_genesis_with_validator_count,
     load_node_settings, resolve_metrics_identity,
 };
+use crate::checkpoint_sync::{
+    build_anchor_block, build_anchor_signed_block, fetch_checkpoint_state,
+    verify_checkpoint_state,
+};
 use crate::containers::attestation::Attestation;
 use crate::containers::attestation::SignedAttestation;
+use crate::containers::checkpoint::Checkpoint;
 use crate::containers::config::Config;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
@@ -28,7 +33,8 @@ use crate::networking::{
     Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
 };
 use crate::ssz::HashTreeRoot;
-use crate::storage::FileStore;
+use crate::storage::{FileStore, Store};
+use crate::types::bytes::Bytes32;
 
 use self::sync::spawn_status_sync_task;
 use tasks::{
@@ -170,7 +176,7 @@ impl Node {
             .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
             .unwrap_or_else(|| fallback_config_dir.to_path_buf());
         let genesis_config_yaml = config_dir.join("config.yaml");
-        let genesis_state = if genesis_config_yaml.is_file() {
+        let expected_genesis_state = if genesis_config_yaml.is_file() {
             tracing::info!(
                 path = %genesis_config_yaml.display(),
                 "peam startup: loading genesis from config.yaml"
@@ -183,7 +189,7 @@ impl Node {
         let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
             match build_devnet_pq_validator_keys_from_hash_sig_dir(
                 &hash_sig_keys_dir,
-                genesis_state.validators.data.len(),
+                expected_genesis_state.validators.data.len(),
             ) {
                 Ok(keys) => (
                     keys,
@@ -196,14 +202,14 @@ impl Node {
                         err
                     );
                     (
-                        build_devnet_pq_validator_keys(genesis_state.validators.data.len()),
+                        build_devnet_pq_validator_keys(expected_genesis_state.validators.data.len()),
                         "deterministic_devnet".to_string(),
                     )
                 }
             }
         } else {
             (
-                build_devnet_pq_validator_keys(genesis_state.validators.data.len()),
+                build_devnet_pq_validator_keys(expected_genesis_state.validators.data.len()),
                 "deterministic_devnet".to_string(),
             )
         };
@@ -218,19 +224,19 @@ impl Node {
             "peam startup: validator key cache"
         );
         let devnet_validator_keys =
-            filter_keys_against_genesis(&genesis_state, devnet_validator_keys);
-        if let Some(first) = genesis_state.validators.data.first() {
+            filter_keys_against_genesis(&expected_genesis_state, devnet_validator_keys);
+        if let Some(first) = expected_genesis_state.validators.data.first() {
             tracing::info!(
                 first_validator_pubkey = ?first.pubkey,
                 "peam startup: first validator pubkey"
             );
         }
         let local_validator_index = settings.local_validator_index as usize;
-        let Some(expected) = genesis_state.validators.data.get(local_validator_index) else {
+        let Some(expected) = expected_genesis_state.validators.data.get(local_validator_index) else {
             return Err(format!(
                 "local_validator_index {} out of range for {} genesis validators",
                 settings.local_validator_index,
-                genesis_state.validators.data.len()
+                expected_genesis_state.validators.data.len()
             ));
         };
         let Some(Some(local_key)) = devnet_validator_keys.get(local_validator_index) else {
@@ -255,7 +261,6 @@ expected {:?}, got {:?}",
                 );
                 ("peam".to_string(), "peam".to_string())
             });
-        let state = Arc::new(RwLock::new(genesis_state));
         let store_dir = settings
             .storage_dir
             .as_ref()
@@ -269,7 +274,66 @@ expected {:?}, got {:?}",
             })
             .unwrap_or_else(|| node_config.data_dir.join("store"));
         let store = Arc::new(RwLock::new(FileStore::open(&store_dir)?));
-        let fork_choice = Arc::new(RwLock::new(None));
+        let mut initial_state = expected_genesis_state;
+        let mut initial_fork_choice: Option<ForkChoiceStore> = None;
+        if let Some(url) = settings.checkpoint_sync_url.as_ref() {
+            let store_has_data = {
+                let guard = store.read().expect("store lock");
+                guard.canonical_state_rows() > 0
+                    || guard.canonical_block_rows() > 0
+                    || guard.pending_block_rows() > 0
+                    || guard.head().is_some()
+            };
+            if store_has_data {
+                warn!(
+                    checkpoint_sync_url = url,
+                    "checkpoint sync requested on non-empty store; overwriting anchor metadata"
+                );
+            }
+            let mut checkpoint_state = fetch_checkpoint_state(url)?;
+            verify_checkpoint_state(&checkpoint_state, &initial_state)?;
+            if checkpoint_state.latest_block_header.state_root == Bytes32::zero() {
+                let mut tmp = checkpoint_state.clone();
+                tmp.latest_block_header.state_root = Bytes32::zero();
+                let computed_root = Bytes32::from(tmp.hash_tree_root());
+                checkpoint_state.latest_block_header.state_root = computed_root;
+            }
+            let state_root = checkpoint_state.latest_block_header.state_root;
+            let anchor_block = build_anchor_block(&checkpoint_state);
+            let anchor_root = Bytes32::from(anchor_block.hash_tree_root());
+            {
+                let mut guard = store.write().expect("store lock");
+                guard.put_state(state_root, checkpoint_state.clone());
+                guard.put_block(anchor_root, anchor_block.clone());
+                guard.set_head(anchor_root);
+                guard.set_finalized_checkpoint(Checkpoint {
+                    root: anchor_root,
+                    slot: checkpoint_state.latest_block_header.slot,
+                });
+                guard.set_justified(anchor_root);
+            }
+            match build_anchor_signed_block(&checkpoint_state, &anchor_block)
+                .and_then(|signed| ForkChoiceStore::new(signed, checkpoint_state.clone()))
+            {
+                Ok(mut fc) => {
+                    fc.override_checkpoint_roots(anchor_root);
+                    initial_fork_choice = Some(fc);
+                }
+                Err(err) => {
+                    return Err(format!("checkpoint sync fork choice init failed: {err}"));
+                }
+            }
+            tracing::info!(
+                checkpoint_sync_url = url,
+                checkpoint_slot = checkpoint_state.slot.0.0,
+                checkpoint_state_root = ?state_root,
+                checkpoint_block_root = ?anchor_root,
+                "checkpoint sync applied"
+            );
+            initial_state = checkpoint_state;
+        }
+        let state = Arc::new(RwLock::new(initial_state));
+        let fork_choice = Arc::new(RwLock::new(initial_fork_choice));
         let pending_attestations = Arc::new(RwLock::new(Vec::new()));
         let pending_individual_attestations = Arc::new(RwLock::new(Vec::new()));
         let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
@@ -316,7 +380,7 @@ expected {:?}, got {:?}",
     /// 3. Dials all configured bootnodes.
     /// 4. Spawns a Tokio task that receives [`NetworkEvent::GossipMessage`]
     ///    events and dispatches them to [`handle_gossip_event`].
-    /// 5. Optionally spawns a Prometheus metrics server.
+    /// 5. Optionally spawns the HTTP API / metrics server.
     /// 6. Waits for either `ctrl-c` or a [`Node::shutdown`] signal.
     /// 7. Gracefully shuts down networking and aborts the metrics task.
     ///
@@ -438,7 +502,17 @@ expected {:?}, got {:?}",
             let deferred_gossip_rx = deferred_gossip.clone();
             tokio::spawn(async move {
                 loop {
-                    let Ok(event) = rx.recv().await else { continue };
+                    let event = match rx.recv().await {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("network events channel lagged, skipped {n} events");
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!("network events channel closed err={err}");
+                            return;
+                        }
+                    };
                     match event {
                         crate::networking::NetworkEvent::GossipMessage { topic, payload } => {
                             handle_gossip_event(
@@ -582,7 +656,7 @@ expected {:?}, got {:?}",
             self.metrics.clone(),
         ));
 
-        if self.settings.metrics {
+        if self.settings.metrics || self.settings.http_api {
             let bind = format!(
                 "{}:{}",
                 self.settings.metrics_address, self.settings.metrics_port
@@ -599,6 +673,7 @@ expected {:?}, got {:?}",
                 self.metrics_node_name.clone(),
                 self.metrics_client_name.clone(),
                 bind,
+                self.settings.metrics,
             ));
         }
 

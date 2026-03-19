@@ -78,10 +78,23 @@ impl Discovery {
             if let Some(addr) = self.next_seed().await {
                 // Avoid aggressive redial churn for peers that are already connected.
                 let mut should_skip = false;
+                let mut peer_id_str = None;
                 for protocol in addr.iter() {
                     if let Protocol::P2p(peer_id) = protocol {
-                        should_skip = peers.is_connected(&peer_id.to_string()).await;
+                        let peer_id = peer_id.to_string();
+                        peer_id_str = Some(peer_id.clone());
+                        should_skip = peers.is_connected(&peer_id).await;
                         break;
+                    }
+                }
+                if let Some(peer_id) = &peer_id_str {
+                    if let Some(remaining) = peers.backoff_remaining(peer_id).await {
+                        info!(
+                            peer_id = %peer_id,
+                            wait_secs = remaining.as_secs(),
+                            "discovery backoff skipping dial"
+                        );
+                        continue;
                     }
                 }
                 if should_skip {

@@ -36,9 +36,10 @@
 //! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use tracing::warn;
 
 use super::canonical_db::CanonicalDb;
 use super::pending::PendingSlotCache;
@@ -175,24 +176,19 @@ impl FileStore {
     }
 
     /// Promote all pending rows at `slot <= finalized_slot` into canonical indexes.
-    ///
-    /// Returns the promoted entries so callers can use them for delta index writes.
-    fn promote_finalized_slot_in_memory(
-        &mut self,
-        finalized_slot: u64,
-    ) -> Vec<super::pending::PendingEntry> {
-        let promoted = self.pending_blocks.drain_leq(finalized_slot);
-        for entry in &promoted {
-            self.block_by_slot.insert(entry.slot, entry.block_root);
-            self.state_by_slot.insert(entry.slot, entry.state_root);
-        }
-        if !promoted.is_empty() {
-            self.index_dirty = true;
-        }
-        promoted
+    #[inline]
+    fn promote_finalized_slot_in_memory(&mut self, finalized_slot: u64) {
+        let block_by_slot = &mut self.block_by_slot;
+        let state_by_slot = &mut self.state_by_slot;
+        let pending = &mut self.pending_blocks;
+        pending.drain_leq_with(finalized_slot, |value| {
+            block_by_slot.insert(value.slot, value.block_root);
+            state_by_slot.insert(value.slot, value.state_root);
+        });
     }
 
     /// Promote finalized pending entries and persist all indexes.
+    #[inline]
     pub fn promote_finalized(&mut self, finalized_slot: u64) -> Result<(), String> {
         self.promote_finalized_slot_in_memory(finalized_slot);
         self.flush_canonical()
@@ -209,6 +205,7 @@ impl FileStore {
             &self.block_by_slot,
             self.head,
             self.finalized,
+            self.finalized_slot,
             self.justified,
         )?;
         self.index_dirty = false;
@@ -252,9 +249,11 @@ impl FileStore {
         self.load_state_index()?;
         self.load_block_index()?;
         self.load_meta()?;
-        self.finalized_slot = self
-            .finalized
-            .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0.0));
+        if self.finalized_slot.is_none() {
+            self.finalized_slot = self
+                .finalized
+                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0.0));
+        }
         self.recovery.loaded_states = self.state_by_slot.len();
         self.recovery.loaded_blocks = self.block_by_slot.len();
         self.recovery.loaded_signed_blocks = 0;
@@ -270,9 +269,10 @@ impl FileStore {
     /// Loads fork-choice metadata (`head`, `finalized`, `justified`) from canonical DB.
     fn load_meta(&mut self) -> Result<(), String> {
         match self.canonical_db.load_meta() {
-            Ok((head, finalized, justified)) => {
+            Ok((head, finalized, justified, finalized_slot)) => {
                 self.head = head;
                 self.finalized = finalized;
+                self.finalized_slot = finalized_slot;
                 self.justified = justified;
             }
             Err(_) => {
@@ -317,7 +317,12 @@ impl FileStore {
         meta_finalized: Checkpoint,
     ) -> Result<(), String> {
         self.persist_signed_block_bundle_inner(
-            root, signed, persisted_state, meta_justified, meta_finalized, true,
+            root,
+            signed,
+            persisted_state,
+            meta_justified,
+            meta_finalized,
+            true,
         )
     }
 
@@ -366,18 +371,22 @@ impl FileStore {
         let fin_slot = meta_finalized.slot.0.0;
         let block_canonical = self.index_block_slot(slot, root, state_root);
         self.index_state_slot(slot, state_root);
-        let promoted = self.promote_finalized_slot_in_memory(fin_slot);
 
-        let mut state_upserts = Vec::with_capacity(1 + promoted.len());
-        let mut block_upserts = Vec::with_capacity(usize::from(block_canonical) + promoted.len());
+        let mut state_upserts = Vec::new();
+        let mut block_upserts = Vec::new();
         state_upserts.push((slot, state_root));
         if block_canonical {
             block_upserts.push((slot, root));
         }
-        for entry in &promoted {
-            state_upserts.push((entry.slot, entry.state_root));
-            block_upserts.push((entry.slot, entry.block_root));
-        }
+        let block_by_slot = &mut self.block_by_slot;
+        let state_by_slot = &mut self.state_by_slot;
+        let pending = &mut self.pending_blocks;
+        pending.drain_leq_with(fin_slot, |value| {
+            block_by_slot.insert(value.slot, value.block_root);
+            state_by_slot.insert(value.slot, value.state_root);
+            state_upserts.push((value.slot, value.state_root));
+            block_upserts.push((value.slot, value.block_root));
+        });
 
         self.canonical_db.persist_signed_block_bundle(
             root,
@@ -389,6 +398,7 @@ impl FileStore {
             &block_upserts,
             self.head,
             self.finalized,
+            self.finalized_slot,
             self.justified,
         )?;
         self.index_dirty = false;
@@ -468,9 +478,14 @@ impl FileStore {
                 } else {
                     replayed.latest_justified
                 };
-                let promotes_head = replayed.slot > state.slot;
+                let promotes_head = replayed.slot >= state.slot;
                 self.persist_signed_block_bundle_inner(
-                    root, &signed, &replayed, meta_justified, meta_finalized, promotes_head,
+                    root,
+                    &signed,
+                    &replayed,
+                    meta_justified,
+                    meta_finalized,
+                    promotes_head,
                 )?;
                 if promotes_head {
                     *state = replayed;
@@ -487,18 +502,18 @@ impl FileStore {
                 return Ok(());
             }
             let exact_post_state = state.clone();
-            let meta_finalized = if exact_post_state.latest_finalized.slot < pre_import_finalized.slot
-            {
-                pre_import_finalized
-            } else {
-                exact_post_state.latest_finalized
-            };
-            let meta_justified = if exact_post_state.latest_justified.slot < pre_import_justified.slot
-            {
-                pre_import_justified
-            } else {
-                exact_post_state.latest_justified
-            };
+            let meta_finalized =
+                if exact_post_state.latest_finalized.slot < pre_import_finalized.slot {
+                    pre_import_finalized
+                } else {
+                    exact_post_state.latest_finalized
+                };
+            let meta_justified =
+                if exact_post_state.latest_justified.slot < pre_import_justified.slot {
+                    pre_import_justified
+                } else {
+                    exact_post_state.latest_justified
+                };
             state.latest_finalized = meta_finalized;
             state.latest_justified = meta_justified;
             self.persist_signed_block_bundle_from_state(
@@ -592,21 +607,35 @@ impl FileStore {
             if block.parent_root != expected_parent {
                 return Err("block parent root does not match latest header root".to_string());
             }
+            let computed_post_root = Bytes32::from(post_state.hash_tree_root());
+            let header_root = post_state.latest_block_header.state_root;
+            if header_root != block.state_root && computed_post_root != block.state_root {
+                tracing::warn!(
+                    block_root = ?root,
+                    block_slot = block.slot.0.0,
+                    parent_root = ?block.parent_root,
+                    header_state_root = ?header_root,
+                    block_state_root = ?block.state_root,
+                    computed_state_root = ?computed_post_root,
+                    "rejecting prevalidated block: post_state root mismatch"
+                );
+                return Err("post_state root does not match block.state_root".to_string());
+            }
 
             *state = post_state;
             let exact_post_state = state.clone();
-            let meta_finalized = if exact_post_state.latest_finalized.slot < pre_import_finalized.slot
-            {
-                pre_import_finalized
-            } else {
-                exact_post_state.latest_finalized
-            };
-            let meta_justified = if exact_post_state.latest_justified.slot < pre_import_justified.slot
-            {
-                pre_import_justified
-            } else {
-                exact_post_state.latest_justified
-            };
+            let meta_finalized =
+                if exact_post_state.latest_finalized.slot < pre_import_finalized.slot {
+                    pre_import_finalized
+                } else {
+                    exact_post_state.latest_finalized
+                };
+            let meta_justified =
+                if exact_post_state.latest_justified.slot < pre_import_justified.slot {
+                    pre_import_justified
+                } else {
+                    exact_post_state.latest_justified
+                };
             state.latest_finalized = meta_finalized;
             state.latest_justified = meta_justified;
             self.persist_signed_block_bundle_from_state(
@@ -644,8 +673,9 @@ impl Drop for FileStore {
 /// - **`put_signed_block`** runs state transition, encodes all three blobs,
 ///   updates indexes and metadata, then writes everything in a single atomic
 ///   redb transaction via `persist_signed_block_bundle`.
-/// - **`set_head` / `set_finalized` / `set_justified`** update metadata and
-///   flush immediately. `set_finalized` also promotes pending entries.
+/// - **`set_head` / `set_justified`** update metadata and mark it dirty.
+///   Metadata is flushed when a finalized checkpoint is set or a bundle write occurs.
+/// - **`set_finalized`** updates metadata, promotes pending entries, and flushes.
 impl Store for FileStore {
     #[inline]
     fn get_state(&self, root: &Bytes32) -> Option<State> {
@@ -721,10 +751,11 @@ impl Store for FileStore {
         self.head
     }
 
+    #[inline]
     fn set_head(&mut self, root: Bytes32) {
         self.head = Some(root);
+        // Head updates are frequent; defer persistence to finalized/bundle flushes.
         self.set_meta_dirty();
-        let _ = self.flush_canonical();
     }
 
     fn finalized(&self) -> Option<Bytes32> {
@@ -733,13 +764,48 @@ impl Store for FileStore {
 
     /// Sets finalized root, derives `finalized_slot` via cold read, promotes
     /// pending entries ≤ that slot into canonical, then flushes to redb.
+    #[inline]
     fn set_finalized(&mut self, root: Bytes32) {
-        self.finalized = Some(root);
-        self.finalized_slot = self.load_block_by_root(&root).map(|block| block.slot.0.0);
-        self.set_meta_dirty();
-        if let Some(slot) = self.finalized_slot {
-            let _ = self.promote_finalized_slot_in_memory(slot);
+        let Some(block) = self.load_block_by_root(&root) else {
+            warn!("set_finalized called with unknown root; ignoring");
+            return;
+        };
+        let slot = block.slot.0.0;
+        if let Some(current) = self.finalized_slot {
+            if slot < current {
+                warn!(
+                    "set_finalized regression ignored new_slot={} current_slot={}",
+                    slot, current
+                );
+                return;
+            }
         }
+        self.finalized = Some(root);
+        self.finalized_slot = Some(slot);
+        self.set_meta_dirty();
+        // Promote any pending rows up to the new finalized slot.
+        let _ = self.promote_finalized_slot_in_memory(slot);
+        // Persist finalized metadata + any promoted canonical entries.
+        let _ = self.flush_canonical();
+    }
+
+    /// Sets finalized checkpoint root + slot explicitly, then flushes metadata.
+    #[inline]
+    fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint) {
+        let slot = checkpoint.slot.0.0;
+        if let Some(current) = self.finalized_slot {
+            if slot < current {
+                warn!(
+                    "set_finalized_checkpoint regression ignored new_slot={} current_slot={}",
+                    slot, current
+                );
+                return;
+            }
+        }
+        self.finalized = Some(checkpoint.root);
+        self.finalized_slot = Some(slot);
+        self.set_meta_dirty();
+        let _ = self.promote_finalized_slot_in_memory(slot);
         let _ = self.flush_canonical();
     }
 
@@ -749,8 +815,8 @@ impl Store for FileStore {
 
     fn set_justified(&mut self, root: Bytes32) {
         self.justified = Some(root);
+        // Justified moves often; persist alongside finalized updates.
         self.set_meta_dirty();
-        let _ = self.flush_canonical();
     }
 
     fn put_signed_block_with_metrics(

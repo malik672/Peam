@@ -55,7 +55,7 @@
       },
       "targets": [
         {
-          "expr": "lean_current_slot or lean_state_slot",
+          "expr": "max by (client) (lean_current_slot) or max by (client) (lean_state_slot)",
           "refId": "A"
         }
       ],
@@ -96,7 +96,7 @@
       },
       "targets": [
         {
-          "expr": "lean_head_slot",
+          "expr": "max by (client) (lean_head_slot)",
           "refId": "A"
         }
       ],
@@ -137,7 +137,7 @@
       },
       "targets": [
         {
-          "expr": "lean_justified_slot or lean_latest_justified_slot",
+          "expr": "max by (client) (lean_justified_slot) or max by (client) (lean_latest_justified_slot)",
           "refId": "A"
         }
       ],
@@ -178,7 +178,7 @@
       },
       "targets": [
         {
-          "expr": "lean_finalized_slot or lean_latest_finalized_slot",
+          "expr": "max by (client) (lean_finalized_slot) or max by (client) (lean_latest_finalized_slot)",
           "refId": "A"
         }
       ],
@@ -219,18 +219,18 @@
       },
       "targets": [
         {
-          "expr": "lean_head_slot",
-          "legendFormat": "head",
+          "expr": "max by (client) (lean_head_slot)",
+          "legendFormat": "{{client}} head",
           "refId": "A"
         },
         {
-          "expr": "lean_justified_slot or lean_latest_justified_slot",
-          "legendFormat": "justified",
+          "expr": "max by (client) (lean_justified_slot) or max by (client) (lean_latest_justified_slot)",
+          "legendFormat": "{{client}} justified",
           "refId": "B"
         },
         {
-          "expr": "lean_finalized_slot or lean_latest_finalized_slot",
-          "legendFormat": "finalized",
+          "expr": "max by (client) (lean_finalized_slot) or max by (client) (lean_latest_finalized_slot)",
+          "legendFormat": "{{client}} finalized",
           "refId": "C"
         }
       ],
@@ -271,8 +271,8 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, rate(lean_state_transition_time_seconds_bucket[5m])) or histogram_quantile(0.99, rate(lean_state_transition_time_bucket[5m]))",
-          "legendFormat": "state_transition_p99",
+          "expr": "histogram_quantile(0.99, sum by (le, client) (rate(lean_state_transition_time_seconds_bucket[5m]))) or histogram_quantile(0.99, sum by (le, client) (rate(lean_state_transition_time_bucket[5m])))",
+          "legendFormat": "{{client}} state_transition_p99",
           "refId": "A"
         }
       ],
@@ -313,13 +313,13 @@
       },
       "targets": [
         {
-          "expr": "rate(lean_pq_sig_attestation_signing_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_signing_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "attestation_sign_avg",
+          "expr": "sum by (client) (rate(lean_pq_sig_attestation_signing_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_pq_sig_attestation_signing_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} attestation_sign_avg",
           "refId": "A"
         },
         {
-          "expr": "rate(lean_pq_sig_attestation_verification_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_verification_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "attestation_verify_avg",
+          "expr": "sum by (client) (rate(lean_pq_sig_attestation_verification_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_pq_sig_attestation_verification_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} attestation_verify_avg",
           "refId": "B"
         }
       ],
@@ -360,18 +360,18 @@
       },
       "targets": [
         {
-          "expr": "lean_connected_peers or libp2p_peers",
-          "legendFormat": "peers",
+          "expr": "max by (client) (lean_connected_peers) or max by (client) (libp2p_peers)",
+          "legendFormat": "{{client}} peers",
           "refId": "A"
         },
         {
-          "expr": "lean_sync_target_slot",
-          "legendFormat": "sync_target",
+          "expr": "max by (client) (lean_sync_target_slot)",
+          "legendFormat": "{{client}} sync_target",
           "refId": "B"
         },
         {
-          "expr": "lean_sync_pending_depth",
-          "legendFormat": "sync_pending_depth",
+          "expr": "max by (client) (lean_sync_pending_depth)",
+          "legendFormat": "{{client}} sync_pending_depth",
           "refId": "C"
         }
       ],
@@ -412,43 +412,43 @@
       },
       "targets": [
         {
-          "expr": "max(lean_node_info)",
-          "legendFormat": "lean_node_info",
+          "expr": "max by (client) (lean_node_info)",
+          "legendFormat": "{{client}} lean_node_info",
           "refId": "A"
         },
         {
-          "expr": "max(lean_node_start_time_seconds)",
-          "legendFormat": "lean_node_start_time_seconds",
+          "expr": "max by (client) (lean_node_start_time_seconds)",
+          "legendFormat": "{{client}} lean_node_start_time_seconds",
           "refId": "B"
         },
         {
-          "expr": "max(lean_head_slot)",
-          "legendFormat": "lean_head_slot",
+          "expr": "max by (client) (lean_head_slot)",
+          "legendFormat": "{{client}} lean_head_slot",
           "refId": "C"
         },
         {
-          "expr": "max(lean_current_slot)",
-          "legendFormat": "lean_current_slot",
+          "expr": "max by (client) (lean_current_slot)",
+          "legendFormat": "{{client}} lean_current_slot",
           "refId": "D"
         },
         {
-          "expr": "max(lean_safe_target_slot)",
-          "legendFormat": "lean_safe_target_slot",
+          "expr": "max by (client) (lean_safe_target_slot)",
+          "legendFormat": "{{client}} lean_safe_target_slot",
           "refId": "E"
         },
         {
-          "expr": "max(lean_latest_justified_slot)",
-          "legendFormat": "lean_latest_justified_slot",
+          "expr": "max by (client) (lean_latest_justified_slot)",
+          "legendFormat": "{{client}} lean_latest_justified_slot",
           "refId": "F"
         },
         {
-          "expr": "max(lean_latest_finalized_slot)",
-          "legendFormat": "lean_latest_finalized_slot",
+          "expr": "max by (client) (lean_latest_finalized_slot)",
+          "legendFormat": "{{client}} lean_latest_finalized_slot",
           "refId": "G"
         },
         {
-          "expr": "max(lean_validators_count)",
-          "legendFormat": "lean_validators_count",
+          "expr": "max by (client) (lean_validators_count)",
+          "legendFormat": "{{client}} lean_validators_count",
           "refId": "H"
         }
       ],
@@ -489,33 +489,33 @@
       },
       "targets": [
         {
-          "expr": "max(lean_connected_peers)",
-          "legendFormat": "lean_connected_peers",
+          "expr": "max by (client) (lean_connected_peers)",
+          "legendFormat": "{{client}} lean_connected_peers",
           "refId": "A"
         },
         {
-          "expr": "sum(lean_peer_connection_events_total)",
-          "legendFormat": "lean_peer_connection_events_total",
+          "expr": "sum by (client) (lean_peer_connection_events_total)",
+          "legendFormat": "{{client}} lean_peer_connection_events_total",
           "refId": "B"
         },
         {
-          "expr": "sum(lean_peer_disconnection_events_total)",
-          "legendFormat": "lean_peer_disconnection_events_total",
+          "expr": "sum by (client) (lean_peer_disconnection_events_total)",
+          "legendFormat": "{{client}} lean_peer_disconnection_events_total",
           "refId": "C"
         },
         {
-          "expr": "max(lean_attestation_committee_subnet)",
-          "legendFormat": "lean_attestation_committee_subnet",
+          "expr": "sum by (client) (lean_attestation_committee_subnet)",
+          "legendFormat": "{{client}} lean_attestation_committee_subnet",
           "refId": "D"
         },
         {
-          "expr": "max(lean_attestation_committee_count)",
-          "legendFormat": "lean_attestation_committee_count",
+          "expr": "max by (client) (lean_attestation_committee_count)",
+          "legendFormat": "{{client}} lean_attestation_committee_count",
           "refId": "E"
         },
         {
-          "expr": "max(lean_is_aggregator)",
-          "legendFormat": "lean_is_aggregator",
+          "expr": "max by (client) (lean_is_aggregator)",
+          "legendFormat": "{{client}} lean_is_aggregator",
           "refId": "F"
         }
       ],
@@ -556,38 +556,38 @@
       },
       "targets": [
         {
-          "expr": "sum(lean_pq_sig_attestation_signatures_total)",
-          "legendFormat": "lean_pq_sig_attestation_signatures_total",
+          "expr": "sum by (client) (lean_pq_sig_attestation_signatures_total)",
+          "legendFormat": "{{client}} lean_pq_sig_attestation_signatures_total",
           "refId": "A"
         },
         {
-          "expr": "sum(lean_pq_sig_attestation_signatures_valid_total)",
-          "legendFormat": "lean_pq_sig_attestation_signatures_valid_total",
+          "expr": "sum by (client) (lean_pq_sig_attestation_signatures_valid_total)",
+          "legendFormat": "{{client}} lean_pq_sig_attestation_signatures_valid_total",
           "refId": "B"
         },
         {
-          "expr": "sum(lean_pq_sig_attestation_signatures_invalid_total)",
-          "legendFormat": "lean_pq_sig_attestation_signatures_invalid_total",
+          "expr": "sum by (client) (lean_pq_sig_attestation_signatures_invalid_total)",
+          "legendFormat": "{{client}} lean_pq_sig_attestation_signatures_invalid_total",
           "refId": "C"
         },
         {
-          "expr": "sum(lean_pq_sig_aggregated_signatures_total)",
-          "legendFormat": "lean_pq_sig_aggregated_signatures_total",
+          "expr": "sum by (client) (lean_pq_sig_aggregated_signatures_total)",
+          "legendFormat": "{{client}} lean_pq_sig_aggregated_signatures_total",
           "refId": "D"
         },
         {
-          "expr": "sum(lean_pq_sig_aggregated_signatures_valid_total)",
-          "legendFormat": "lean_pq_sig_aggregated_signatures_valid_total",
+          "expr": "sum by (client) (lean_pq_sig_aggregated_signatures_valid_total)",
+          "legendFormat": "{{client}} lean_pq_sig_aggregated_signatures_valid_total",
           "refId": "E"
         },
         {
-          "expr": "sum(lean_pq_sig_aggregated_signatures_invalid_total)",
-          "legendFormat": "lean_pq_sig_aggregated_signatures_invalid_total",
+          "expr": "sum by (client) (lean_pq_sig_aggregated_signatures_invalid_total)",
+          "legendFormat": "{{client}} lean_pq_sig_aggregated_signatures_invalid_total",
           "refId": "F"
         },
         {
-          "expr": "sum(lean_pq_sig_attestations_in_aggregated_signatures_total)",
-          "legendFormat": "lean_pq_sig_attestations_in_aggregated_signatures_total",
+          "expr": "sum by (client) (lean_pq_sig_attestations_in_aggregated_signatures_total)",
+          "legendFormat": "{{client}} lean_pq_sig_attestations_in_aggregated_signatures_total",
           "refId": "G"
         }
       ],
@@ -628,23 +628,23 @@
       },
       "targets": [
         {
-          "expr": "rate(lean_pq_sig_attestation_signing_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_signing_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_pq_sig_attestation_signing_time_seconds",
+          "expr": "sum by (client) (rate(lean_pq_sig_attestation_signing_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_pq_sig_attestation_signing_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_pq_sig_attestation_signing_time_seconds",
           "refId": "A"
         },
         {
-          "expr": "rate(lean_pq_sig_attestation_verification_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_attestation_verification_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_pq_sig_attestation_verification_time_seconds",
+          "expr": "sum by (client) (rate(lean_pq_sig_attestation_verification_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_pq_sig_attestation_verification_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_pq_sig_attestation_verification_time_seconds",
           "refId": "B"
         },
         {
-          "expr": "rate(lean_pq_sig_aggregated_signatures_building_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_aggregated_signatures_building_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_pq_sig_aggregated_signatures_building_time_seconds",
+          "expr": "sum by (client) (rate(lean_pq_sig_aggregated_signatures_building_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_pq_sig_aggregated_signatures_building_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_pq_sig_aggregated_signatures_building_time_seconds",
           "refId": "C"
         },
         {
-          "expr": "rate(lean_pq_sig_aggregated_signatures_verification_time_seconds_sum[5m]) / clamp_min(rate(lean_pq_sig_aggregated_signatures_verification_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_pq_sig_aggregated_signatures_verification_time_seconds",
+          "expr": "sum by (client) (rate(lean_pq_sig_aggregated_signatures_verification_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_pq_sig_aggregated_signatures_verification_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_pq_sig_aggregated_signatures_verification_time_seconds",
           "refId": "D"
         }
       ],
@@ -685,53 +685,53 @@
       },
       "targets": [
         {
-          "expr": "sum(lean_attestations_valid_total)",
-          "legendFormat": "lean_attestations_valid_total",
+          "expr": "sum by (client) (lean_attestations_valid_total)",
+          "legendFormat": "{{client}} lean_attestations_valid_total",
           "refId": "A"
         },
         {
-          "expr": "sum(lean_attestations_invalid_total)",
-          "legendFormat": "lean_attestations_invalid_total",
+          "expr": "sum by (client) (lean_attestations_invalid_total)",
+          "legendFormat": "{{client}} lean_attestations_invalid_total",
           "refId": "B"
         },
         {
-          "expr": "sum(lean_fork_choice_reorgs_total)",
-          "legendFormat": "lean_fork_choice_reorgs_total",
+          "expr": "sum by (client) (lean_fork_choice_reorgs_total)",
+          "legendFormat": "{{client}} lean_fork_choice_reorgs_total",
           "refId": "C"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(lean_fork_choice_reorg_depth_bucket[5m]))",
-          "legendFormat": "lean_fork_choice_reorg_depth",
+          "expr": "histogram_quantile(0.99, sum by (le, client) (rate(lean_fork_choice_reorg_depth_bucket[5m])))",
+          "legendFormat": "{{client}} lean_fork_choice_reorg_depth",
           "refId": "D"
         },
         {
-          "expr": "max(lean_gossip_signatures)",
-          "legendFormat": "lean_gossip_signatures",
+          "expr": "max by (client) (lean_gossip_signatures)",
+          "legendFormat": "{{client}} lean_gossip_signatures",
           "refId": "E"
         },
         {
-          "expr": "max(lean_latest_new_aggregated_payloads)",
-          "legendFormat": "lean_latest_new_aggregated_payloads",
+          "expr": "max by (client) (lean_latest_new_aggregated_payloads)",
+          "legendFormat": "{{client}} lean_latest_new_aggregated_payloads",
           "refId": "F"
         },
         {
-          "expr": "max(lean_latest_known_aggregated_payloads)",
-          "legendFormat": "lean_latest_known_aggregated_payloads",
+          "expr": "max by (client) (lean_latest_known_aggregated_payloads)",
+          "legendFormat": "{{client}} lean_latest_known_aggregated_payloads",
           "refId": "G"
         },
         {
-          "expr": "sum(lean_finalizations_total)",
-          "legendFormat": "lean_finalizations_total",
+          "expr": "sum by (client) (lean_finalizations_total)",
+          "legendFormat": "{{client}} lean_finalizations_total",
           "refId": "H"
         },
         {
-          "expr": "sum(lean_state_transition_slots_processed_total)",
-          "legendFormat": "lean_state_transition_slots_processed_total",
+          "expr": "sum by (client) (lean_state_transition_slots_processed_total)",
+          "legendFormat": "{{client}} lean_state_transition_slots_processed_total",
           "refId": "I"
         },
         {
-          "expr": "sum(lean_state_transition_attestations_processed_total)",
-          "legendFormat": "lean_state_transition_attestations_processed_total",
+          "expr": "sum by (client) (lean_state_transition_attestations_processed_total)",
+          "legendFormat": "{{client}} lean_state_transition_attestations_processed_total",
           "refId": "J"
         }
       ],
@@ -772,38 +772,38 @@
       },
       "targets": [
         {
-          "expr": "rate(lean_fork_choice_block_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_fork_choice_block_processing_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_fork_choice_block_processing_time_seconds",
+          "expr": "sum by (client) (rate(lean_fork_choice_block_processing_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_fork_choice_block_processing_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_fork_choice_block_processing_time_seconds",
           "refId": "A"
         },
         {
-          "expr": "rate(lean_attestation_validation_time_seconds_sum[5m]) / clamp_min(rate(lean_attestation_validation_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_attestation_validation_time_seconds",
+          "expr": "sum by (client) (rate(lean_attestation_validation_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_attestation_validation_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_attestation_validation_time_seconds",
           "refId": "B"
         },
         {
-          "expr": "rate(lean_committee_signatures_aggregation_time_seconds_sum[5m]) / clamp_min(rate(lean_committee_signatures_aggregation_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_committee_signatures_aggregation_time_seconds",
+          "expr": "sum by (client) (rate(lean_committee_signatures_aggregation_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_committee_signatures_aggregation_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_committee_signatures_aggregation_time_seconds",
           "refId": "C"
         },
         {
-          "expr": "rate(lean_state_transition_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_state_transition_time_seconds",
+          "expr": "sum by (client) (rate(lean_state_transition_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_state_transition_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_state_transition_time_seconds",
           "refId": "D"
         },
         {
-          "expr": "rate(lean_state_transition_slots_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_slots_processing_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_state_transition_slots_processing_time_seconds",
+          "expr": "sum by (client) (rate(lean_state_transition_slots_processing_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_state_transition_slots_processing_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_state_transition_slots_processing_time_seconds",
           "refId": "E"
         },
         {
-          "expr": "rate(lean_state_transition_block_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_block_processing_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_state_transition_block_processing_time_seconds",
+          "expr": "sum by (client) (rate(lean_state_transition_block_processing_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_state_transition_block_processing_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_state_transition_block_processing_time_seconds",
           "refId": "F"
         },
         {
-          "expr": "rate(lean_state_transition_attestations_processing_time_seconds_sum[5m]) / clamp_min(rate(lean_state_transition_attestations_processing_time_seconds_count[5m]), 1e-9)",
-          "legendFormat": "lean_state_transition_attestations_processing_time_seconds",
+          "expr": "sum by (client) (rate(lean_state_transition_attestations_processing_time_seconds_sum[5m])) / clamp_min(sum by (client) (rate(lean_state_transition_attestations_processing_time_seconds_count[5m])), 1e-9)",
+          "legendFormat": "{{client}} lean_state_transition_attestations_processing_time_seconds",
           "refId": "G"
         }
       ],
@@ -844,7 +844,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.99, rate(lean_fork_choice_block_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (le, client) (rate(lean_fork_choice_block_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -885,7 +885,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.99, rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (le, client) (rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -926,7 +926,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.99, rate(lean_state_transition_block_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (le, client) (rate(lean_state_transition_block_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -967,7 +967,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.99, rate(lean_attestation_validation_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (le, client) (rate(lean_attestation_validation_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1008,7 +1008,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.50, rate(lean_fork_choice_block_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.50, sum by (le, client) (rate(lean_fork_choice_block_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1049,7 +1049,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.50, rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.50, sum by (le, client) (rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1090,7 +1090,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.50, rate(lean_state_transition_block_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.50, sum by (le, client) (rate(lean_state_transition_block_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1131,7 +1131,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.50, rate(lean_attestation_validation_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.50, sum by (le, client) (rate(lean_attestation_validation_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1172,7 +1172,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.95, rate(lean_fork_choice_block_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.95, sum by (le, client) (rate(lean_fork_choice_block_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1213,7 +1213,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.95, rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.95, sum by (le, client) (rate(lean_state_transition_attestations_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1254,7 +1254,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.95, rate(lean_state_transition_block_processing_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.95, sum by (le, client) (rate(lean_state_transition_block_processing_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],
@@ -1295,7 +1295,7 @@
       },
       "targets": [
         {
-          "expr": "1000 * histogram_quantile(0.95, rate(lean_attestation_validation_time_seconds_bucket[5m]))",
+          "expr": "1000 * histogram_quantile(0.95, sum by (le, client) (rate(lean_attestation_validation_time_seconds_bucket[5m])))",
           "refId": "A"
         }
       ],

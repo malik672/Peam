@@ -1,5 +1,6 @@
 use super::*;
 use rapidhash::RapidHashSet;
+use tracing::info;
 
 /// Statistics returned by [`FileStore::prune`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,6 +40,12 @@ impl FileStore {
         let prune_before = finalized_slot.saturating_sub(keep_recent_slots);
         let pinned = self.pinned_roots();
         let mut report = PruneReport::default();
+        info!(
+            finalized_slot,
+            keep_recent_slots,
+            prune_before,
+            "storage prune started"
+        );
 
         // Canonical state index prune.
         self.state_by_slot.retain(|slot, root| {
@@ -84,6 +91,15 @@ impl FileStore {
         report.removed_block_blobs = gc.removed_block_blobs;
         report.removed_signed_blocks = gc.removed_signed_block_blobs;
 
+        info!(
+            removed_states = report.removed_states,
+            removed_blocks = report.removed_blocks,
+            removed_state_blobs = report.removed_state_blobs,
+            removed_block_blobs = report.removed_block_blobs,
+            removed_signed_blocks = report.removed_signed_blocks,
+            kept_pinned = report.kept_pinned,
+            "storage prune finished"
+        );
         Ok(report)
     }
 }

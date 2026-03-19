@@ -258,8 +258,16 @@ pub(crate) fn spawn_status_sync_task(
                     pending.active_peer = None;
                 }
                 recv = events_rx.recv() => {
-                    let Ok(event) = recv else {
-                        continue;
+                    let event = match recv {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("sync events channel lagged, skipped {n} events");
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!("sync events channel closed err={err}");
+                            return;
+                        }
                     };
                     let NetworkEvent::ReqRespResponse { peer_id, protocol, payload } = event else {
                         continue;
@@ -304,8 +312,8 @@ pub(crate) fn spawn_status_sync_task(
                                 let store_guard = store.read().expect("store lock");
                                 store_guard.get_block(&remote_status.head_root).is_some()
                             };
-                            let remote_ahead =
-                                remote_status.head_slot.0 > local_head_slot + SYNC_SLOT_LAG_THRESHOLD;
+                            let remote_ahead = !remote_head_known
+                                && remote_status.head_slot.0 > local_head_slot + SYNC_SLOT_LAG_THRESHOLD;
                             let needs_root_backfill = !remote_head_known
                                 && remote_status.head_slot.0 + SYNC_SLOT_LAG_THRESHOLD
                                     >= local_head_slot;
@@ -374,6 +382,13 @@ pub(crate) fn spawn_status_sync_task(
                                     continue;
                                 }
                                 Err(err) => {
+                                    if err.contains("empty BlocksByRoot response payload") {
+                                        debug!(
+                                            "sync blocks empty response peer={} protocol={} bytes={}",
+                                            peer_id, protocol, payload.len()
+                                        );
+                                        continue;
+                                    }
                                     warn!(
                                         "sync blocks decode failed peer={} protocol={} bytes={} err={}",
                                         peer_id, protocol, payload.len(), err

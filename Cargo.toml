@@ -21,6 +21,11 @@ rand = { version = "0.9" }
 snap = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+ureq = "2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["stats"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 [build-dependencies]
 sha2 = "0.10"

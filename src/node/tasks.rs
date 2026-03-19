@@ -7,7 +7,7 @@ use leansig::serialization::Serializable;
 use leansig::signature::SignatureSchemeSecretKey;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::containers::attestation::{
     AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES, SignedAttestation,
@@ -371,15 +371,22 @@ pub(super) fn spawn_signed_attestation_task(
                 message: att_data,
                 signature,
             };
+            info!(
+                slot,
+                validator_id = local_validator_index,
+                target_slot = signed.message.target.slot.0.0,
+                target_root = ?signed.message.target.root,
+                source_slot = signed.message.source.slot.0.0,
+                source_root = ?signed.message.source.root,
+                "published attestation"
+            );
             if is_aggregator {
                 pending_individual_attestations
                     .write()
                     .expect("pending individual attestations lock")
                     .push(signed.clone());
             }
-            let payload = GossipAttestation {
-                attestation: signed,
-            }
+            let payload = GossipAttestation { attestation: signed }
             .encode_ssz();
             let _ = p2p_tx
                 .send(P2pCommand::Publish {
@@ -469,6 +476,15 @@ pub(super) fn spawn_attestation_aggregation_task(
                         payload,
                     })
                     .await;
+                info!(
+                    slot = attestation.data.slot.0.0,
+                    target_slot = attestation.data.target.slot.0.0,
+                    target_root = ?attestation.data.target.root,
+                    source_slot = attestation.data.source.slot.0.0,
+                    source_root = ?attestation.data.source.root,
+                    participants_len_bits = attestation.aggregation_bits.len(),
+                    "published aggregated attestation"
+                );
             }
         }
     }))
@@ -1052,6 +1068,15 @@ pub(super) fn spawn_block_production_task(
             let Some(signed) = imported_block else {
                 continue;
             };
+
+            let root = Bytes32::from(signed.message.block.hash_tree_root());
+            info!(
+                root = ?root,
+                slot = signed.message.block.slot.0.0,
+                parent_root = ?signed.message.block.parent_root,
+                attestation_count = signed.message.block.body.attestations.data.len(),
+                "local block produced and imported"
+            );
 
             let payload = GossipBlock { block: signed }.encode_ssz();
             let _ = p2p_tx

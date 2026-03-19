@@ -239,6 +239,169 @@ fn decode_uvi_len(buf: &[u8]) -> std::io::Result<(usize, usize)> {
     ))
 }
 
+async fn read_uvi_len_async<T>(io: &mut T) -> std::io::Result<usize>
+where
+    T: futures::AsyncRead + Unpin + Send,
+{
+    let mut value: usize = 0;
+    let mut shift = 0u32;
+    let mut buf = [0u8; 1];
+    for _ in 0..10 {
+        futures::AsyncReadExt::read_exact(io, &mut buf).await?;
+        let byte = buf[0];
+        let low = (byte & 0x7f) as usize;
+        let shifted = low.checked_shl(shift).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid varint length")
+        })?;
+        value = value.checked_add(shifted).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "varint length overflow")
+        })?;
+        if (byte & 0x80) == 0 {
+            return Ok(value);
+        }
+        shift = shift.saturating_add(7);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "varint length too long",
+    ))
+}
+
+async fn read_snappy_frame_exact<T>(
+    io: &mut T,
+    expected_len: usize,
+) -> std::io::Result<Vec<u8>>
+where
+    T: futures::AsyncRead + Unpin + Send,
+{
+    const CHUNK_COMPRESSED: u8 = 0x00;
+    const CHUNK_UNCOMPRESSED: u8 = 0x01;
+    const CHUNK_STREAM: u8 = 0xff;
+    const CHUNK_PADDING: u8 = 0xfe;
+
+    let mut out = Vec::with_capacity(expected_len);
+    let mut decoder = RawDecoder::new();
+    let mut saw_any_chunk = false;
+
+    while out.len() < expected_len || !saw_any_chunk {
+        let mut header = [0u8; 4];
+        futures::AsyncReadExt::read_exact(io, &mut header).await?;
+        saw_any_chunk = true;
+        let chunk_type = header[0];
+        let len = (header[1] as usize) | ((header[2] as usize) << 8) | ((header[3] as usize) << 16);
+        if len == 0 {
+            continue;
+        }
+        let mut chunk = vec![0u8; len];
+        futures::AsyncReadExt::read_exact(io, &mut chunk).await?;
+
+        match chunk_type {
+            CHUNK_STREAM => {
+                // Stream identifier chunk. Skip payload.
+            }
+            CHUNK_PADDING => {
+                // Padding chunk. Skip payload.
+            }
+            CHUNK_UNCOMPRESSED => {
+                if len < 4 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "snappy uncompressed chunk too short",
+                    ));
+                }
+                let data = &chunk[4..];
+                if out.len() + data.len() > expected_len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "snappy output exceeds expected length",
+                    ));
+                }
+                out.extend_from_slice(data);
+            }
+            CHUNK_COMPRESSED => {
+                if len < 4 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "snappy compressed chunk too short",
+                    ));
+                }
+                let compressed = &chunk[4..];
+                let decoded_len = decompress_len(compressed).map_err(|err| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("snappy length decode failed: {err}"),
+                    )
+                })?;
+                if out.len() + decoded_len > expected_len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "snappy output exceeds expected length",
+                    ));
+                }
+                let mut decoded = vec![0u8; decoded_len];
+                decoder
+                    .decompress(compressed, &mut decoded)
+                    .map_err(|err| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("snappy decompress failed: {err}"),
+                        )
+                    })?;
+                out.extend_from_slice(&decoded);
+            }
+            other if (0x02..=0x7f).contains(&other) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "snappy reserved unskippable chunk",
+                ));
+            }
+            other if (0x80..=0xfd).contains(&other) => {
+                // Reserved skippable chunk. Ignore payload.
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "snappy unknown chunk type",
+                ));
+            }
+        }
+
+        if out.len() > expected_len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "snappy output exceeds expected length",
+            ));
+        }
+    }
+
+    if out.len() != expected_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "snappy output length mismatch",
+        ));
+    }
+
+    Ok(out)
+}
+
+async fn read_response_chunk<T>(io: &mut T) -> std::io::Result<Option<(u8, Vec<u8>)>>
+where
+    T: futures::AsyncRead + Unpin + Send,
+{
+    let mut code_buf = [0u8; 1];
+    match futures::AsyncReadExt::read_exact(io, &mut code_buf).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    }
+    let response_code = code_buf[0];
+    let expected_len = read_uvi_len_async(io).await?;
+    let payload = read_snappy_frame_exact(io, expected_len).await?;
+    Ok(Some((response_code, payload)))
+}
+
 #[inline]
 fn snappy_frame_compress(payload: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut encoder = FrameEncoder::new(Vec::new());
@@ -271,8 +434,8 @@ pub struct LeanResponse {
     pub protocol: String,
     /// Req/resp response code (0 = success).
     pub response_code: u8,
-    /// Raw SSZ-encoded response payload.
-    pub payload: Vec<u8>,
+    /// Raw SSZ-encoded response payloads (one per chunk).
+    pub payloads: Vec<Vec<u8>>,
 }
 
 #[inline]
@@ -344,52 +507,47 @@ impl RequestResponseCodec for LeanReqRespCodec {
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        let mut buf = Vec::new();
-        futures::AsyncReadExt::read_to_end(io, &mut buf).await?;
-        if buf.is_empty() {
-            // Some clients signal end-of-stream with a zero-byte chunk.
-            // Treat this as an empty response instead of a transport error.
-            return Ok(LeanResponse {
-                protocol: protocol.0.clone(),
-                response_code: 0,
-                payload: Vec::new(),
-            });
+        match LeanSupportedProtocol::parse_protocol_id(&protocol.0) {
+            Some(LeanSupportedProtocol::BlocksByRootV1) => {
+                let mut payloads = Vec::new();
+                while let Some((response_code, payload)) = read_response_chunk(io).await? {
+                    if response_code != 0 {
+                        // Skip non-success chunks for blocks_by_root.
+                        continue;
+                    }
+                    payloads.push(payload);
+                }
+                Ok(LeanResponse {
+                    protocol: protocol.0.clone(),
+                    response_code: 0,
+                    payloads,
+                })
+            }
+            _ => {
+                let Some((response_code, payload)) = read_response_chunk(io).await? else {
+                    return Ok(LeanResponse {
+                        protocol: protocol.0.clone(),
+                        response_code: 0,
+                        payloads: Vec::new(),
+                    });
+                };
+                if response_code != 0 {
+                    let detail = String::from_utf8_lossy(&payload);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "non-success reqresp response code={} protocol={} detail={}",
+                            response_code, protocol.0, detail
+                        ),
+                    ));
+                }
+                Ok(LeanResponse {
+                    protocol: protocol.0.clone(),
+                    response_code,
+                    payloads: vec![payload],
+                })
+            }
         }
-        let response_code = buf[0];
-        let (len, prefix_len) = decode_uvi_len(&buf[1..]).map_err(|err| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "failed to decode response length protocol={} code={} err={err}",
-                    protocol.0, response_code
-                ),
-            )
-        })?;
-        let compressed = &buf[(1 + prefix_len)..];
-        let payload = snappy_frame_decompress(compressed, len).map_err(|err| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "failed to decode response payload protocol={} code={} len={} err={err}",
-                    protocol.0, response_code, len
-                ),
-            )
-        })?;
-        if response_code != 0 {
-            let detail = String::from_utf8_lossy(&payload);
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "non-success reqresp response code={} protocol={} detail={}",
-                    response_code, protocol.0, detail
-                ),
-            ));
-        }
-        Ok(LeanResponse {
-            protocol: protocol.0.clone(),
-            response_code,
-            payload,
-        })
     }
 
     async fn write_request<T>(
@@ -417,15 +575,57 @@ impl RequestResponseCodec for LeanReqRespCodec {
         LeanResponse {
             protocol,
             response_code,
-            payload,
+            payloads,
         }: LeanResponse,
     ) -> std::io::Result<()>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
+        if response_code != 0 {
+            let payload = payloads
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| b"invalid request".to_vec());
+            let mut framed = Vec::with_capacity(payload.len() + 17);
+            let _ = protocol;
+            framed.push(response_code);
+            encode_uvi_len(payload.len(), &mut framed);
+            framed.extend_from_slice(&snappy_frame_compress(&payload)?);
+            futures::AsyncWriteExt::write_all(io, &framed).await?;
+            futures::AsyncWriteExt::close(io).await?;
+            return Ok(());
+        }
+
+        if payloads.is_empty() {
+            // Align with spec-style BlocksByRoot responses: no chunks when empty.
+            futures::AsyncWriteExt::close(io).await?;
+            return Ok(());
+        }
+
+        let is_blocks_by_root = matches!(
+            LeanSupportedProtocol::parse_protocol_id(&protocol),
+            Some(LeanSupportedProtocol::BlocksByRootV1)
+        );
+
+        if is_blocks_by_root {
+            for payload in payloads {
+                let mut framed = Vec::with_capacity(payload.len() + 17);
+                framed.push(0);
+                encode_uvi_len(payload.len(), &mut framed);
+                framed.extend_from_slice(&snappy_frame_compress(&payload)?);
+                futures::AsyncWriteExt::write_all(io, &framed).await?;
+            }
+            futures::AsyncWriteExt::close(io).await?;
+            return Ok(());
+        }
+
+        let payload = payloads
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Vec::new());
         let mut framed = Vec::with_capacity(payload.len() + 17);
         let _ = protocol;
-        framed.push(response_code);
+        framed.push(0);
         encode_uvi_len(payload.len(), &mut framed);
         framed.extend_from_slice(&snappy_frame_compress(&payload)?);
         futures::AsyncWriteExt::write_all(io, &framed).await?;
@@ -686,13 +886,8 @@ impl P2pService {
                     match LeanSupportedProtocol::parse_protocol_id(&protocol) {
                         Some(kind) => match LeanRequestMessage::decode_ssz(kind, &payload) {
                             Ok(request) => {
-                                if let Some(response) = self.reqresp_handler.on_request(request) {
-                                    response_to_send = Some(LeanResponse {
-                                        protocol: protocol.clone(),
-                                        response_code: 0,
-                                        payload: response.encode_ssz(),
-                                    });
-                                } else {
+                                let responses = self.reqresp_handler.on_request(request);
+                                if responses.is_empty() {
                                     debug!(
                                         "reqresp_no_response_chunk peer={} protocol={} bytes={}",
                                         peer,
@@ -700,18 +895,27 @@ impl P2pService {
                                         payload.len()
                                     );
                                     response_to_send = Some(match kind {
-                                        // BlocksByRoot misses are normal. Return an empty success
-                                        // response so the peer can treat it as end-of-stream.
+                                        // BlocksByRoot misses are normal. Reply with no chunks.
                                         LeanSupportedProtocol::BlocksByRootV1 => LeanResponse {
                                             protocol: protocol.clone(),
                                             response_code: 0,
-                                            payload: Vec::new(),
+                                            payloads: Vec::new(),
                                         },
                                         LeanSupportedProtocol::StatusV1 => LeanResponse {
                                             protocol: protocol.clone(),
                                             response_code: 1, // ResponseCode::InvalidRequest
-                                            payload: b"invalid request".to_vec(),
+                                            payloads: vec![b"invalid request".to_vec()],
                                         },
+                                    });
+                                } else {
+                                    let payloads = responses
+                                        .into_iter()
+                                        .map(|response| response.encode_ssz())
+                                        .collect();
+                                    response_to_send = Some(LeanResponse {
+                                        protocol: protocol.clone(),
+                                        response_code: 0,
+                                        payloads,
                                     });
                                 }
                             }
@@ -734,7 +938,7 @@ impl P2pService {
                                     protocol: protocol.clone(),
                                     response_code: 1, // ResponseCode::InvalidRequest
                                     //runtime waste
-                                    payload: b"invalid request".to_vec(),
+                                    payloads: vec![b"invalid request".to_vec()],
                                 });
                             }
                         },
@@ -756,7 +960,7 @@ impl P2pService {
                                 protocol: protocol.clone(),
                                 response_code: 1, // ResponseCode::InvalidRequest
                                 //runtime waste
-                                payload: b"invalid request".to_vec(),
+                                payloads: vec![b"invalid request".to_vec()],
                             });
                         }
                     }
@@ -789,37 +993,39 @@ impl P2pService {
                     let LeanResponse {
                         protocol,
                         response_code,
-                        payload,
+                        payloads,
                     } = response;
-                    if payload.is_empty() {
+                    if payloads.is_empty() {
                         debug!(
                             "reqresp_response_eos peer={} protocol={} code={}",
                             peer, protocol, response_code
                         );
                         return;
                     }
-                    if payload.len() > self.max_reqresp_bytes {
+                    for payload in payloads {
+                        if payload.len() > self.max_reqresp_bytes {
+                            self.events.emit(NetworkEvent::PeerScored {
+                                peer_id: peer.to_string(),
+                                score: -25,
+                            });
+                            continue;
+                        }
+                        debug!(
+                            "reqresp_response_in peer={} protocol={} bytes={}",
+                            peer,
+                            protocol,
+                            payload.len()
+                        );
+                        self.events.emit(NetworkEvent::ReqRespResponse {
+                            peer_id: peer.to_string(),
+                            protocol: protocol.clone(),
+                            payload,
+                        });
                         self.events.emit(NetworkEvent::PeerScored {
                             peer_id: peer.to_string(),
-                            score: -25,
+                            score: 1,
                         });
-                        return;
                     }
-                    debug!(
-                        "reqresp_response_in peer={} protocol={} bytes={}",
-                        peer,
-                        protocol,
-                        payload.len()
-                    );
-                    self.events.emit(NetworkEvent::ReqRespResponse {
-                        peer_id: peer.to_string(),
-                        protocol,
-                        payload,
-                    });
-                    self.events.emit(NetworkEvent::PeerScored {
-                        peer_id: peer.to_string(),
-                        score: 1,
-                    });
                 }
             },
             RequestResponseEvent::OutboundFailure {
@@ -972,7 +1178,9 @@ impl P2pService {
                                 peer_id: propagation_source.to_string(),
                                 score: -1,
                             });
-                            tracing::warn!("gossip_ignore topic={topic} reason={reason}");
+                            tracing::warn!(
+                                "gossip_ignore topic={topic} reason={reason} peer={propagation_source}"
+                            );
                             return;
                         }
                         ValidationResult::Reject(reason) => {
@@ -991,6 +1199,41 @@ impl P2pService {
                         ValidationResult::Accept => {}
                         ValidationResult::Ignore(reason) => {
                             if crate::networking::gossipsub::validate::is_retryable_unknown_roots_ignore(&reason) {
+                                match &decoded {
+                                    LeanGossipsubMessage::AggregatedAttestation(attestation) => {
+                                        let data = &attestation.attestation.data;
+                                        tracing::info!(
+                                            peer = %propagation_source,
+                                            slot = ?data.slot,
+                                            head_slot = ?data.head.slot,
+                                            head_root = ?data.head.root,
+                                            target_slot = ?data.target.slot,
+                                            target_root = ?data.target.root,
+                                            source_slot = ?data.source.slot,
+                                            source_root = ?data.source.root,
+                                            "gossip_ignore aggregated attestation unknown roots"
+                                        );
+                                    }
+                                    LeanGossipsubMessage::AttestationSubnet {
+                                        subnet_id,
+                                        attestation,
+                                    } => {
+                                        let data = &attestation.attestation.message;
+                                        tracing::info!(
+                                            peer = %propagation_source,
+                                            subnet_id,
+                                            slot = ?data.slot,
+                                            head_slot = ?data.head.slot,
+                                            head_root = ?data.head.root,
+                                            target_slot = ?data.target.slot,
+                                            target_root = ?data.target.root,
+                                            source_slot = ?data.source.slot,
+                                            source_root = ?data.source.root,
+                                            "gossip_ignore attestation unknown roots"
+                                        );
+                                    }
+                                    LeanGossipsubMessage::Block(_) => {}
+                                }
                                 self.events.emit(NetworkEvent::GossipDeferredUnknownRoots {
                                     topic: topic.clone(),
                                     payload: message.data.clone(),
@@ -1000,7 +1243,9 @@ impl P2pService {
                                 peer_id: propagation_source.to_string(),
                                 score: -1,
                             });
-                            tracing::warn!("gossip_ignore topic={topic} reason={reason}");
+                            tracing::warn!(
+                                "gossip_ignore topic={topic} reason={reason} peer={propagation_source}"
+                            );
                             return;
                         }
                         ValidationResult::Reject(reason) => {

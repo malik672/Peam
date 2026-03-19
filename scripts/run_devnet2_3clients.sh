@@ -24,6 +24,17 @@ NODE_MAP="${NODE_MAP:-peam_0:0,peer1_0:1,peer2_0:2}"
 PEAM_VALIDATOR_INDEX="${PEAM_VALIDATOR_INDEX:-0}"
 ATTESTATION_COMMITTEE_COUNT="${ATTESTATION_COMMITTEE_COUNT:-1}"
 PEAM_IS_AGGREGATOR="${PEAM_IS_AGGREGATOR:-1}"
+# Optional: comma-separated node names to force as aggregators (e.g. "peer3_0").
+AGGREGATOR_NODE_NAMES="${AGGREGATOR_NODE_NAMES:-}"
+
+# Optional ENR/node settings for bootnodes.yaml generation.
+NODE_IP="${NODE_IP:-127.0.0.1}"
+PEAM_QUIC_PORT="${PEAM_QUIC_PORT:-9000}"
+PEER1_QUIC_PORT="${PEER1_QUIC_PORT:-9001}"
+PEER2_QUIC_PORT="${PEER2_QUIC_PORT:-9002}"
+PEER3_QUIC_PORT="${PEER3_QUIC_PORT:-9003}"
+GENERATE_NODES_YAML="${GENERATE_NODES_YAML:-0}"
+ZEAM_TOOLS_BIN="${ZEAM_TOOLS_BIN:-$ROOT_DIR/zeam/zig-out/bin/zeam-tools}"
 
 BOOTNODES="${BOOTNODES:-}"
 TRUSTED_PEERS="${TRUSTED_PEERS:-}"
@@ -105,6 +116,108 @@ set_validator_config_is_aggregator() {
   mv "$tmp" "$validator_cfg"
 }
 
+set_validator_config_enr_fields() {
+  local validator_cfg="$1"
+  local node_name="$2"
+  local ip_addr="$3"
+  local quic_port="$4"
+
+  [[ -f "$validator_cfg" ]] || return 0
+  [[ -n "$node_name" ]] || return 0
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v node="$node_name" -v ip="$ip_addr" -v quic="$quic_port" '
+    function print_missing() {
+      if (!seen_ip) {
+        print "      ip: \"" ip "\""
+      }
+      if (!seen_quic) {
+        print "      quic: " quic
+      }
+    }
+    /^  - name: / {
+      if (in_enr) {
+        print_missing()
+        in_enr = 0
+      }
+      current = $3
+      gsub(/"/, "", current)
+      seen_ip = 0
+      seen_quic = 0
+      print
+      next
+    }
+    current == node && /^    enrFields:/ {
+      in_enr = 1
+      print
+      next
+    }
+    current == node && in_enr && /^      ip:/ {
+      print "      ip: \"" ip "\""
+      seen_ip = 1
+      next
+    }
+    current == node && in_enr && /^      quic:/ {
+      print "      quic: " quic
+      seen_quic = 1
+      next
+    }
+    current == node && in_enr && /^    [^ ]/ {
+      print_missing()
+      in_enr = 0
+      print
+      next
+    }
+    { print }
+    END {
+      if (in_enr) {
+        print_missing()
+      }
+    }
+  ' "$validator_cfg" > "$tmp"
+  mv "$tmp" "$validator_cfg"
+}
+
+generate_nodes_yaml() {
+  local out_file="$1"
+  shift
+  local -a node_entries=("$@")
+
+  if [[ ! -x "$ZEAM_TOOLS_BIN" ]]; then
+    echo "zeam-tools not found at $ZEAM_TOOLS_BIN"
+    echo "Build it with: (cd \"$ROOT_DIR/zeam\" && zig build tools)"
+    exit 2
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  : > "$tmp"
+  for entry in "${node_entries[@]}"; do
+    local node_name="${entry%%:*}"
+    local quic_port="${entry#*:}"
+    [[ -z "$node_name" ]] && continue
+    [[ -z "$quic_port" ]] && continue
+    local key_file
+    key_file="$(node_key_path_for_name "$node_name")"
+    write_node_key_from_validator_config "$node_name" "$key_file"
+    if [[ ! -f "$key_file" ]]; then
+      echo "Missing node key for $node_name; skipping ENR generation."
+      continue
+    fi
+    local key_hex
+    key_hex="$(tr -d ' \n\r' < "$key_file")"
+    if [[ -z "$key_hex" ]]; then
+      echo "Empty node key for $node_name; skipping ENR generation."
+      continue
+    fi
+    local enr
+    enr="$("$ZEAM_TOOLS_BIN" enrgen -s "$key_hex" -i "$NODE_IP" -q "$quic_port")"
+    printf -- "- %s\n" "$enr" >> "$tmp"
+  done
+  mv "$tmp" "$out_file"
+}
+
 mkdir -p "$LOG_DIR" "$RUN_DIR/peam_data"
 
 echo "run_dir=$RUN_DIR"
@@ -176,11 +289,56 @@ echo "genesis_time=$GENESIS_TIME"
 
 PEAM_IS_AGGREGATOR_BOOL="$(normalize_bool_literal "$PEAM_IS_AGGREGATOR")"
 PEAM_NODE_NAME="$(resolve_local_node_name_from_map "$PEAM_VALIDATOR_INDEX" "$NODE_MAP" || true)"
+PEER1_NODE_NAME="$(resolve_local_node_name_from_map 1 "$NODE_MAP" || true)"
+PEER2_NODE_NAME="$(resolve_local_node_name_from_map 2 "$NODE_MAP" || true)"
+PEER3_NODE_NAME="$(resolve_local_node_name_from_map 3 "$NODE_MAP" || true)"
 if [[ -n "$PEAM_NODE_NAME" ]]; then
   set_validator_config_is_aggregator \
     "$RUN_DIR/validator-config.yaml" \
     "$PEAM_NODE_NAME" \
     "$PEAM_IS_AGGREGATOR_BOOL"
+fi
+
+if [[ -n "${AGGREGATOR_NODE_NAMES//[[:space:]]/}" ]]; then
+  IFS=',' read -r -a agg_nodes <<< "$AGGREGATOR_NODE_NAMES"
+  for agg_node in "${agg_nodes[@]}"; do
+    agg_node="${agg_node#"${agg_node%%[![:space:]]*}"}"
+    agg_node="${agg_node%"${agg_node##*[![:space:]]}"}"
+    [[ -z "$agg_node" ]] && continue
+    set_validator_config_is_aggregator \
+      "$RUN_DIR/validator-config.yaml" \
+      "$agg_node" \
+      "true"
+  done
+fi
+
+if [[ -n "$PEAM_NODE_NAME" ]]; then
+  set_validator_config_enr_fields \
+    "$RUN_DIR/validator-config.yaml" \
+    "$PEAM_NODE_NAME" \
+    "$NODE_IP" \
+    "$PEAM_QUIC_PORT"
+fi
+if [[ -n "$PEER1_NODE_NAME" ]]; then
+  set_validator_config_enr_fields \
+    "$RUN_DIR/validator-config.yaml" \
+    "$PEER1_NODE_NAME" \
+    "$NODE_IP" \
+    "$PEER1_QUIC_PORT"
+fi
+if [[ -n "$PEER2_NODE_NAME" ]]; then
+  set_validator_config_enr_fields \
+    "$RUN_DIR/validator-config.yaml" \
+    "$PEER2_NODE_NAME" \
+    "$NODE_IP" \
+    "$PEER2_QUIC_PORT"
+fi
+if [[ -n "$PEER3_NODE_NAME" ]]; then
+  set_validator_config_enr_fields \
+    "$RUN_DIR/validator-config.yaml" \
+    "$PEER3_NODE_NAME" \
+    "$NODE_IP" \
+    "$PEER3_QUIC_PORT"
 fi
 
 write_node_key_from_validator_config() {
@@ -211,16 +369,60 @@ write_node_key_from_validator_config() {
   fi
 }
 
+node_key_path_for_name() {
+  local node_name="$1"
+  if [[ -z "$node_name" ]]; then
+    printf '\n'
+    return 0
+  fi
+  case "$node_name" in
+    "$PEAM_NODE_NAME")
+      printf '%s\n' "$RUN_DIR/peam_node.key"
+      ;;
+    "$PEER1_NODE_NAME")
+      printf '%s\n' "$RUN_DIR/peer1_node.key"
+      ;;
+    "$PEER2_NODE_NAME")
+      printf '%s\n' "$RUN_DIR/peer2_node.key"
+      ;;
+    "$PEER3_NODE_NAME")
+      printf '%s\n' "$RUN_DIR/peer3_node.key"
+      ;;
+    *)
+      printf '%s\n' "$RUN_DIR/${node_name}_node.key"
+      ;;
+  esac
+}
+
+# Generator outputs validator-config.yaml; derive key files when missing.
+if [[ -n "$PEAM_NODE_NAME" ]]; then
+  write_node_key_from_validator_config "$PEAM_NODE_NAME" "$(node_key_path_for_name "$PEAM_NODE_NAME")"
+fi
 # Generator outputs validator-config.yaml; derive key files when missing.
 write_node_key_from_validator_config "peer1_0" "$RUN_DIR/peer1_node.key"
 write_node_key_from_validator_config "peer2_0" "$RUN_DIR/peer2_node.key"
 write_node_key_from_validator_config "peer3_0" "$RUN_DIR/peer3_node.key"
 
-if [[ ! -f "$RUN_DIR/nodes.yaml" ]]; then
+if [[ "$GENERATE_NODES_YAML" == "1" ]]; then
+  generate_nodes_yaml \
+    "$RUN_DIR/nodes.yaml" \
+    "${PEAM_NODE_NAME:-}:$PEAM_QUIC_PORT" \
+    "${PEER1_NODE_NAME:-}:$PEER1_QUIC_PORT" \
+    "${PEER2_NODE_NAME:-}:$PEER2_QUIC_PORT" \
+    "${PEER3_NODE_NAME:-}:$PEER3_QUIC_PORT"
+elif [[ ! -f "$RUN_DIR/nodes.yaml" ]]; then
   printf '[]\n' > "$RUN_DIR/nodes.yaml"
 fi
 
 PEAM_CONFIG="$RUN_DIR/peam_node.conf"
+PEAM_NODE_KEY_PATH=""
+if [[ -n "$PEAM_NODE_NAME" ]]; then
+  PEAM_NODE_KEY_PATH="$(node_key_path_for_name "$PEAM_NODE_NAME")"
+fi
+PEAM_NODE_KEY_LINE=""
+if [[ -n "$PEAM_NODE_KEY_PATH" ]]; then
+  PEAM_NODE_KEY_LINE="node_key_path=$PEAM_NODE_KEY_PATH"
+fi
 ALLOWED_TOPICS=("$BLOCK_TOPIC" "$AGGREGATION_TOPIC")
 TOPIC_SCORES=("$BLOCK_TOPIC:2" "$AGGREGATION_TOPIC:1")
 TOPIC_VALIDATORS=("$BLOCK_TOPIC=block" "$AGGREGATION_TOPIC=aggregation")
@@ -260,6 +462,7 @@ storage_dir=store
 metrics=true
 metrics_address=127.0.0.1
 metrics_port=$PEAM_METRICS_PORT
+$PEAM_NODE_KEY_LINE
 EOF
 
 echo "Starting peam..."

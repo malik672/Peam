@@ -8,17 +8,17 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:18080"]
         labels:
-          instance: peam
+          instance: peam_0
           client: peam
       - targets: ["host.docker.internal:18081"]
         labels:
-          instance: peer1
-          client: peer1
+          instance: peer1_0
+          client: ethlambda
       - targets: ["host.docker.internal:18082"]
         labels:
-          instance: peer2
-          client: peer2
+          instance: peer2_0
+          client: zeam
       - targets: ["host.docker.internal:18083"]
         labels:
-          instance: peer3
-          client: peer3
+          instance: peer3_0
+          client: ream

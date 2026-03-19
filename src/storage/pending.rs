@@ -30,6 +30,7 @@ pub(super) struct PendingEntry {
 /// Backed by `Box<[Option<PendingEntry>]>` and addressed by `slot % capacity`.
 /// The stored slot is checked to avoid false hits on wraparound.
 /// Entry count is tracked incrementally to avoid O(n) scans.
+#[derive(Clone)]
 pub(super) struct PendingSlotCache {
     /// Fixed table of pending entries; `None` means empty bucket.
     entries: Box<[Option<PendingEntry>]>,
@@ -93,21 +94,23 @@ impl PendingSlotCache {
         }
     }
 
-    /// Drains and returns all entries with `slot <= upper_inclusive`.
+    /// Drains entries with `slot <= upper_inclusive` and applies `on_entry`.
     ///
-    /// Drained buckets are reset to `None`.
-    pub(super) fn drain_leq(&mut self, upper_inclusive: u64) -> Vec<PendingEntry> {
-        let mut out = Vec::new();
+    /// Cleared buckets are set to `None` and `count` is updated in place.
+    #[inline]
+    pub(super) fn drain_leq_with<F>(&mut self, upper_inclusive: u64, mut on_entry: F)
+    where
+        F: FnMut(PendingEntry),
+    {
         for entry in self.entries.iter_mut() {
             if let Some(value) = *entry {
                 if value.slot <= upper_inclusive {
-                    out.push(value);
                     *entry = None;
                     self.count -= 1;
+                    on_entry(value);
                 }
             }
         }
-        out
     }
 
     /// Retains only entries for which `keep(slot, block_root, state_root)` returns `true`.

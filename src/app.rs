@@ -127,6 +127,7 @@ fn resolve_validator_config_is_aggregator(
 /// | `metrics`                   | `false`                                      |
 /// | `metrics_address`           | `"127.0.0.1"`                                |
 /// | `metrics_port`              | `8080`                                       |
+/// | `http_api`                  | `true`                                       |
 /// | `discovery_interval_secs`   | `5`                                          |
 /// | `score_decay_interval_secs` | `30`                                         |
 /// | `score_decay_amount`        | `1`                                          |
@@ -146,6 +147,7 @@ fn resolve_validator_config_is_aggregator(
 /// | `validator_config_path`     | `None` (`<config_dir>/validator-config.yaml`)|
 /// | `metrics_node_name`         | `None` (auto-resolve, fallback `"peam"`)     |
 /// | `metrics_client_name`       | `None` (derived from node name)              |
+/// | `checkpoint_sync_url`       | `None` (start from genesis/store)            |
 #[derive(Clone, Debug)]
 pub struct NodeSettings {
     /// Enable the Prometheus metrics HTTP server.
@@ -154,6 +156,8 @@ pub struct NodeSettings {
     pub metrics_address: String,
     /// TCP port for the metrics server.
     pub metrics_port: u16,
+    /// Enable the leanSpec HTTP API endpoints (health, finalized state, etc).
+    pub http_api: bool,
     /// Interval in seconds between peer discovery rounds.
     pub discovery_interval_secs: u64,
     /// Interval in seconds between peer score decay ticks.
@@ -201,6 +205,8 @@ pub struct NodeSettings {
     pub metrics_node_name: Option<String>,
     /// Optional metrics `lean_connected_peers{client=...}` override.
     pub metrics_client_name: Option<String>,
+    /// Optional HTTP URL of a checkpoint-sync provider.
+    pub checkpoint_sync_url: Option<String>,
 }
 
 /// Load only the chain [`Config`] from `path`.
@@ -284,6 +290,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             metrics: false,
             metrics_address: "127.0.0.1".to_string(),
             metrics_port: 8080,
+            http_api: true,
             discovery_interval_secs: 5,
             score_decay_interval_secs: 30,
             score_decay_amount: 1,
@@ -305,6 +312,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             validator_config_path: None,
             metrics_node_name: None,
             metrics_client_name: None,
+            checkpoint_sync_url: None,
         };
         return Ok((config, settings));
     }
@@ -316,6 +324,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut metrics: Option<bool> = None;
     let mut metrics_address: Option<String> = None;
     let mut metrics_port: Option<u16> = None;
+    let mut http_api: Option<bool> = None;
     let mut score_decay_interval_secs: Option<u64> = None;
     let mut score_decay_amount: Option<i64> = None;
     let mut ban_threshold: Option<i64> = None;
@@ -336,6 +345,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut validator_config_path: Option<String> = None;
     let mut metrics_node_name: Option<String> = None;
     let mut metrics_client_name: Option<String> = None;
+    let mut checkpoint_sync_url: Option<String> = None;
 
     for line in text.lines() {
         let line = line.trim();
@@ -369,6 +379,12 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                     .parse::<u16>()
                     .map_err(|err| format!("Invalid metrics_port {value}: {err}"))?,
             );
+        } else if key == "http_api" {
+            http_api = Some(match value {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => return Err(format!("Invalid http_api {value}: expected true/false")),
+            });
         } else if key == "discovery_interval_secs" {
             discovery_interval_secs = Some(
                 value
@@ -509,6 +525,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             if !value.is_empty() {
                 metrics_client_name = Some(value.to_string());
             }
+        } else if key == "checkpoint_sync_url" {
+            if !value.is_empty() {
+                checkpoint_sync_url = Some(value.to_string());
+            }
         }
     }
 
@@ -521,6 +541,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             metrics: metrics.unwrap_or(false),
             metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
             metrics_port: metrics_port.unwrap_or(8080),
+            http_api: http_api.unwrap_or(true),
             discovery_interval_secs: discovery_interval_secs.unwrap_or(5),
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
@@ -542,12 +563,14 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             validator_config_path,
             metrics_node_name,
             metrics_client_name,
+            checkpoint_sync_url,
         }
     } else {
         NodeSettings {
             metrics: metrics.unwrap_or(false),
             metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
             metrics_port: metrics_port.unwrap_or(8080),
+            http_api: http_api.unwrap_or(true),
             discovery_interval_secs: discovery_interval_secs.unwrap_or(5),
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
@@ -569,6 +592,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             validator_config_path,
             metrics_node_name,
             metrics_client_name,
+            checkpoint_sync_url,
         }
     };
     if let Some(config_is_aggregator) = resolve_validator_config_is_aggregator(

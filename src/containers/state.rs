@@ -90,12 +90,6 @@ const EMPTY_BLOCK_BODY_ROOT_BYTES: [u8; 32] = [
     0xc6, 0xce, 0x90, 0xd5, 0xa5, 0xf8, 0x65, 0xce, 0x5a, 0x55, 0xc7, 0x75, 0x32, 0x5c, 0x91, 0x36,
 ];
 
-/// `HashTreeRoot` of the fixed genesis block header used by this client.
-pub const GENESIS_BLOCK_HEADER_ROOT_BYTES: [u8; 32] = [
-    0xed, 0x01, 0xb1, 0x82, 0x5c, 0x7b, 0x11, 0x2c, 0x8b, 0x9c, 0x6e, 0x0f, 0x41, 0xc4, 0xd4, 0x9e,
-    0x40, 0x0f, 0xc1, 0x20, 0x42, 0x55, 0x82, 0xe5, 0x33, 0xc3, 0x32, 0xa6, 0xac, 0x46, 0x08, 0x2e,
-];
-
 /// The full consensus state of a lean-Ethereum beacon node.
 ///
 /// `State` is the single source of truth for fork-choice and block validation.
@@ -171,7 +165,7 @@ impl State {
             state_root: Bytes32::zero(),
             body_root: empty_body_root,
         };
-        State {
+        let mut state = State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
             latest_block_header,
@@ -183,13 +177,18 @@ impl State {
                 root: Bytes32::zero(),
                 slot: Slot(Uint64(0)),
             },
-            historical_block_hashes: SszList::default(),
+            historical_block_hashes: SszList::new(vec![]).expect("historical block hashes"),
             justified_slots: BitList::default(),
             validators,
             balances: SszList::default(),
             justifications_roots: SszList::default(),
             justifications_validators: BitList::default(),
-        }
+        };
+        let mut tmp = state.clone();
+        tmp.latest_block_header.state_root = Bytes32::zero();
+        let state_root = Bytes32::from(tmp.hash_tree_root());
+        state.latest_block_header.state_root = state_root;
+        state
     }
 
     /// Generic genesis constructor for tests, fixtures, and custom validator sets.
@@ -212,7 +211,7 @@ impl State {
             state_root: Bytes32::zero(),
             body_root: empty_body_root,
         };
-        State {
+        let mut state = State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
             latest_block_header,
@@ -225,19 +224,21 @@ impl State {
                 slot: Slot(Uint64(0)),
             },
 
-            historical_block_hashes: SszList::default(),
+            historical_block_hashes: SszList::new(vec![]).expect("historical block hashes"),
             justified_slots: BitList::default(),
             validators,
             balances,
             justifications_roots: SszList::default(),
             justifications_validators: BitList::default(),
-        }
+        };
+        let mut tmp = state.clone();
+        tmp.latest_block_header.state_root = Bytes32::zero();
+        let state_root = Bytes32::from(tmp.hash_tree_root());
+        state.latest_block_header.state_root = state_root;
+        state
     }
 
     /// Advances state from `self.slot` to `target_slot`.
-    ///
-    /// If `latest_block_header.state_root` is still zero, it is filled once from
-    /// the current [`hash_tree_root`] before the slot jump.
     ///
     /// # Errors
     ///
@@ -246,11 +247,6 @@ impl State {
     pub fn process_slots(&mut self, target_slot: Slot) -> Result<(), String> {
         if self.slot >= target_slot {
             return Err("target slot must be in the future".to_string());
-        }
-
-        if self.latest_block_header.state_root == Bytes32::zero() {
-            let root = self.hash_tree_root();
-            self.latest_block_header.state_root = Bytes32::from(root);
         }
 
         self.slot = Slot(Uint64(target_slot.0.0));
@@ -314,11 +310,12 @@ impl State {
         let latest_slot = self.latest_block_header.slot.0.0;
         let num_empty_slots = block_slot - latest_slot - 1;
 
-        // Always record one parent linkage for the imported header.
+        // Record the parent root for the previous slot.
         self.historical_block_hashes.data.push(block.parent_root);
+
+        // For skipped slots between `latest_slot` and `block_slot`, append zero
+        // placeholders so history length still tracks slot progress.
         if num_empty_slots > 0 {
-            // For skipped slots between `latest_slot` and `block_slot`, append
-            // zero placeholders so history length still tracks slot progress.
             let add = num_empty_slots as usize;
             let data = &mut self.historical_block_hashes.data;
             let start = data.len();
@@ -400,7 +397,12 @@ impl State {
         let slots_before = self.slot.0.0;
         self.process_slots(block.slot)?;
         let slots_after = self.slot.0.0;
-        let post_slots_root = Bytes32::from(self.hash_tree_root());
+        let capture_trace_roots = state_root_trace_enabled();
+        let post_slots_root = if capture_trace_roots {
+            Some(Bytes32::from(self.hash_tree_root()))
+        } else {
+            None
+        };
         metrics.observe_slots_processing_time(slots_start);
         let advanced_slots = slots_after - slots_before;
         metrics.add_slots_processed(advanced_slots);
@@ -408,7 +410,11 @@ impl State {
         let block_start = Instant::now();
         let header = block.header();
         self.process_block_header_assuming_slot(header)?;
-        let post_header_root = Bytes32::from(self.hash_tree_root());
+        let post_header_root = if capture_trace_roots {
+            Some(Bytes32::from(self.hash_tree_root()))
+        } else {
+            None
+        };
 
         let body_root = block.body.hash_tree_root();
         if header.body_root != Bytes32::from(body_root) {
@@ -418,7 +424,11 @@ impl State {
         let att_start = Instant::now();
         let att_count = block.body.attestations.data.len();
         self.process_attestations(&block.body.attestations)?;
-        let post_attestations_root = Bytes32::from(self.hash_tree_root());
+        let post_attestations_root = if capture_trace_roots {
+            Some(Bytes32::from(self.hash_tree_root()))
+        } else {
+            None
+        };
         metrics.observe_attestations_processing_time(att_start);
         metrics.add_attestations_processed(att_count as u64);
         metrics.observe_block_processing_time(block_start);
@@ -467,10 +477,12 @@ impl State {
     /// finalization state.
     ///
     /// For each attestation (skipping those that fail eligibility checks):
-    /// - target slot must not be in the future
-    /// - target slot must not be below source slot
-    /// - target slot must be justifiable (per [`slot::is_justifiable_after`])
     /// - source slot must already be justified
+    /// - target slot must not already be justified
+    /// - neither checkpoint root may be zero
+    /// - source/target checkpoints must match `historical_block_hashes`
+    /// - target slot must be strictly greater than source slot
+    /// - target slot must be justifiable after the original finalized slot
     /// - votes are accumulated per `target.root` across attestations, and
     ///   supermajority is checked as `3 * votes_for_root >= 2 * total_validators`
     ///
@@ -498,8 +510,11 @@ impl State {
             return Err("zero hash is not allowed in justifications roots".to_string());
         }
         let mut justification_votes: Option<RapidHashMap<Bytes32, JustificationVotes>> = None;
-        let latest_header_root = Bytes32::from(self.latest_block_header.hash_tree_root());
-        let historical_root_slots = build_historical_root_slots(&self.historical_block_hashes.data);
+        let mut root_to_slot = build_historical_root_slots(&self.historical_block_hashes.data);
+        let latest_root = Bytes32::from(self.latest_block_header.hash_tree_root());
+        if latest_root != Bytes32::zero() && !root_to_slot.contains_key(&latest_root) {
+            root_to_slot.insert(latest_root, self.latest_block_header.slot);
+        }
         let trace_attestations = attestation_trace_enabled();
         let pre_justified_slot = self.latest_justified.slot;
         let pre_finalized_slot = self.latest_finalized.slot;
@@ -509,13 +524,6 @@ impl State {
         let total_attestations = attestations.data.len();
 
         for att in attestations.data.iter() {
-            if att.data.slot > self.slot {
-                if trace_attestations {
-                    stats.future_slot += 1;
-                    log_attestation_decision_sample("future_slot", att, self.slot, finalized_slot);
-                }
-                continue;
-            }
             if att.data.target.slot <= att.data.source.slot {
                 if trace_attestations {
                     stats.target_below_source += 1;
@@ -541,13 +549,13 @@ impl State {
                 }
                 continue;
             }
-            let source_slot = chain_root_slot(
-                self,
-                att.data.source.root,
-                latest_header_root,
-                &historical_root_slots,
-            );
-            if source_slot != Some(att.data.source.slot) {
+            let source_slot_idx = att.data.source.slot.0.0 as usize;
+            let source_matches = self
+                .historical_block_hashes
+                .data
+                .get(source_slot_idx)
+                .map_or(false, |root| *root == att.data.source.root);
+            if !source_matches {
                 if trace_attestations {
                     stats.source_root_slot_mismatch += 1;
                     log_attestation_slot_mismatch_sample(
@@ -555,19 +563,22 @@ impl State {
                         att,
                         self.slot,
                         finalized_slot,
-                        source_slot,
+                        None,
                         att.data.source.slot,
                     );
                 }
                 continue;
             }
-            let target_slot = chain_root_slot(
-                self,
-                att.data.target.root,
-                latest_header_root,
-                &historical_root_slots,
-            );
-            if target_slot != Some(att.data.target.slot) {
+            let target_slot_idx = att.data.target.slot.0.0 as usize;
+            let target_matches = self
+                .historical_block_hashes
+                .data
+                .get(target_slot_idx)
+                .map_or(false, |root| *root == att.data.target.root)
+                || (target_slot_idx == self.historical_block_hashes.data.len()
+                    && att.data.target.slot == self.latest_block_header.slot
+                    && att.data.target.root == latest_root);
+            if !target_matches {
                 if trace_attestations {
                     stats.target_root_slot_mismatch += 1;
                     log_attestation_slot_mismatch_sample(
@@ -575,7 +586,7 @@ impl State {
                         att,
                         self.slot,
                         finalized_slot,
-                        target_slot,
+                        None,
                         att.data.target.slot,
                     );
                 }
@@ -604,18 +615,6 @@ impl State {
                     stats.source_not_justified += 1;
                     log_attestation_decision_sample(
                         "source_not_justified",
-                        att,
-                        self.slot,
-                        finalized_slot,
-                    );
-                }
-                continue;
-            }
-            if !has_any_set_bit(&att.aggregation_bits) {
-                if trace_attestations {
-                    stats.empty_participants += 1;
-                    log_attestation_decision_sample(
-                        "empty_participants",
                         att,
                         self.slot,
                         finalized_slot,
@@ -675,8 +674,7 @@ impl State {
                 att.data.target.slot,
                 finalized_slot,
             );
-            let source_ahead_of_finalized = att.data.source.slot > finalized_slot;
-            let should_finalize_source = next_valid_justifiable && source_ahead_of_finalized;
+            let should_finalize_source = next_valid_justifiable;
             if finality_trace_enabled() {
                 info!(
                     target: "peam::containers::state",
@@ -692,7 +690,6 @@ impl State {
                     vote_count,
                     total_validators,
                     next_valid_justifiable,
-                    source_ahead_of_finalized,
                     should_finalize_source,
                     "peam finality decision"
                 );
@@ -717,13 +714,11 @@ impl State {
                 shift_justified_window(&mut self.justified_slots, delta);
                 finalized_slot = self.latest_finalized.slot;
                 let mut missing_root_to_slot = false;
-                votes_map.retain(|root, _| {
-                    match chain_root_slot(self, *root, latest_header_root, &historical_root_slots) {
-                        Some(slot) => slot > finalized_slot,
-                        None => {
-                            missing_root_to_slot = true;
-                            false
-                        }
+                votes_map.retain(|root, _| match root_to_slot.get(root) {
+                    Some(slot) => *slot > finalized_slot,
+                    None => {
+                        missing_root_to_slot = true;
+                        false
                     }
                 });
                 if missing_root_to_slot {
@@ -1018,6 +1013,7 @@ fn attestation_trace_enabled() -> bool {
 }
 
 #[inline]
+//remove in prod
 fn finality_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -1033,6 +1029,20 @@ fn finality_trace_enabled() -> bool {
 }
 
 #[inline]
+fn state_root_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PEAM_TRACE_STATE_ROOTS")
+            .ok()
+            .map(|value| match value.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => false,
+            })
+            .unwrap_or(false)
+    })
+}
+
 fn log_attestation_decision_sample(
     reason: &'static str,
     att: &crate::containers::attestation::Attestation,
@@ -1181,26 +1191,6 @@ impl JustificationVotes {
 }
 
 #[inline]
-fn has_any_set_bit<const LIMIT: usize>(bits: &BitList<LIMIT>) -> bool {
-    let len = bits.len();
-    if len == 0 {
-        return false;
-    }
-    let full_bytes = len / 8;
-    if bits.data.iter().take(full_bytes).any(|&byte| byte != 0) {
-        return true;
-    }
-    let remainder = len % 8;
-    if remainder == 0 {
-        return false;
-    }
-    let mask = (1u8 << remainder) - 1;
-    bits.data
-        .get(full_bytes)
-        .is_some_and(|byte| (byte & mask) != 0)
-}
-
-#[inline]
 fn merge_participant_votes_from_bits<const LIMIT: usize>(
     votes: &mut JustificationVotes,
     participants: &BitList<LIMIT>,
@@ -1331,25 +1321,6 @@ fn encode_justification_votes(
         len: flat_len,
     };
     Ok(())
-}
-
-#[inline]
-fn chain_root_slot(
-    state: &State,
-    root: Bytes32,
-    latest_header_root: Bytes32,
-    historical_root_slots: &RapidHashMap<Bytes32, Slot>,
-) -> Option<Slot> {
-    if root == state.latest_finalized.root {
-        return Some(state.latest_finalized.slot);
-    }
-    if root == state.latest_justified.root {
-        return Some(state.latest_justified.slot);
-    }
-    if root == latest_header_root {
-        return Some(state.latest_block_header.slot);
-    }
-    historical_root_slots.get(&root).copied()
 }
 
 #[inline]

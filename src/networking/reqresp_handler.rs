@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{debug, info};
 
-use crate::containers::req_resp::Status;
+use crate::containers::req_resp::{MAX_BLOCKS_PER_ROOT_REQUEST, Status};
 use crate::ssz::HashTreeRoot;
 use crate::storage::Store;
 use crate::types::bytes::Bytes32;
@@ -19,8 +19,6 @@ use crate::types::uint::Uint64;
 
 use super::reqresp_messages::{LeanRequestMessage, LeanResponseMessage};
 
-/// Maximum number of blocks returned in a single `BlocksByRoot` response.
-const MAX_BLOCKS_BY_ROOT_RESPONSE: usize = 128;
 
 /// Handles inbound req/resp requests and optionally returns a response.
 ///
@@ -29,8 +27,8 @@ const MAX_BLOCKS_BY_ROOT_RESPONSE: usize = 128;
 pub trait ReqRespHandler: Send + Sync {
     /// Called for each inbound request.
     ///
-    /// Returns `Some(response)` to reply, or `None` to send no response.
-    fn on_request(&self, request: LeanRequestMessage) -> Option<LeanResponseMessage>;
+    /// Returns zero or more response messages to send back.
+    fn on_request(&self, request: LeanRequestMessage) -> Vec<LeanResponseMessage>;
 }
 
 /// A [`ReqRespHandler`] that ignores every request.
@@ -40,8 +38,8 @@ pub struct NoopReqRespHandler;
 
 /// [`ReqRespHandler`] impl — always returns `None`.
 impl ReqRespHandler for NoopReqRespHandler {
-    fn on_request(&self, _request: LeanRequestMessage) -> Option<LeanResponseMessage> {
-        None
+    fn on_request(&self, _request: LeanRequestMessage) -> Vec<LeanResponseMessage> {
+        Vec::new()
     }
 }
 
@@ -113,24 +111,27 @@ impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
 
 /// [`ReqRespHandler`] implementation for [`StoreReqRespHandler`].
 impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S> {
-    fn on_request(&self, request: LeanRequestMessage) -> Option<LeanResponseMessage> {
+    fn on_request(&self, request: LeanRequestMessage) -> Vec<LeanResponseMessage> {
         match request {
-            LeanRequestMessage::Status(_) => Some(LeanResponseMessage::Status(self.build_status())),
+            LeanRequestMessage::Status(_) => vec![LeanResponseMessage::Status(self.build_status())],
             LeanRequestMessage::BlocksByRoot(req) => {
-                // Interop compatibility: return at most one block per response chunk.
-                // SignedBlockWithAttestation, not a wrapped list.
+                // Return one block per response chunk, preserving request order.
                 let store = self.store.read().expect("store lock");
-                let mut block = None;
-                for root in req.roots.data.iter().take(MAX_BLOCKS_BY_ROOT_RESPONSE) {
+                let mut blocks = Vec::new();
+                for root in req
+                    .roots
+                    .data
+                    .iter()
+                    .take(MAX_BLOCKS_PER_ROOT_REQUEST)
+                {
                     if let Some(found) = store.get_signed_block(root) {
-                        block = Some(found);
-                        break;
+                        blocks.push(LeanResponseMessage::BlocksByRoot(found));
                     } else {
                         // DEVNET4_REMOVE: temporary sync diagnostics.
                         debug!("reqresp blocks_by_root missing root={:?}", root);
                     }
                 }
-                block.map(LeanResponseMessage::BlocksByRoot)
+                blocks
             }
         }
     }

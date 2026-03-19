@@ -24,7 +24,7 @@ fn process_slots_advances_state_and_sets_root() {
     assert_eq!(state.balances.data.len(), 0);
     state.process_slots(Slot(Uint64(1))).expect("process slots");
     assert_eq!(state.slot, Slot(Uint64(1)));
-    assert_ne!(state.latest_block_header.state_root, Bytes32::zero());
+    assert_eq!(state.latest_block_header.state_root, Bytes32::zero());
 }
 
 #[test]

@@ -6,11 +6,10 @@
 //! periodically to decay scores toward zero and ban peers whose score falls
 //! below the configured threshold.
 
-use std::collections::HashSet;
-
-use std::collections::HashMap;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 use tracing::info;
@@ -29,14 +28,23 @@ pub struct PeerManager {
 /// Shared peer manager state.
 struct InnerPeerManager {
     /// Set of currently connected peer IDs.
-    peers: Mutex<HashSet<String>>,
+    /// remove prod
+    peers: Mutex<RapidHashSet<String>>,
     /// Score map: peer ID → current score (may be negative).
-    scores: Mutex<HashMap<String, i64>>,
+    scores: Mutex<RapidHashMap<String, i64>>,
     events: EventBus,
     /// Connected peer count, updated atomically for sync access from metrics.
     peer_count: AtomicUsize,
     /// Optional shared metrics registry for connection counters.
     metrics: Option<Arc<MetricsRegistry>>,
+    /// Exponential backoff state for recently banned peers.
+    backoff: Mutex<RapidHashMap<String, BackoffState>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BackoffState {
+    attempts: u32,
+    next_allowed: Instant,
 }
 
 impl PeerManager {
@@ -44,11 +52,12 @@ impl PeerManager {
     pub fn new(events: EventBus) -> Self {
         Self {
             inner: Arc::new(InnerPeerManager {
-                peers: Mutex::new(HashSet::new()),
-                scores: Mutex::new(HashMap::new()),
+                peers: Mutex::new(RapidHashSet::default()),
+                scores: Mutex::new(RapidHashMap::default()),
                 events,
                 peer_count: AtomicUsize::new(0),
                 metrics: None,
+                backoff: Mutex::new(RapidHashMap::default()),
             }),
         }
     }
@@ -57,11 +66,12 @@ impl PeerManager {
     pub fn with_metrics(events: EventBus, metrics: Arc<MetricsRegistry>) -> Self {
         Self {
             inner: Arc::new(InnerPeerManager {
-                peers: Mutex::new(HashSet::new()),
-                scores: Mutex::new(HashMap::new()),
+                peers: Mutex::new(RapidHashSet::default()),
+                scores: Mutex::new(RapidHashMap::default()),
                 events,
                 peer_count: AtomicUsize::new(0),
                 metrics: Some(metrics),
+                backoff: Mutex::new(RapidHashMap::default()),
             }),
         }
     }
@@ -81,6 +91,7 @@ impl PeerManager {
                 .await
                 .entry(peer_id.clone())
                 .or_insert(0);
+            self.inner.backoff.lock().await.remove(&peer_id);
             if let Some(metrics) = &self.inner.metrics {
                 if inbound {
                     metrics.peer_connection_inbound.inc();
@@ -146,6 +157,7 @@ impl PeerManager {
     pub async fn decay_and_prune(&self, decay_by: i64, ban_threshold: i64) -> Vec<String> {
         let mut scores = self.inner.scores.lock().await;
         let mut peers = self.inner.peers.lock().await;
+        let mut backoff = self.inner.backoff.lock().await;
         let mut banned = Vec::new();
 
         for (peer_id, score) in scores.iter_mut() {
@@ -174,9 +186,13 @@ impl PeerManager {
         for peer_id in to_remove {
             scores.remove(&peer_id);
             peers.remove(&peer_id);
+            let backoff_for = record_backoff(&mut backoff, &peer_id);
             self.inner.events.emit(NetworkEvent::PeerBanned {
                 peer_id: peer_id.clone(),
-                reason: "score below ban threshold".to_string(),
+                reason: format!(
+                    "score below ban threshold (backoff {}s)",
+                    backoff_for.as_secs()
+                ),
             });
             self.inner.events.emit(NetworkEvent::PeerDisconnected {
                 peer_id: peer_id.clone(),
@@ -204,6 +220,18 @@ impl PeerManager {
         peers.iter().cloned().collect()
     }
 
+    /// Returns remaining backoff duration for `peer_id` if dialing should be delayed.
+    pub async fn backoff_remaining(&self, peer_id: &str) -> Option<Duration> {
+        let backoff = self.inner.backoff.lock().await;
+        let entry = backoff.get(peer_id)?;
+        let now = Instant::now();
+        if entry.next_allowed > now {
+            Some(entry.next_allowed.duration_since(now))
+        } else {
+            None
+        }
+    }
+
     /// Returns whether `peer_id` is currently tracked as connected.
     pub async fn is_connected(&self, peer_id: &str) -> bool {
         let peers = self.inner.peers.lock().await;
@@ -217,4 +245,21 @@ impl PeerManager {
     pub fn peer_count(&self) -> usize {
         self.inner.peer_count.load(Ordering::Relaxed)
     }
+}
+
+fn record_backoff(backoff: &mut RapidHashMap<String, BackoffState>, peer_id: &str) -> Duration {
+    const BASE_BACKOFF_SECS: u64 = 2;
+    const MAX_BACKOFF_SECS: u64 = 120;
+    let entry = backoff.entry(peer_id.to_string()).or_insert(BackoffState {
+        attempts: 0,
+        next_allowed: Instant::now(),
+    });
+    entry.attempts = entry.attempts.saturating_add(1);
+    let exp = 2u64.saturating_pow(entry.attempts.saturating_sub(1));
+    let backoff_secs = (BASE_BACKOFF_SECS.saturating_mul(exp)).min(MAX_BACKOFF_SECS);
+    let backoff_for = Duration::from_secs(backoff_secs);
+    entry.next_allowed = Instant::now()
+        .checked_add(backoff_for)
+        .unwrap_or_else(Instant::now);
+    backoff_for
 }

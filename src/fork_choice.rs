@@ -58,6 +58,15 @@ pub struct ForkChoiceStore {
     latest_new_votes: RapidHashMap<usize, Bytes32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ForkChoiceNodeSnapshot {
+    pub root: Bytes32,
+    pub slot: u64,
+    pub parent_root: Bytes32,
+    pub proposer_index: u64,
+    pub weight: usize,
+}
+
 impl ForkChoiceStore {
     /// Initialize from an anchor block + post-state.
     ///
@@ -83,7 +92,7 @@ impl ForkChoiceStore {
         states.insert(root, anchor_state.clone());
         parents.insert(root, block.parent_root);
         children.entry(block.parent_root).or_default().push(root);
-        Ok(Self {
+        let mut store = Self {
             head: root,
             safe_target: root,
             head_slot: slot,
@@ -98,7 +107,10 @@ impl ForkChoiceStore {
             children,
             latest_votes: RapidHashMap::default(),
             latest_new_votes: RapidHashMap::default(),
-        })
+        };
+        // Align checkpoints with the anchor block (leanSpec behavior).
+        store.override_checkpoint_roots(root);
+        Ok(store)
     }
 
     /// Import a new block and its post-state into the store.
@@ -339,6 +351,21 @@ impl ForkChoiceStore {
         self.latest_finalized
     }
 
+    /// Override checkpoint roots to the given anchor root.
+    ///
+    /// Used for checkpoint sync initialization to match leanSpec behavior.
+    #[inline]
+    pub fn override_checkpoint_roots(&mut self, anchor_root: Bytes32) {
+        self.latest_justified.root = anchor_root;
+        self.latest_finalized.root = anchor_root;
+        self.previous_justified.root = anchor_root;
+        self.safe_target = anchor_root;
+        self.head = anchor_root;
+        if let Some(block) = self.blocks.get(&anchor_root) {
+            self.head_slot = block.message.block.slot.0.0;
+        }
+    }
+
     #[inline]
     pub fn safe_target(&self) -> Bytes32 {
         self.safe_target
@@ -365,6 +392,14 @@ impl ForkChoiceStore {
     }
 
     #[inline]
+    pub fn head_validator_count(&self) -> usize {
+        self.states
+            .get(&self.head)
+            .map(|state| state.validators.data.len())
+            .unwrap_or(0)
+    }
+
+    #[inline]
     pub fn safe_target_slot(&self) -> u64 {
         self.blocks
             .get(&self.safe_target)
@@ -380,6 +415,30 @@ impl ForkChoiceStore {
     #[inline]
     pub fn latest_votes_count(&self) -> usize {
         self.latest_votes.len()
+    }
+
+    #[inline]
+    pub fn node_snapshots(&self) -> Vec<ForkChoiceNodeSnapshot> {
+        let mut nodes = Vec::with_capacity(self.blocks.len());
+        for (root, block) in &self.blocks {
+            let slot = block.message.block.slot.0.0;
+            let parent_root = block.message.block.parent_root;
+            let proposer_index = block.message.block.proposer_index.0.0;
+            let weight = self.subtree_weight(*root);
+            nodes.push(ForkChoiceNodeSnapshot {
+                root: *root,
+                slot,
+                parent_root,
+                proposer_index,
+                weight,
+            });
+        }
+        nodes.sort_by(|a, b| {
+            a.slot
+                .cmp(&b.slot)
+                .then_with(|| a.root.as_array().cmp(&b.root.as_array()))
+        });
+        nodes
     }
 
     /// Returns a `(root, slot)` checkpoint for `root` if the block exists in the store.

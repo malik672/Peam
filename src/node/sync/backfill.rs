@@ -223,7 +223,7 @@ pub(super) fn import_backfill_chain(
             live_target_slot.0.0, state_guard.slot.0.0, err
         );
     }
-    debug!("sync import finished imported_blocks={imported}");
+    info!("sync import finished imported_blocks={imported}");
     true
 }
 
