@@ -52,10 +52,27 @@ pub struct ForkChoiceStore {
     parents: RapidHashMap<Bytes32, Bytes32>,
     /// Maps each block root to its direct children roots.
     children: RapidHashMap<Bytes32, Vec<Bytes32>>,
+    /// Arena-backed fork-choice nodes keyed by insertion order.
+    nodes: Vec<ProtoNode>,
+    /// Maps each known block root to its node index in `nodes`.
+    node_indices: RapidHashMap<Bytes32, usize>,
     /// Latest vote target per validator index (validator_id → block root).
     latest_votes: RapidHashMap<usize, Bytes32>,
     /// Newly received votes that are not yet active for fork choice.
     latest_new_votes: RapidHashMap<usize, Bytes32>,
+}
+
+#[derive(Debug, Clone)]
+struct ProtoNode {
+    root: Bytes32,
+    parent: Option<usize>,
+    children: Vec<usize>,
+    slot: u64,
+    proposer_index: u64,
+    /// Aggregate subtree vote weight from active validator votes.
+    weight: i64,
+    /// Heaviest direct child, tie-broken by lexicographically smaller root.
+    best_child: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +109,17 @@ impl ForkChoiceStore {
         states.insert(root, anchor_state.clone());
         parents.insert(root, block.parent_root);
         children.entry(block.parent_root).or_default().push(root);
+        let nodes = vec![ProtoNode {
+            root,
+            parent: None,
+            children: Vec::new(),
+            slot,
+            proposer_index: block.proposer_index.0.0,
+            weight: 0,
+            best_child: None,
+        }];
+        let mut node_indices = RapidHashMap::default();
+        node_indices.insert(root, 0);
         let mut store = Self {
             head: root,
             safe_target: root,
@@ -105,6 +133,8 @@ impl ForkChoiceStore {
             states,
             parents,
             children,
+            nodes,
+            node_indices,
             latest_votes: RapidHashMap::default(),
             latest_new_votes: RapidHashMap::default(),
         };
@@ -142,13 +172,14 @@ impl ForkChoiceStore {
             .entry(block.parent_root)
             .or_default()
             .push(root);
+        self.insert_proto_node(root, block.parent_root, slot, block.proposer_index.0.0);
 
         // Block-included attestations are already verified in block processing,
         // so they become immediately active votes.
         for att in block.body.attestations.data.iter() {
-            apply_vote_to(&self.blocks, &mut self.latest_votes, att);
+            let _ = self.apply_attestation_votes(att, VoteDisposition::Active);
         }
-        apply_vote_to(&self.blocks, &mut self.latest_votes, &proposer_attestation);
+        let _ = self.apply_attestation_votes(&proposer_attestation, VoteDisposition::Active);
         // Keep checkpoint progression monotonic even when importing side branches.
         // This prevents sync/backfill replay from regressing fork-choice checkpoints.
         if post_state.latest_justified.slot > self.latest_justified.slot {
@@ -181,7 +212,7 @@ impl ForkChoiceStore {
     /// whose target root is not yet known to the store are silently ignored (equivocation
     /// protection: we only count votes for blocks we have already validated).
     pub fn on_attestation(&mut self, attestation: &Attestation) -> bool {
-        apply_vote_to(&self.blocks, &mut self.latest_new_votes, attestation)
+        self.apply_attestation_votes(attestation, VoteDisposition::Pending)
     }
 
     /// Promote newly received votes into active fork-choice votes.
@@ -192,7 +223,7 @@ impl ForkChoiceStore {
         }
         let pending = std::mem::take(&mut self.latest_new_votes);
         for (validator_id, root) in pending {
-            self.latest_votes.insert(validator_id, root);
+            self.set_latest_vote(validator_id, root);
         }
         let old_head = self.head;
         let head = self.find_head();
@@ -219,7 +250,7 @@ impl ForkChoiceStore {
         I: IntoIterator<Item = &'a Attestation>,
     {
         for attestation in pending_votes {
-            let _ = apply_vote_to(&self.blocks, &mut self.latest_new_votes, attestation);
+            let _ = self.apply_attestation_votes(attestation, VoteDisposition::Pending);
         }
         self.accept_new_votes();
         self.get_proposal_head()
@@ -244,30 +275,14 @@ impl ForkChoiceStore {
     #[inline]
     fn find_head(&self) -> Bytes32 {
         let start = self.latest_justified.root;
-        if !self.blocks.contains_key(&start) {
+        let Some(&start_idx) = self.node_indices.get(&start) else {
             return self.head;
+        };
+        let mut current = start_idx;
+        while let Some(best_child) = self.nodes[current].best_child {
+            current = best_child;
         }
-        let mut current = start;
-        loop {
-            let Some(children) = self.children.get(&current) else {
-                return current;
-            };
-            if children.is_empty() {
-                return current;
-            }
-            let mut best = children[0];
-            let mut best_weight = self.subtree_weight(best);
-            for child in children.iter().skip(1) {
-                let weight = self.subtree_weight(*child);
-                if weight > best_weight
-                    || (weight == best_weight && child.as_array() < best.as_array())
-                {
-                    best = *child;
-                    best_weight = weight;
-                }
-            }
-            current = best;
-        }
+        self.nodes[current].root
     }
 
     #[inline]
@@ -310,13 +325,11 @@ impl ForkChoiceStore {
 
     #[inline]
     fn subtree_weight(&self, root: Bytes32) -> usize {
-        let mut weight = 0usize;
-        for vote in self.latest_votes.values() {
-            if self.is_descendant(*vote, root) {
-                weight += 1;
-            }
-        }
-        weight
+        self.node_indices
+            .get(&root)
+            .and_then(|idx| self.nodes.get(*idx))
+            .map(|node| node.weight.max(0) as usize)
+            .unwrap_or(0)
     }
 
     #[inline]
@@ -419,26 +432,27 @@ impl ForkChoiceStore {
 
     #[inline]
     pub fn node_snapshots(&self) -> Vec<ForkChoiceNodeSnapshot> {
-        let mut nodes = Vec::with_capacity(self.blocks.len());
-        for (root, block) in &self.blocks {
-            let slot = block.message.block.slot.0.0;
-            let parent_root = block.message.block.parent_root;
-            let proposer_index = block.message.block.proposer_index.0.0;
-            let weight = self.subtree_weight(*root);
-            nodes.push(ForkChoiceNodeSnapshot {
-                root: *root,
-                slot,
+        let mut snapshots = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let parent_root = self
+                .parents
+                .get(&node.root)
+                .copied()
+                .unwrap_or(Bytes32::zero());
+            snapshots.push(ForkChoiceNodeSnapshot {
+                root: node.root,
+                slot: node.slot,
                 parent_root,
-                proposer_index,
-                weight,
+                proposer_index: node.proposer_index,
+                weight: node.weight.max(0) as usize,
             });
         }
-        nodes.sort_by(|a, b| {
+        snapshots.sort_by(|a, b| {
             a.slot
                 .cmp(&b.slot)
                 .then_with(|| a.root.as_array().cmp(&b.root.as_array()))
         });
-        nodes
+        snapshots
     }
 
     /// Returns a `(root, slot)` checkpoint for `root` if the block exists in the store.
@@ -548,6 +562,154 @@ impl ForkChoiceStore {
         }
     }
 
+    #[inline]
+    fn insert_proto_node(
+        &mut self,
+        root: Bytes32,
+        parent_root: Bytes32,
+        slot: u64,
+        proposer_index: u64,
+    ) {
+        if self.node_indices.contains_key(&root) {
+            return;
+        }
+        let node_idx = self.nodes.len();
+        self.nodes.push(ProtoNode {
+            root,
+            parent: None,
+            children: Vec::new(),
+            slot,
+            proposer_index,
+            weight: 0,
+            best_child: None,
+        });
+        self.node_indices.insert(root, node_idx);
+
+        if let Some(&parent_idx) = self.node_indices.get(&parent_root) {
+            self.attach_child(parent_idx, node_idx);
+        }
+        self.attach_known_children(root, node_idx);
+    }
+
+    #[inline]
+    fn attach_known_children(&mut self, parent_root: Bytes32, parent_idx: usize) {
+        let Some(child_roots) = self.children.get(&parent_root).cloned() else {
+            return;
+        };
+        for child_root in child_roots {
+            if child_root == parent_root {
+                continue;
+            }
+            let Some(&child_idx) = self.node_indices.get(&child_root) else {
+                continue;
+            };
+            self.attach_child(parent_idx, child_idx);
+        }
+    }
+
+    #[inline]
+    fn attach_child(&mut self, parent_idx: usize, child_idx: usize) {
+        if self.nodes[child_idx].parent == Some(parent_idx) {
+            return;
+        }
+        if self.nodes[child_idx].parent.is_some() {
+            return;
+        }
+        self.nodes[child_idx].parent = Some(parent_idx);
+        if !self.nodes[parent_idx].children.contains(&child_idx) {
+            self.nodes[parent_idx].children.push(child_idx);
+        }
+        self.recompute_best_child(parent_idx);
+        let child_weight = self.nodes[child_idx].weight;
+        if child_weight != 0 {
+            self.propagate_weight_from_index(parent_idx, child_weight);
+        }
+    }
+
+    #[inline]
+    fn recompute_best_child(&mut self, parent_idx: usize) {
+        let child_indices = self.nodes[parent_idx].children.clone();
+        let mut best_child = None;
+        for child_idx in child_indices {
+            best_child = match best_child {
+                Some(current_best) if !self.child_is_better(child_idx, current_best) => {
+                    Some(current_best)
+                }
+                _ => Some(child_idx),
+            };
+        }
+        self.nodes[parent_idx].best_child = best_child;
+    }
+
+    #[inline]
+    fn child_is_better(&self, candidate_idx: usize, incumbent_idx: usize) -> bool {
+        let candidate = &self.nodes[candidate_idx];
+        let incumbent = &self.nodes[incumbent_idx];
+        candidate.weight > incumbent.weight
+            || (candidate.weight == incumbent.weight
+                && candidate.root.as_array() < incumbent.root.as_array())
+    }
+
+    #[inline]
+    fn propagate_weight_from_index(&mut self, start_idx: usize, delta: i64) {
+        let mut current = Some(start_idx);
+        while let Some(idx) = current {
+            self.nodes[idx].weight += delta;
+            debug_assert!(self.nodes[idx].weight >= 0);
+            let parent = self.nodes[idx].parent;
+            if let Some(parent_idx) = parent {
+                self.recompute_best_child(parent_idx);
+            }
+            current = parent;
+        }
+    }
+
+    #[inline]
+    fn set_latest_vote(&mut self, validator_id: usize, root: Bytes32) {
+        let previous = self.latest_votes.insert(validator_id, root);
+        if previous == Some(root) {
+            return;
+        }
+        if let Some(old_root) = previous {
+            self.apply_vote_delta(old_root, -1);
+        }
+        self.apply_vote_delta(root, 1);
+    }
+
+    #[inline]
+    fn apply_vote_delta(&mut self, root: Bytes32, delta: i64) {
+        let Some(&node_idx) = self.node_indices.get(&root) else {
+            return;
+        };
+        self.propagate_weight_from_index(node_idx, delta);
+    }
+
+    #[inline]
+    fn apply_attestation_votes(
+        &mut self,
+        attestation: &Attestation,
+        disposition: VoteDisposition,
+    ) -> bool {
+        let Some(vote_root) = resolve_vote_root(&self.blocks, attestation) else {
+            log_vote_drop_unknown_head_sample(attestation);
+            return false;
+        };
+        for validator_id in bitlist_indices(&attestation.aggregation_bits) {
+            match disposition {
+                VoteDisposition::Active => self.set_latest_vote(validator_id, vote_root),
+                VoteDisposition::Pending => {
+                    self.latest_new_votes.insert(validator_id, vote_root);
+                }
+            }
+        }
+        true
+    }
+}
+
+#[derive(Clone, Copy)]
+enum VoteDisposition {
+    Active,
+    Pending,
 }
 
 #[inline]
@@ -592,22 +754,6 @@ fn log_vote_drop_unknown_head_sample(attestation: &Attestation) {
         participants_len_bits = attestation.aggregation_bits.len(),
         "fork choice dropped attestation vote: unknown head root"
     );
-}
-
-#[inline]
-fn apply_vote_to(
-    blocks: &RapidHashMap<Bytes32, SignedBlockWithAttestation>,
-    votes: &mut RapidHashMap<usize, Bytes32>,
-    attestation: &Attestation,
-) -> bool {
-    let Some(vote_root) = resolve_vote_root(blocks, attestation) else {
-        log_vote_drop_unknown_head_sample(attestation);
-        return false;
-    };
-    for validator_id in bitlist_indices(&attestation.aggregation_bits) {
-        votes.insert(validator_id, vote_root);
-    }
-    true
 }
 
 #[inline]

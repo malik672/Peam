@@ -123,8 +123,7 @@ pub(super) fn import_backfill_chain(
         if store_guard.get_block(&root).is_some() {
             debug!(
                 "sync import skipping already-known block root={:?} slot={}",
-                root,
-                signed.message.block.slot.0.0
+                root, signed.message.block.slot.0.0
             );
             continue;
         }
@@ -135,11 +134,7 @@ pub(super) fn import_backfill_chain(
         let expected_parent = Bytes32::from(replay_state.latest_block_header.hash_tree_root());
         debug!(
             "sync import replay step root={:?} slot={} parent={:?} replay_slot={} expected_parent={:?}",
-            root,
-            block.slot.0.0,
-            block.parent_root,
-            replay_state.slot.0.0,
-            expected_parent
+            root, block.slot.0.0, block.parent_root, replay_state.slot.0.0, expected_parent
         );
         if replay_state.slot >= block.slot {
             // Remote peers may return anchor/genesis blocks (slot 0, parent 0x00..00)
@@ -158,7 +153,9 @@ pub(super) fn import_backfill_chain(
             );
             return false;
         }
-        if let Err(err) = store_guard.put_backfill_signed_block(root, signed.clone(), &mut replay_state) {
+        if let Err(err) =
+            store_guard.put_backfill_signed_block(root, signed.clone(), &mut replay_state)
+        {
             warn!(
                 "sync import failed root={root:?} err={err} replay_slot={} block_slot={} expected_parent={expected_parent:?} block_parent={:?}",
                 replay_state.slot.0.0, block.slot.0.0, block.parent_root
@@ -224,6 +221,55 @@ pub(super) fn import_backfill_chain(
         );
     }
     info!("sync import finished imported_blocks={imported}");
+    true
+}
+
+#[inline]
+pub(super) fn import_streamed_range_chain(
+    state: &Arc<RwLock<State>>,
+    store: &Arc<RwLock<FileStore>>,
+    fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
+    fetched_oldest_to_newest: &[SignedBlockWithAttestation],
+) -> bool {
+    if fetched_oldest_to_newest.is_empty() {
+        debug!("sync range import finished imported_blocks=0 (empty response)");
+        return true;
+    }
+
+    let mut state_guard = state.write().expect("state lock");
+    let mut store_guard = store.write().expect("store lock");
+    let mut fc_guard = fork_choice.write().expect("fork choice lock");
+    let mut imported = 0usize;
+
+    for signed in fetched_oldest_to_newest {
+        let root = Bytes32::from(signed.message.block.hash_tree_root());
+        if store_guard.get_block(&root).is_some() {
+            debug!(
+                "sync range import skipping already-known block root={:?} slot={}",
+                root, signed.message.block.slot.0.0
+            );
+            continue;
+        }
+        if let Err(err) =
+            store_guard.put_backfill_signed_block(root, signed.clone(), &mut state_guard)
+        {
+            warn!(
+                "sync range import failed root={root:?} slot={} err={err}",
+                signed.message.block.slot.0.0
+            );
+            return false;
+        }
+        imported += 1;
+        if let Some(fc) = fc_guard.as_mut() {
+            if let Err(err) = fc.on_block(signed.clone(), state_guard.clone()) {
+                warn!("fork_choice on_block failed during range sync import: {err}");
+            }
+        } else if let Ok(new_fc) = ForkChoiceStore::new(signed.clone(), state_guard.clone()) {
+            *fc_guard = Some(new_fc);
+        }
+    }
+
+    info!("sync range import finished imported_blocks={imported}");
     true
 }
 

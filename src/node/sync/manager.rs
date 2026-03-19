@@ -9,7 +9,9 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::containers::attestation::Attestation;
-use crate::containers::req_resp::BlocksByRootRequest;
+use crate::containers::req_resp::{
+    BlocksByRangeResponse, BlocksByRootRequest, MAX_BLOCKS_PER_REQUEST,
+};
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::MetricsRegistry;
@@ -22,7 +24,10 @@ use crate::storage::Store;
 use crate::types::bytes::Bytes32;
 use crate::types::collections::SszList;
 
-use super::backfill::{build_local_status, import_backfill_chain, parent_matches_sync_anchor};
+use super::backfill::{
+    build_local_status, import_backfill_chain, import_streamed_range_chain,
+    parent_matches_sync_anchor,
+};
 use super::pending::PendingBackfill;
 
 #[inline]
@@ -218,18 +223,22 @@ pub(crate) fn spawn_status_sync_task(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    if let Some(root) = pending.pending_root {
+                    if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
                         if let Some(since) = pending.pending_since {
                             if since.elapsed() < SYNC_REQUEST_TIMEOUT {
                                 // Keep waiting for the in-flight response.
                             } else {
                                 warn!(
-                                    "sync request timed out root={:?} peer={} depth={}",
-                                    root,
+                                    "sync request timed out root={:?} range_start={:?} range_count={:?} peer={} depth={}",
+                                    pending.pending_root,
+                                    pending.pending_range_start_slot,
+                                    pending.pending_range_count,
                                     pending.active_peer.as_deref().unwrap_or("none"),
                                     pending.fetched_chain_newest_to_oldest.len()
                                 );
-                                in_flight_roots.remove(&root);
+                                if let Some(root) = pending.pending_root {
+                                    in_flight_roots.remove(&root);
+                                }
                                 pending.pending_root = None;
                                 pending.pending_since = None;
                                 pending.fetched_chain_newest_to_oldest.clear();
@@ -242,7 +251,7 @@ pub(crate) fn spawn_status_sync_task(
                             }
                         }
                     }
-                    if pending.pending_root.is_some() {
+                    if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
                         continue;
                     }
                     if last_status_probe.elapsed() < STATUS_PROBE_INTERVAL {
@@ -277,7 +286,7 @@ pub(crate) fn spawn_status_sync_task(
                     };
                     match kind {
                         LeanSupportedProtocol::StatusV1 => {
-                            if pending.pending_root.is_some() {
+                            if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
                                 continue;
                             }
                             let remote_status = match LeanResponseMessage::decode_ssz(kind, &payload) {
@@ -312,12 +321,10 @@ pub(crate) fn spawn_status_sync_task(
                                 let store_guard = store.read().expect("store lock");
                                 store_guard.get_block(&remote_status.head_root).is_some()
                             };
-                            let remote_ahead = !remote_head_known
-                                && remote_status.head_slot.0 > local_head_slot + SYNC_SLOT_LAG_THRESHOLD;
                             let needs_root_backfill = !remote_head_known
                                 && remote_status.head_slot.0 + SYNC_SLOT_LAG_THRESHOLD
                                     >= local_head_slot;
-                            if !remote_ahead && !needs_root_backfill {
+                            if !needs_root_backfill {
                                 if current_target != 0 && local_head_slot >= current_target {
                                     is_syncing.store(false, Ordering::Relaxed);
                                     pending.reset();
@@ -327,14 +334,12 @@ pub(crate) fn spawn_status_sync_task(
                                 }
                                 continue;
                             }
-                            if needs_root_backfill && !remote_ahead {
-                                debug!(
-                                    "sync scheduling unknown remote head root peer={} slot={} root={:?}",
-                                    peer_id,
-                                    remote_status.head_slot.0,
-                                    remote_status.head_root
-                                );
-                            }
+                            debug!(
+                                "sync scheduling unknown remote head root peer={} slot={} root={:?}",
+                                peer_id,
+                                remote_status.head_slot.0,
+                                remote_status.head_root
+                            );
                             is_syncing.store(true, Ordering::Relaxed);
                             sync_target_slot.fetch_max(remote_status.head_slot.0, Ordering::Relaxed);
                             sync_pending_depth.store(0, Ordering::Relaxed);
@@ -366,6 +371,57 @@ pub(crate) fn spawn_status_sync_task(
                                 );
                                 in_flight_roots.remove(&remote_status.head_root);
                                 pending.reset();
+                            }
+                        }
+                        LeanSupportedProtocol::BlocksByRangeV1 => {
+                            let Some(expected_start_slot) = pending.pending_range_start_slot else {
+                                continue;
+                            };
+                            let expected_count =
+                                pending.pending_range_count.unwrap_or(MAX_BLOCKS_PER_REQUEST as u64);
+                            let response = match BlocksByRangeResponse::decode_ssz_checked(&payload) {
+                                Ok(response) => response,
+                                Err(err) => {
+                                    warn!(
+                                        "sync range decode failed peer={} protocol={} bytes={} err={}",
+                                        peer_id, protocol, payload.len(), err
+                                    );
+                                    continue;
+                                }
+                            };
+                            let blocks = response.blocks.data;
+                            let last_slot = blocks
+                                .last()
+                                .map(|block| block.message.block.slot.0.0)
+                                .unwrap_or(expected_start_slot.saturating_sub(1));
+                            debug!(
+                                "sync range response peer={} start_slot={} expected_count={} received_blocks={} last_slot={}",
+                                peer_id,
+                                expected_start_slot,
+                                expected_count,
+                                blocks.len(),
+                                last_slot
+                            );
+                            let imported = import_streamed_range_chain(
+                                &state,
+                                &store,
+                                &fork_choice,
+                                &blocks,
+                            );
+                            pending.reset();
+                            sync_pending_depth.store(0, Ordering::Relaxed);
+                            let local_head = build_local_status(&state, &store).head_slot.0;
+                            let target = sync_target_slot.load(Ordering::Relaxed);
+                            if imported && local_head < target {
+                                is_syncing.store(true, Ordering::Relaxed);
+                                last_status_probe = Instant::now()
+                                    .checked_sub(STATUS_PROBE_INTERVAL)
+                                    .unwrap_or_else(Instant::now);
+                            } else if imported {
+                                is_syncing.store(false, Ordering::Relaxed);
+                                sync_target_slot.store(0, Ordering::Relaxed);
+                            } else {
+                                is_syncing.store(false, Ordering::Relaxed);
                             }
                         }
                         LeanSupportedProtocol::BlocksByRootV1 => {

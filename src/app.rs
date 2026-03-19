@@ -735,6 +735,25 @@ pub fn resolve_local_validator_index_for_node_name(
     local_validator_index_from_validator_config(&validator_config_path, node_name)
 }
 
+pub fn resolve_validator_startup_overrides(
+    config_path: &Path,
+    settings: &NodeSettings,
+    node_id: Option<&str>,
+    validator_keys_path: Option<&Path>,
+) -> Result<(Option<u64>, PathBuf), String> {
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let local_validator_index = match node_id {
+        Some(node_name) => {
+            resolve_local_validator_index_for_node_name(config_path, settings, node_name)?
+        }
+        None => None,
+    };
+    let validator_keys_dir = validator_keys_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| config_dir.join("hash-sig-keys"));
+    Ok((local_validator_index, validator_keys_dir))
+}
+
 /// Resolve metrics labels (`node_name`, `client_name`) for this node.
 ///
 /// Priority:

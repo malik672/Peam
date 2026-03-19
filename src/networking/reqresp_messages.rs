@@ -8,7 +8,9 @@
 //! by protocol variant.
 
 use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::req_resp::{BlocksByRootRequest, BlocksByRootResponse, Status};
+use crate::containers::req_resp::{
+    BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse, Status,
+};
 use crate::ssz::{SszDecode, SszEncode};
 use crate::types::collections::SszList;
 
@@ -39,9 +41,29 @@ fn decode_blocks_by_root_response_compat(
     Err("unsupported BlocksByRoot response payload".to_string())
 }
 
+#[inline]
+fn decode_blocks_by_range_response_compat(
+    data: &[u8],
+) -> Result<SignedBlockWithAttestation, String> {
+    if let Ok(single) = SignedBlockWithAttestation::decode_ssz(data) {
+        return Ok(single);
+    }
+    if let Ok(resp) = BlocksByRangeResponse::decode_ssz(data) {
+        return resp
+            .blocks
+            .data
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty BlocksByRange response payload".to_string());
+    }
+    Err("unsupported BlocksByRange response payload".to_string())
+}
+
 /// All req/resp protocols supported by the lean-Ethereum node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeanSupportedProtocol {
+    /// `/leanconsensus/req/blocks_by_range/1/ssz_snappy`
+    BlocksByRangeV1,
     /// `/leanconsensus/req/blocks_by_root/1/ssz_snappy`
     BlocksByRootV1,
     /// `/leanconsensus/req/status/1/ssz_snappy`
@@ -52,6 +74,7 @@ impl LeanSupportedProtocol {
     /// Returns the human-readable message name component of the protocol ID.
     pub fn message_name(&self) -> &'static str {
         match self {
+            LeanSupportedProtocol::BlocksByRangeV1 => "blocks_by_range",
             LeanSupportedProtocol::BlocksByRootV1 => "blocks_by_root",
             LeanSupportedProtocol::StatusV1 => "status",
         }
@@ -91,6 +114,7 @@ impl LeanSupportedProtocol {
             return None;
         }
         match name {
+            "blocks_by_range" => Some(LeanSupportedProtocol::BlocksByRangeV1),
             "blocks_by_root" => Some(LeanSupportedProtocol::BlocksByRootV1),
             "status" => Some(LeanSupportedProtocol::StatusV1),
             _ => None,
@@ -103,6 +127,8 @@ impl LeanSupportedProtocol {
 pub enum LeanRequestMessage {
     /// Peer status handshake.
     Status(Status),
+    /// Request for blocks by slot range.
+    BlocksByRange(BlocksByRangeRequest),
     /// Request for blocks by their root hashes.
     BlocksByRoot(BlocksByRootRequest),
 }
@@ -113,6 +139,9 @@ impl LeanRequestMessage {
         match self {
             LeanRequestMessage::Status(_) => {
                 vec![LeanSupportedProtocol::StatusV1.protocol_id()]
+            }
+            LeanRequestMessage::BlocksByRange(_) => {
+                vec![LeanSupportedProtocol::BlocksByRangeV1.protocol_id()]
             }
             LeanRequestMessage::BlocksByRoot(_) => {
                 vec![LeanSupportedProtocol::BlocksByRootV1.protocol_id()]
@@ -126,6 +155,7 @@ impl LeanRequestMessage {
     pub fn max_response_chunks(&self) -> u64 {
         match self {
             LeanRequestMessage::Status(_) => 1,
+            LeanRequestMessage::BlocksByRange(req) => req.count.0,
             LeanRequestMessage::BlocksByRoot(req) => req.roots.data.len() as u64,
         }
     }
@@ -134,6 +164,7 @@ impl LeanRequestMessage {
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanRequestMessage::Status(status) => status.encode_ssz(),
+            LeanRequestMessage::BlocksByRange(req) => req.encode_ssz(),
             LeanRequestMessage::BlocksByRoot(req) => req.encode_ssz(),
         }
     }
@@ -148,6 +179,9 @@ impl LeanRequestMessage {
             LeanSupportedProtocol::StatusV1 => {
                 Ok(LeanRequestMessage::Status(Status::decode_ssz(data)?))
             }
+            LeanSupportedProtocol::BlocksByRangeV1 => Ok(LeanRequestMessage::BlocksByRange(
+                BlocksByRangeRequest::decode_ssz(data)?,
+            )),
             LeanSupportedProtocol::BlocksByRootV1 => Ok(LeanRequestMessage::BlocksByRoot(
                 decode_blocks_by_root_request_compat(data)?,
             )),
@@ -160,6 +194,8 @@ impl LeanRequestMessage {
 pub enum LeanResponseMessage {
     /// Response to a status request.
     Status(Status),
+    /// Response to a blocks-by-range request (one block per chunk).
+    BlocksByRange(SignedBlockWithAttestation),
     /// Response to a blocks-by-root request (one block per chunk).
     BlocksByRoot(SignedBlockWithAttestation),
 }
@@ -169,6 +205,7 @@ impl LeanResponseMessage {
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanResponseMessage::Status(status) => status.encode_ssz(),
+            LeanResponseMessage::BlocksByRange(block) => block.encode_ssz(),
             LeanResponseMessage::BlocksByRoot(block) => block.encode_ssz(),
         }
     }
@@ -183,6 +220,9 @@ impl LeanResponseMessage {
             LeanSupportedProtocol::StatusV1 => {
                 Ok(LeanResponseMessage::Status(Status::decode_ssz(data)?))
             }
+            LeanSupportedProtocol::BlocksByRangeV1 => Ok(LeanResponseMessage::BlocksByRange(
+                decode_blocks_by_range_response_compat(data)?,
+            )),
             LeanSupportedProtocol::BlocksByRootV1 => Ok(LeanResponseMessage::BlocksByRoot(
                 decode_blocks_by_root_response_compat(data)?,
             )),

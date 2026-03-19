@@ -282,7 +282,8 @@ pub(super) fn spawn_signed_attestation_task(
                 let guard = state.read().expect("state lock");
                 let source = guard.latest_justified;
                 let finalized_slot = guard.latest_finalized.slot;
-                let pending_head_root = proposal_head_from_pending(&fork_choice, &pending_attestations);
+                let pending_head_root =
+                    proposal_head_from_pending(&fork_choice, &pending_attestations);
 
                 let (mut head, target) = {
                     let fc_guard = fork_choice.read().expect("fork choice lock");
@@ -386,7 +387,9 @@ pub(super) fn spawn_signed_attestation_task(
                     .expect("pending individual attestations lock")
                     .push(signed.clone());
             }
-            let payload = GossipAttestation { attestation: signed }
+            let payload = GossipAttestation {
+                attestation: signed,
+            }
             .encode_ssz();
             let _ = p2p_tx
                 .send(P2pCommand::Publish {

@@ -11,12 +11,12 @@ use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::MetricsRegistry;
+use crate::networking::GossipContext;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::{
     ValidationResult, is_retryable_unknown_roots_ignore, validate_basic_message,
     validate_with_context,
 };
-use crate::networking::GossipContext;
 use crate::ssz::HashTreeRoot;
 use crate::storage::Store;
 use crate::types::bitlist::BitList;
@@ -93,11 +93,10 @@ pub fn spawn_deferred_gossip_retry_task<S: Store + Send + Sync + 'static>(
                         continue;
                     }
                     let topic_hash = TopicHash::from_raw(entry.topic.clone());
-                    let decoded =
-                        match LeanGossipsubMessage::decode(&topic_hash, &entry.payload) {
-                            Ok(decoded) => decoded,
-                            Err(_) => continue,
-                        };
+                    let decoded = match LeanGossipsubMessage::decode(&topic_hash, &entry.payload) {
+                        Ok(decoded) => decoded,
+                        Err(_) => continue,
+                    };
                     match validate_basic_message(&decoded) {
                         ValidationResult::Accept => {}
                         ValidationResult::Ignore(reason)

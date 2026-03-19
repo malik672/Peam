@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{debug, info};
 
-use crate::containers::req_resp::{MAX_BLOCKS_PER_ROOT_REQUEST, Status};
+use crate::containers::req_resp::{MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Status};
 use crate::ssz::HashTreeRoot;
 use crate::storage::Store;
 use crate::types::bytes::Bytes32;
@@ -113,6 +113,29 @@ impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S>
     fn on_request(&self, request: LeanRequestMessage) -> Vec<LeanResponseMessage> {
         match request {
             LeanRequestMessage::Status(_) => vec![LeanResponseMessage::Status(self.build_status())],
+            LeanRequestMessage::BlocksByRange(req) => {
+                let store = self.store.read().expect("store lock");
+                let mut blocks = Vec::new();
+                let start_slot = req.start_slot.0;
+                let count = req.count.0.min(MAX_BLOCKS_PER_REQUEST as u64);
+                let step = req.step.0.max(1);
+                for offset in 0..count {
+                    let Some(step_offset) = offset.checked_mul(step) else {
+                        break;
+                    };
+                    let Some(slot) = start_slot.checked_add(step_offset) else {
+                        break;
+                    };
+                    let Some(block) = store.get_block_by_slot(slot) else {
+                        continue;
+                    };
+                    let root = Bytes32::from(block.hash_tree_root());
+                    if let Some(found) = store.get_signed_block(&root) {
+                        blocks.push(LeanResponseMessage::BlocksByRange(found));
+                    }
+                }
+                blocks
+            }
             LeanRequestMessage::BlocksByRoot(req) => {
                 // Return one block per response chunk, preserving request order.
                 let store = self.store.read().expect("store lock");

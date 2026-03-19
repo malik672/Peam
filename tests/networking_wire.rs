@@ -101,6 +101,7 @@ fn gossip_attestation_subnet_message_decode_signed() {
 fn reqresp_protocol_roundtrip() {
     for proto in [
         LeanSupportedProtocol::StatusV1,
+        LeanSupportedProtocol::BlocksByRangeV1,
         LeanSupportedProtocol::BlocksByRootV1,
     ] {
         let id = proto.protocol_id();

@@ -7,6 +7,8 @@ use crate::types::bytes::Bytes32;
 pub(super) struct PendingBackfill {
     pub active_peer: Option<String>,
     pub pending_root: Option<Bytes32>,
+    pub pending_range_start_slot: Option<u64>,
+    pub pending_range_count: Option<u64>,
     pub pending_since: Option<Instant>,
     pub fetched_chain_newest_to_oldest: Vec<SignedBlockWithAttestation>,
 }
@@ -16,6 +18,8 @@ impl PendingBackfill {
     pub fn reset(&mut self) {
         self.active_peer = None;
         self.pending_root = None;
+        self.pending_range_start_slot = None;
+        self.pending_range_count = None;
         self.pending_since = None;
         self.fetched_chain_newest_to_oldest.clear();
     }
@@ -27,4 +31,5 @@ impl PendingBackfill {
         self.pending_since = Some(Instant::now());
         self.fetched_chain_newest_to_oldest.clear();
     }
+
 }

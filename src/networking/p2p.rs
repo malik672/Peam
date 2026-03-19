@@ -13,7 +13,7 @@
 //! |--------------|---------|
 //! | `gossipsub`  | Pub/sub block and attestation propagation |
 //! | `identify`   | Peer protocol/address advertisement |
-//! | `reqresp`    | Typed request/response (status, blocks-by-root) |
+//! | `reqresp`    | Typed request/response (status, blocks-by-root, blocks-by-range) |
 //! | `mdns`       | Local-network peer discovery |
 
 use std::io::{Cursor, Read, Write};
@@ -50,9 +50,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::events::{EventBus, NetworkEvent};
+use crate::containers::req_resp::{BlocksByRangeResponse, MAX_BLOCKS_PER_REQUEST};
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
 use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
+use crate::ssz::SszEncode;
+use crate::types::collections::SszList;
 
 /// Ream-compatible snappy transform for gossip payloads.
 #[derive(Clone)]
@@ -267,10 +270,7 @@ where
     ))
 }
 
-async fn read_snappy_frame_exact<T>(
-    io: &mut T,
-    expected_len: usize,
-) -> std::io::Result<Vec<u8>>
+async fn read_snappy_frame_exact<T>(io: &mut T, expected_len: usize) -> std::io::Result<Vec<u8>>
 where
     T: futures::AsyncRead + Unpin + Send,
 {
@@ -508,11 +508,13 @@ impl RequestResponseCodec for LeanReqRespCodec {
         T: futures::AsyncRead + Unpin + Send,
     {
         match LeanSupportedProtocol::parse_protocol_id(&protocol.0) {
-            Some(LeanSupportedProtocol::BlocksByRootV1) => {
+            Some(
+                LeanSupportedProtocol::BlocksByRootV1 | LeanSupportedProtocol::BlocksByRangeV1,
+            ) => {
                 let mut payloads = Vec::new();
                 while let Some((response_code, payload)) = read_response_chunk(io).await? {
                     if response_code != 0 {
-                        // Skip non-success chunks for blocks_by_root.
+                        // Skip non-success chunks for streaming block responses.
                         continue;
                     }
                     payloads.push(payload);
@@ -602,12 +604,12 @@ impl RequestResponseCodec for LeanReqRespCodec {
             return Ok(());
         }
 
-        let is_blocks_by_root = matches!(
+        let is_streaming_blocks = matches!(
             LeanSupportedProtocol::parse_protocol_id(&protocol),
-            Some(LeanSupportedProtocol::BlocksByRootV1)
+            Some(LeanSupportedProtocol::BlocksByRootV1 | LeanSupportedProtocol::BlocksByRangeV1)
         );
 
-        if is_blocks_by_root {
+        if is_streaming_blocks {
             for payload in payloads {
                 let mut framed = Vec::with_capacity(payload.len() + 17);
                 framed.push(0);
@@ -619,10 +621,7 @@ impl RequestResponseCodec for LeanReqRespCodec {
             return Ok(());
         }
 
-        let payload = payloads
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| Vec::new());
+        let payload = payloads.into_iter().next().unwrap_or_else(|| Vec::new());
         let mut framed = Vec::with_capacity(payload.len() + 17);
         let _ = protocol;
         framed.push(0);
@@ -703,9 +702,12 @@ impl P2pService {
         let reqresp_status_protocols = [LeanSupportedProtocol::StatusV1.protocol_id()]
             .into_iter()
             .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
-        let reqresp_blocks_protocols = [LeanSupportedProtocol::BlocksByRootV1.protocol_id()]
-            .into_iter()
-            .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
+        let reqresp_blocks_protocols = [
+            LeanSupportedProtocol::BlocksByRootV1.protocol_id(),
+            LeanSupportedProtocol::BlocksByRangeV1.protocol_id(),
+        ]
+        .into_iter()
+        .map(|protocol| (LeanReqRespProtocol(protocol), ProtocolSupport::Full));
         let reqresp_status =
             RequestResponse::new(reqresp_status_protocols, RequestResponseConfig::default());
         let reqresp_blocks =
@@ -846,7 +848,10 @@ impl P2pService {
                             .reqresp_status
                             .send_request(&peer, request);
                     }
-                    Some(LeanSupportedProtocol::BlocksByRootV1) => {
+                    Some(
+                        LeanSupportedProtocol::BlocksByRootV1
+                        | LeanSupportedProtocol::BlocksByRangeV1,
+                    ) => {
                         self.swarm
                             .behaviour_mut()
                             .reqresp_blocks
@@ -895,8 +900,9 @@ impl P2pService {
                                         payload.len()
                                     );
                                     response_to_send = Some(match kind {
-                                        // BlocksByRoot misses are normal. Reply with no chunks.
-                                        LeanSupportedProtocol::BlocksByRootV1 => LeanResponse {
+                                        // Missing block chunks are normal. Reply with no chunks.
+                                        LeanSupportedProtocol::BlocksByRootV1
+                                        | LeanSupportedProtocol::BlocksByRangeV1 => LeanResponse {
                                             protocol: protocol.clone(),
                                             response_code: 0,
                                             payloads: Vec::new(),
@@ -995,11 +1001,81 @@ impl P2pService {
                         response_code,
                         payloads,
                     } = response;
+                    let kind = LeanSupportedProtocol::parse_protocol_id(&protocol);
                     if payloads.is_empty() {
+                        if matches!(kind, Some(LeanSupportedProtocol::BlocksByRangeV1)) {
+                            let empty = BlocksByRangeResponse {
+                                blocks: SszList::default(),
+                            }
+                            .encode_ssz();
+                            self.events.emit(NetworkEvent::ReqRespResponse {
+                                peer_id: peer.to_string(),
+                                protocol: protocol.clone(),
+                                payload: empty,
+                            });
+                            self.events.emit(NetworkEvent::PeerScored {
+                                peer_id: peer.to_string(),
+                                score: 1,
+                            });
+                        }
                         debug!(
                             "reqresp_response_eos peer={} protocol={} code={}",
                             peer, protocol, response_code
                         );
+                        return;
+                    }
+                    if matches!(kind, Some(LeanSupportedProtocol::BlocksByRangeV1)) {
+                        let mut blocks = Vec::with_capacity(payloads.len());
+                        for payload in payloads {
+                            if payload.len() > self.max_reqresp_bytes {
+                                self.events.emit(NetworkEvent::PeerScored {
+                                    peer_id: peer.to_string(),
+                                    score: -25,
+                                });
+                                continue;
+                            }
+                            match crate::networking::LeanResponseMessage::decode_ssz(
+                                LeanSupportedProtocol::BlocksByRangeV1,
+                                &payload,
+                            ) {
+                                Ok(crate::networking::LeanResponseMessage::BlocksByRange(
+                                    block,
+                                )) => {
+                                    blocks.push(block);
+                                }
+                                Ok(other) => {
+                                    warn!(
+                                        "reqresp_response_decode_unexpected peer={} protocol={} variant={other:?}",
+                                        peer, protocol
+                                    );
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        "reqresp_response_decode_failed peer={} protocol={} bytes={} err={}",
+                                        peer,
+                                        protocol,
+                                        payload.len(),
+                                        err
+                                    );
+                                }
+                            }
+                        }
+                        let payload = BlocksByRangeResponse {
+                            blocks: SszList::new(
+                                blocks.into_iter().take(MAX_BLOCKS_PER_REQUEST).collect(),
+                            )
+                            .expect("range response block count bounded"),
+                        }
+                        .encode_ssz();
+                        self.events.emit(NetworkEvent::ReqRespResponse {
+                            peer_id: peer.to_string(),
+                            protocol: protocol.clone(),
+                            payload,
+                        });
+                        self.events.emit(NetworkEvent::PeerScored {
+                            peer_id: peer.to_string(),
+                            score: 1,
+                        });
                         return;
                     }
                     for payload in payloads {

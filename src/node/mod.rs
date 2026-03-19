@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use crate::app::{
     NodeSettings, build_genesis_from_config_yaml_with_override, build_genesis_with_validator_count,
-    load_node_settings, resolve_local_validator_index_for_node_name, resolve_metrics_identity,
+    load_node_settings, resolve_metrics_identity, resolve_validator_startup_overrides,
 };
 use crate::checkpoint_sync::{
     build_anchor_block, build_anchor_signed_block, fetch_checkpoint_state, verify_checkpoint_state,
@@ -214,13 +214,16 @@ impl Node {
         if let Some(is_aggregator) = node_config.is_aggregator {
             settings.is_aggregator = is_aggregator;
         }
-        if let Some(node_id) = node_config.node_id.as_ref() {
-            settings.metrics_node_name = Some(node_id.clone());
-            if let Some(index) = resolve_local_validator_index_for_node_name(
+        let (resolved_local_validator_index, hash_sig_keys_dir_override) =
+            resolve_validator_startup_overrides(
                 &node_config.config_path,
                 &settings,
-                node_id,
-            )? {
+                node_config.node_id.as_deref(),
+                node_config.validator_keys_path.as_deref(),
+            )?;
+        if let Some(node_id) = node_config.node_id.as_ref() {
+            settings.metrics_node_name = Some(node_id.clone());
+            if let Some(index) = resolved_local_validator_index {
                 settings.local_validator_index = index;
             } else {
                 warn!(
@@ -278,10 +281,7 @@ impl Node {
         } else {
             build_genesis_with_validator_count(config.clone(), settings.validator_count)?
         };
-        let hash_sig_keys_dir = node_config
-            .validator_keys_path
-            .clone()
-            .unwrap_or_else(|| config_dir.join("hash-sig-keys"));
+        let hash_sig_keys_dir = hash_sig_keys_dir_override;
         let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
             match build_devnet_pq_validator_keys_from_hash_sig_dir(
                 &hash_sig_keys_dir,
