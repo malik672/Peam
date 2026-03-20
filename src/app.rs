@@ -256,6 +256,8 @@ fn local_validator_index_from_validator_config(
 /// | `metrics_address`           | `"127.0.0.1"`                                |
 /// | `metrics_port`              | `8080`                                       |
 /// | `http_api`                  | `true`                                       |
+/// | `http_address`              | `"127.0.0.1"`                                |
+/// | `http_port`                 | `8080`                                       |
 /// | `discovery_interval_secs`   | `5`                                          |
 /// | `score_decay_interval_secs` | `30`                                         |
 /// | `score_decay_amount`        | `1`                                          |
@@ -286,6 +288,10 @@ pub struct NodeSettings {
     pub metrics_port: u16,
     /// Enable the leanSpec HTTP API endpoints (health, finalized state, etc).
     pub http_api: bool,
+    /// Bind address for the leanSpec HTTP API server.
+    pub http_address: String,
+    /// TCP port for the leanSpec HTTP API server.
+    pub http_port: u16,
     /// Interval in seconds between peer discovery rounds.
     pub discovery_interval_secs: u64,
     /// Interval in seconds between peer score decay ticks.
@@ -344,6 +350,8 @@ fn default_node_settings() -> NodeSettings {
         metrics_address: "127.0.0.1".to_string(),
         metrics_port: 8080,
         http_api: true,
+        http_address: "127.0.0.1".to_string(),
+        http_port: 8080,
         discovery_interval_secs: 5,
         score_decay_interval_secs: 30,
         score_decay_amount: 1,
@@ -468,6 +476,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut metrics_address: Option<String> = None;
     let mut metrics_port: Option<u16> = None;
     let mut http_api: Option<bool> = None;
+    let mut http_address: Option<String> = None;
+    let mut http_port: Option<u16> = None;
     let mut score_decay_interval_secs: Option<u64> = None;
     let mut score_decay_amount: Option<i64> = None;
     let mut ban_threshold: Option<i64> = None;
@@ -529,6 +539,16 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                 "0" | "false" | "no" | "off" => false,
                 _ => return Err(format!("Invalid http_api {value}: expected true/false")),
             });
+        } else if key == "http_address" {
+            if !value.is_empty() {
+                http_address = Some(value.to_string());
+            }
+        } else if key == "http_port" {
+            http_port = Some(
+                value
+                    .parse::<u16>()
+                    .map_err(|err| format!("Invalid http_port {value}: {err}"))?,
+            );
         } else if key == "discovery_interval_secs" {
             discovery_interval_secs = Some(
                 value
@@ -688,12 +708,18 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
         let resolved = resolve_config_relative_path(path, path_value);
         bootnodes.extend(load_bootnodes_from_enr_file(&resolved)?);
     }
+    let resolved_metrics_address = metrics_address.unwrap_or_else(|| "127.0.0.1".to_string());
+    let resolved_metrics_port = metrics_port.unwrap_or(8080);
+    let resolved_http_address = http_address.unwrap_or_else(|| resolved_metrics_address.clone());
+    let resolved_http_port = http_port.unwrap_or(resolved_metrics_port);
     let mut settings = if allowed_topics.is_empty() {
         NodeSettings {
             metrics: metrics.unwrap_or(false),
-            metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
-            metrics_port: metrics_port.unwrap_or(8080),
+            metrics_address: resolved_metrics_address.clone(),
+            metrics_port: resolved_metrics_port,
             http_api: http_api.unwrap_or(true),
+            http_address: resolved_http_address.clone(),
+            http_port: resolved_http_port,
             discovery_interval_secs: discovery_interval_secs.unwrap_or(5),
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),
@@ -720,9 +746,11 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     } else {
         NodeSettings {
             metrics: metrics.unwrap_or(false),
-            metrics_address: metrics_address.unwrap_or_else(|| "127.0.0.1".to_string()),
-            metrics_port: metrics_port.unwrap_or(8080),
+            metrics_address: resolved_metrics_address,
+            metrics_port: resolved_metrics_port,
             http_api: http_api.unwrap_or(true),
+            http_address: resolved_http_address,
+            http_port: resolved_http_port,
             discovery_interval_secs: discovery_interval_secs.unwrap_or(5),
             score_decay_interval_secs: score_decay_interval_secs.unwrap_or(30),
             score_decay_amount: score_decay_amount.unwrap_or(1),

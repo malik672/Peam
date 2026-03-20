@@ -347,7 +347,7 @@ impl Default for MetricsRegistry {
 // ---------------------------------------------------------------------------
 
 #[inline]
-pub fn spawn_metrics_server(
+pub fn spawn_http_server(
     state: Arc<RwLock<State>>,
     store: Arc<RwLock<FileStore>>,
     fork_choice: Arc<RwLock<Option<ForkChoiceStore>>>,
@@ -360,16 +360,23 @@ pub fn spawn_metrics_server(
     client_name: String,
     bind_addr: String,
     enable_metrics: bool,
+    enable_http_api: bool,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let listener = match TcpListener::bind(&bind_addr).await {
             Ok(listener) => listener,
             Err(err) => {
-                warn!("metrics bind failed on {}: {}", bind_addr, err);
+                warn!("http bind failed on {}: {}", bind_addr, err);
                 return;
             }
         };
-        info!("metrics listening on {}", bind_addr);
+        let listener_label = match (enable_metrics, enable_http_api) {
+            (true, true) => "metrics/http",
+            (true, false) => "metrics",
+            (false, true) => "http api",
+            (false, false) => "disabled",
+        };
+        info!("{listener_label} listening on {}", bind_addr);
         let mut finalized_state_cache: Option<(crate::types::bytes::Bytes32, Vec<u8>)> = None;
 
         loop {
@@ -403,89 +410,121 @@ pub fn spawn_metrics_server(
                             b"metrics disabled\n".to_vec(),
                         )
                     } else {
-                    let body = {
-                        let state_guard = state.read().expect("state lock");
-                        let store_guard = store.read().expect("store lock");
-                        let fc_guard = fork_choice.read().expect("fork choice lock");
-                        let peer_count = peers.as_ref().map(|p| p.peer_count()).unwrap_or(0);
-                        let syncing = is_syncing.load(Ordering::Relaxed);
-                        let sync_target = sync_target_slot.load(Ordering::Relaxed);
-                        let sync_depth = sync_pending_depth.load(Ordering::Relaxed);
-                        render_metrics(
-                            &state_guard,
-                            &store_guard,
-                            &fc_guard,
-                            peer_count,
-                            syncing,
-                            sync_target,
-                            sync_depth,
-                            &registry,
-                            &node_name,
-                            &client_name,
-                        )
-                        .into_bytes()
-                    };
-                    http_response_bytes("200 OK", "text/plain; version=0.0.4", body)
+                        let body = {
+                            let state_guard = state.read().expect("state lock");
+                            let store_guard = store.read().expect("store lock");
+                            let fc_guard = fork_choice.read().expect("fork choice lock");
+                            let peer_count = peers.as_ref().map(|p| p.peer_count()).unwrap_or(0);
+                            let syncing = is_syncing.load(Ordering::Relaxed);
+                            let sync_target = sync_target_slot.load(Ordering::Relaxed);
+                            let sync_depth = sync_pending_depth.load(Ordering::Relaxed);
+                            render_metrics(
+                                &state_guard,
+                                &store_guard,
+                                &fc_guard,
+                                peer_count,
+                                syncing,
+                                sync_target,
+                                sync_depth,
+                                &registry,
+                                &node_name,
+                                &client_name,
+                            )
+                            .into_bytes()
+                        };
+                        http_response_bytes("200 OK", "text/plain; version=0.0.4", body)
                     }
                 }
                 HttpRoute::Health => {
-                    http_response_bytes("200 OK", "text/plain; charset=utf-8", b"ok\n".to_vec())
-                }
-                HttpRoute::FinalizedState => {
-                    let finalized_state = {
-                        let state_guard = state.read().expect("state lock");
-                        let store_guard = store.read().expect("store lock");
-                        latest_finalized_state_ssz(
-                            &state_guard,
-                            &store_guard,
-                            &mut finalized_state_cache,
-                        )
-                    };
-                    match finalized_state {
-                        Some(bytes) => {
-                            http_response_bytes("200 OK", "application/octet-stream", bytes)
-                        }
-                        None => http_response_bytes(
+                    if !enable_http_api {
+                        http_response_bytes(
                             "404 Not Found",
                             "text/plain; charset=utf-8",
-                            b"finalized state not found\n".to_vec(),
-                        ),
+                            b"http api disabled\n".to_vec(),
+                        )
+                    } else {
+                        http_response_bytes("200 OK", "text/plain; charset=utf-8", b"ok\n".to_vec())
+                    }
+                }
+                HttpRoute::FinalizedState => {
+                    if !enable_http_api {
+                        http_response_bytes(
+                            "404 Not Found",
+                            "text/plain; charset=utf-8",
+                            b"http api disabled\n".to_vec(),
+                        )
+                    } else {
+                        let finalized_state = {
+                            let state_guard = state.read().expect("state lock");
+                            let store_guard = store.read().expect("store lock");
+                            latest_finalized_state_ssz(
+                                &state_guard,
+                                &store_guard,
+                                &mut finalized_state_cache,
+                            )
+                        };
+                        match finalized_state {
+                            Some(bytes) => {
+                                http_response_bytes("200 OK", "application/octet-stream", bytes)
+                            }
+                            None => http_response_bytes(
+                                "404 Not Found",
+                                "text/plain; charset=utf-8",
+                                b"finalized state not found\n".to_vec(),
+                            ),
+                        }
                     }
                 }
                 HttpRoute::JustifiedCheckpoint => {
-                    let maybe_checkpoint = {
-                        let fc_guard = fork_choice.read().expect("fork choice lock");
-                        fc_guard.as_ref().map(|fc| fc.latest_justified())
-                    };
-                    match maybe_checkpoint {
-                        Some(checkpoint) => http_response_bytes(
-                            "200 OK",
-                            "application/json; charset=utf-8",
-                            checkpoint_json(checkpoint.slot.0.0, checkpoint.root),
-                        ),
-                        None => http_response_bytes(
-                            "503 Service Unavailable",
+                    if !enable_http_api {
+                        http_response_bytes(
+                            "404 Not Found",
                             "text/plain; charset=utf-8",
-                            b"store not initialized\n".to_vec(),
-                        ),
+                            b"http api disabled\n".to_vec(),
+                        )
+                    } else {
+                        let maybe_checkpoint = {
+                            let fc_guard = fork_choice.read().expect("fork choice lock");
+                            fc_guard.as_ref().map(|fc| fc.latest_justified())
+                        };
+                        match maybe_checkpoint {
+                            Some(checkpoint) => http_response_bytes(
+                                "200 OK",
+                                "application/json; charset=utf-8",
+                                checkpoint_json(checkpoint.slot.0.0, checkpoint.root),
+                            ),
+                            None => http_response_bytes(
+                                "503 Service Unavailable",
+                                "text/plain; charset=utf-8",
+                                b"store not initialized\n".to_vec(),
+                            ),
+                        }
                     }
                 }
                 HttpRoute::ForkChoice => {
-                    let fork_choice_snapshot = {
-                        let fc_guard = fork_choice.read().expect("fork choice lock");
-                        fc_guard.as_ref().map(fork_choice_json)
-                    };
-                    match fork_choice_snapshot {
-                        Some(body) => http_response_bytes(
-                            "200 OK",
-                            "application/json; charset=utf-8",
-                            body,
-                        ),
-                        None => http_response_bytes(
-                            "503 Service Unavailable",
+                    if !enable_http_api {
+                        http_response_bytes(
+                            "404 Not Found",
                             "text/plain; charset=utf-8",
-                            b"store not initialized\n".to_vec(),
-                        ),
+                            b"http api disabled\n".to_vec(),
+                        )
+                    } else {
+                        let fork_choice_snapshot = {
+                            let fc_guard = fork_choice.read().expect("fork choice lock");
+                            fc_guard.as_ref().map(fork_choice_json)
+                        };
+                        match fork_choice_snapshot {
+                            Some(body) => http_response_bytes(
+                                "200 OK",
+                                "application/json; charset=utf-8",
+                                body,
+                            ),
+                            None => http_response_bytes(
+                                "503 Service Unavailable",
+                                "text/plain; charset=utf-8",
+                                b"store not initialized\n".to_vec(),
+                            ),
+                        }
                     }
                 }
                 HttpRoute::NotFound => http_response_bytes(
@@ -624,7 +663,11 @@ fn fork_choice_json(store: &ForkChoiceStore) -> Vec<u8> {
 
     out.push_str("\"nodes\":[");
     let mut first = true;
-    for node in store.node_snapshots().into_iter().filter(|n| n.slot >= finalized_slot) {
+    for node in store
+        .node_snapshots()
+        .into_iter()
+        .filter(|n| n.slot >= finalized_slot)
+    {
         if !first {
             out.push(',');
         }
@@ -706,7 +749,10 @@ fn escape_label_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-#[cfg(all(any(target_os = "linux", target_os = "macos"), not(target_env = "msvc")))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(target_env = "msvc")
+))]
 fn write_jemalloc_metrics(out: &mut String) {
     use tikv_jemalloc_ctl::{epoch, stats};
 
@@ -734,7 +780,10 @@ fn write_jemalloc_metrics(out: &mut String) {
     }
 }
 
-#[cfg(not(all(any(target_os = "linux", target_os = "macos"), not(target_env = "msvc"))))]
+#[cfg(not(all(
+    any(target_os = "linux", target_os = "macos"),
+    not(target_env = "msvc")
+)))]
 fn write_jemalloc_metrics(_out: &mut String) {}
 
 fn render_metrics(

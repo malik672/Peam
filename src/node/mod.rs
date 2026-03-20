@@ -27,7 +27,7 @@ use crate::containers::checkpoint::Checkpoint;
 use crate::containers::config::Config;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
-use crate::metrics::{MetricsRegistry, spawn_metrics_server};
+use crate::metrics::{MetricsRegistry, spawn_http_server};
 use crate::networking::{
     Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
 };
@@ -96,7 +96,7 @@ pub struct NodeConfig {
     pub listen_addr: Option<String>,
     /// Optional CLI override for bootnodes.
     pub bootnodes: Option<Vec<String>>,
-    /// Optional CLI override for the shared HTTP API / metrics port.
+    /// Optional CLI override for the HTTP API port.
     pub api_port: Option<u16>,
     /// Optional CLI override for aggregator mode.
     pub is_aggregator: Option<bool>,
@@ -149,6 +149,8 @@ pub struct Node {
     shutdown_rx: oneshot::Receiver<()>,
     /// Handle to the optional Prometheus metrics server task.
     metrics_task: Option<JoinHandle<()>>,
+    /// Handle to the optional leanSpec HTTP API server task.
+    http_api_task: Option<JoinHandle<()>>,
     /// Handle to the fork-choice lifecycle interval task.
     lifecycle_task: Option<JoinHandle<()>>,
     /// Handle to the local signed-attestation publishing task.
@@ -204,11 +206,10 @@ impl Node {
         }
         if let Some(api_port) = node_config.api_port {
             if api_port == 0 {
-                settings.metrics = false;
                 settings.http_api = false;
-                settings.metrics_port = 0;
+                settings.http_port = 0;
             } else {
-                settings.metrics_port = api_port;
+                settings.http_port = api_port;
             }
         }
         if let Some(is_aggregator) = node_config.is_aggregator {
@@ -455,6 +456,7 @@ expected {:?}, got {:?}",
             shutdown_tx: Some(shutdown_tx),
             shutdown_rx,
             metrics_task: None,
+            http_api_task: None,
             lifecycle_task: None,
             signing_task: None,
             block_task: None,
@@ -537,7 +539,10 @@ expected {:?}, got {:?}",
             checkpoint_sync = self.settings.checkpoint_sync_url.is_some(),
             http_api = self.settings.http_api,
             metrics = self.settings.metrics,
-            api_port = self.settings.metrics_port,
+            metrics_address = %self.settings.metrics_address,
+            metrics_port = self.settings.metrics_port,
+            http_address = %self.settings.http_address,
+            http_port = self.settings.http_port,
             "startup runtime summary"
         );
 
@@ -766,12 +771,18 @@ expected {:?}, got {:?}",
             self.metrics.clone(),
         ));
 
-        if self.settings.metrics || self.settings.http_api {
+        let shared_http_bind = self.settings.metrics
+            && self.settings.http_api
+            && self.settings.metrics_port != 0
+            && self.settings.http_port != 0
+            && self.settings.metrics_address == self.settings.http_address
+            && self.settings.metrics_port == self.settings.http_port;
+        if shared_http_bind {
             let bind = format!(
                 "{}:{}",
                 self.settings.metrics_address, self.settings.metrics_port
             );
-            self.metrics_task = Some(spawn_metrics_server(
+            self.metrics_task = Some(spawn_http_server(
                 self.state.clone(),
                 self.store.clone(),
                 self.fork_choice.clone(),
@@ -784,7 +795,48 @@ expected {:?}, got {:?}",
                 self.metrics_client_name.clone(),
                 bind,
                 self.settings.metrics,
+                self.settings.http_api,
             ));
+        } else {
+            if self.settings.metrics && self.settings.metrics_port != 0 {
+                let bind = format!(
+                    "{}:{}",
+                    self.settings.metrics_address, self.settings.metrics_port
+                );
+                self.metrics_task = Some(spawn_http_server(
+                    self.state.clone(),
+                    self.store.clone(),
+                    self.fork_choice.clone(),
+                    self.networking.as_ref().map(|n| n.peers.clone()),
+                    self.is_syncing.clone(),
+                    self.sync_target_slot.clone(),
+                    self.sync_pending_depth.clone(),
+                    self.metrics.clone(),
+                    self.metrics_node_name.clone(),
+                    self.metrics_client_name.clone(),
+                    bind,
+                    true,
+                    false,
+                ));
+            }
+            if self.settings.http_api && self.settings.http_port != 0 {
+                let bind = format!("{}:{}", self.settings.http_address, self.settings.http_port);
+                self.http_api_task = Some(spawn_http_server(
+                    self.state.clone(),
+                    self.store.clone(),
+                    self.fork_choice.clone(),
+                    self.networking.as_ref().map(|n| n.peers.clone()),
+                    self.is_syncing.clone(),
+                    self.sync_target_slot.clone(),
+                    self.sync_pending_depth.clone(),
+                    self.metrics.clone(),
+                    self.metrics_node_name.clone(),
+                    self.metrics_client_name.clone(),
+                    bind,
+                    false,
+                    true,
+                ));
+            }
         }
 
         tokio::select! {
@@ -800,6 +852,9 @@ expected {:?}, got {:?}",
             networking.shutdown().await;
         }
         if let Some(task) = self.metrics_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.http_api_task.take() {
             task.abort();
         }
         if let Some(task) = self.lifecycle_task.take() {

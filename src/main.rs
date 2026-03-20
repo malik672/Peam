@@ -28,7 +28,7 @@ fn print_usage() {
     eprintln!("  --bootnode <multiaddr>        Add a bootnode (repeatable)");
     eprintln!("  --validator-keys <path>       Override validator key directory");
     eprintln!("  --node-id <name>              Override node identifier / validator assignment");
-    eprintln!("  --api-port <port>             Override shared HTTP API / metrics port");
+    eprintln!("  --api-port <port>             Override HTTP API port");
     eprintln!("  --genesis-time-now            Override genesis time to current unix time");
     eprintln!("  --is-aggregator               Enable aggregator mode");
     eprintln!("  -v, --verbose                 Enable debug logging");

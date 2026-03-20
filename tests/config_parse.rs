@@ -36,6 +36,8 @@ storage_dir=node_store
 metrics=true
 metrics_address=0.0.0.0
 metrics_port=18080
+http_address=127.0.0.2
+http_port=19090
 "#;
     fs::write(&path, config_text).expect("write config");
 
@@ -83,6 +85,8 @@ metrics_port=18080
     assert!(settings.metrics);
     assert_eq!(settings.metrics_address, "0.0.0.0".to_string());
     assert_eq!(settings.metrics_port, 18080);
+    assert_eq!(settings.http_address, "127.0.0.2".to_string());
+    assert_eq!(settings.http_port, 19090);
     assert!(!settings.http_api);
 
     let _ = fs::remove_file(&path);
@@ -118,6 +122,30 @@ fn loads_bootnodes_from_nodes_yaml_file() {
 }
 
 #[test]
+fn defaults_http_listener_to_metrics_listener_when_not_configured() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("peam_http_default_{stamp}.txt"));
+    let config_text = r#"
+genesis_time=42
+metrics=true
+metrics_address=0.0.0.0
+metrics_port=18080
+"#;
+    fs::write(&path, config_text).expect("write config");
+
+    let (_config, settings) = load_node_settings(&path).expect("parse config");
+    assert_eq!(settings.metrics_address, "0.0.0.0");
+    assert_eq!(settings.metrics_port, 18080);
+    assert_eq!(settings.http_address, "0.0.0.0");
+    assert_eq!(settings.http_port, 18080);
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
 fn resolves_metrics_identity_from_validators_yaml() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -136,6 +164,8 @@ fn resolves_metrics_identity_from_validators_yaml() {
         metrics_address: "127.0.0.1".to_string(),
         metrics_port: 18080,
         http_api: true,
+        http_address: "127.0.0.1".to_string(),
+        http_port: 18080,
         discovery_interval_secs: 5,
         score_decay_interval_secs: 30,
         score_decay_amount: 1,
@@ -190,6 +220,8 @@ fn resolves_metrics_identity_from_validator_config_when_needed() {
         metrics_address: "127.0.0.1".to_string(),
         metrics_port: 18080,
         http_api: true,
+        http_address: "127.0.0.1".to_string(),
+        http_port: 18080,
         discovery_interval_secs: 5,
         score_decay_interval_secs: 30,
         score_decay_amount: 1,
@@ -269,6 +301,8 @@ fn parses_genesis_yaml_as_config_with_default_node_settings() {
     assert_eq!(config.genesis_time.0, 42);
     assert_eq!(settings.metrics_port, 8080);
     assert!(settings.http_api);
+    assert_eq!(settings.http_address, "127.0.0.1");
+    assert_eq!(settings.http_port, 8080);
     assert_eq!(settings.listen_addr, "/ip4/0.0.0.0/udp/9000/quic-v1");
 
     let _ = fs::remove_dir_all(&dir);
@@ -293,6 +327,8 @@ fn resolves_local_validator_index_from_node_name() {
         metrics_address: "127.0.0.1".to_string(),
         metrics_port: 8080,
         http_api: true,
+        http_address: "127.0.0.1".to_string(),
+        http_port: 8080,
         discovery_interval_secs: 5,
         score_decay_interval_secs: 30,
         score_decay_amount: 1,
