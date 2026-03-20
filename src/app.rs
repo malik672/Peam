@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use enr::{Enr, EnrPublicKey, k256::ecdsa::SigningKey as EnrSigningKey};
+use libp2p::PeerId;
+use libp2p::identity::secp256k1;
 use serde::Deserialize;
 
 use crate::containers::config::Config;
@@ -79,6 +82,94 @@ fn resolve_validator_config_path(
             }
         })
         .unwrap_or_else(|| config_dir.join("validator-config.yaml"))
+}
+
+#[inline]
+fn resolve_config_relative_path(config_path: &Path, value: &str) -> PathBuf {
+    let candidate = PathBuf::from(value);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(candidate)
+    }
+}
+
+#[inline]
+fn decode_quic_port(raw: &[u8]) -> Option<u16> {
+    let bytes: [u8; 2] = raw.try_into().ok()?;
+    Some(u16::from_be_bytes(bytes))
+}
+
+fn load_bootnodes_from_enr_file(path: &Path) -> Result<Vec<String>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read bootnodes file {}: {err}", path.display()))?;
+    let entries: serde_yaml::Value = serde_yaml::from_str(&text)
+        .map_err(|err| format!("Failed to parse bootnodes file {}: {err}", path.display()))?;
+    let sequence = entries.as_sequence().ok_or_else(|| {
+        format!(
+            "Failed to parse bootnodes file {}: expected a YAML sequence",
+            path.display()
+        )
+    })?;
+
+    let mut bootnodes = Vec::new();
+    for (index, entry) in sequence.iter().enumerate() {
+        let enr_text = match entry {
+            serde_yaml::Value::String(value) => value.as_str(),
+            serde_yaml::Value::Mapping(map) => map
+                .get(serde_yaml::Value::String("enr".to_string()))
+                .and_then(serde_yaml::Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid bootnode entry {} in {}: expected `enr` string",
+                        index + 1,
+                        path.display()
+                    )
+                })?,
+            _ => {
+                return Err(format!(
+                    "Invalid bootnode entry {} in {}: expected string or mapping",
+                    index + 1,
+                    path.display()
+                ));
+            }
+        };
+        let enr: Enr<EnrSigningKey> = enr_text.parse().map_err(|err| {
+            format!(
+                "Invalid ENR at {} entry {}: {err}",
+                path.display(),
+                index + 1
+            )
+        })?;
+
+        let Some(ip) = enr.ip4() else {
+            continue;
+        };
+        #[allow(deprecated)]
+        let quic_port = enr
+            .get("quic")
+            .and_then(|value| decode_quic_port(value.as_ref()))
+            .or_else(|| enr.udp4());
+        let Some(quic_port) = quic_port else {
+            continue;
+        };
+
+        let public_key = secp256k1::PublicKey::try_from_bytes(enr.public_key().encode().as_ref())
+            .map_err(|err| {
+            format!(
+                "Invalid secp256k1 public key in {} entry {}: {err}",
+                path.display(),
+                index + 1
+            )
+        })?;
+        let peer_id = PeerId::from_public_key(&public_key.into());
+        bootnodes.push(format!("/ip4/{ip}/udp/{quic_port}/quic-v1/p2p/{peer_id}"));
+    }
+
+    Ok(bootnodes)
 }
 
 #[inline]
@@ -398,6 +489,7 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let mut metrics_node_name: Option<String> = None;
     let mut metrics_client_name: Option<String> = None;
     let mut checkpoint_sync_url: Option<String> = None;
+    let mut bootnodes_file: Option<String> = None;
 
     for line in text.lines() {
         let line = line.trim();
@@ -476,6 +568,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
                 .filter(|entry| !entry.is_empty())
                 .map(|entry| entry.to_string())
                 .collect::<Vec<_>>();
+        } else if key == "bootnodes_file" {
+            if !value.is_empty() {
+                bootnodes_file = Some(value.to_string());
+            }
         } else if key == "trusted_peers" {
             trusted_peers = value
                 .split(',')
@@ -588,6 +684,10 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
     let config = Config {
         genesis_time: Uint64(genesis_time),
     };
+    if let Some(path_value) = bootnodes_file.as_deref() {
+        let resolved = resolve_config_relative_path(path, path_value);
+        bootnodes.extend(load_bootnodes_from_enr_file(&resolved)?);
+    }
     let mut settings = if allowed_topics.is_empty() {
         NodeSettings {
             metrics: metrics.unwrap_or(false),

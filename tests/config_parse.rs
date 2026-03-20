@@ -89,6 +89,35 @@ metrics_port=18080
 }
 
 #[test]
+fn loads_bootnodes_from_nodes_yaml_file() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_nodes_yaml_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("node.conf");
+    fs::write(&config_path, "genesis_time=42\nbootnodes_file=nodes.yaml\n").expect("write config");
+    fs::write(
+        dir.join("nodes.yaml"),
+        "- enr:-IW4QGGifTt9ypyMtChDISUNX3z4z5iPdiEPOmBoILvnDuWIKbWVmKXxZERPnw0piQyaBNCENFEPoIi-vxsnsrBig9MBgmlkgnY0gmlwhH8AAAGEcXVpY4IjKYlzZWNwMjU2azGhAhMMnGF1rmIPQ9tWgqfkNmvsG-aIyc9EJU5JFo3Tegys\n",
+    )
+    .expect("write nodes yaml");
+
+    let (_config, settings) = load_node_settings(&config_path).expect("parse config");
+    assert_eq!(
+        settings.bootnodes,
+        vec![
+            "/ip4/127.0.0.1/udp/9001/quic-v1/p2p/16Uiu2HAkvi2sxT75Bpq1c7yV2FjnSQJJ432d6jeshbmfdJss1i6f"
+                .to_string()
+        ]
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn resolves_metrics_identity_from_validators_yaml() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

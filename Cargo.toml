@@ -22,6 +22,7 @@ snap = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 ureq = "2"
+enr = "0.13"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tikv-jemallocator = { version = "0.6", features = ["stats"] }
