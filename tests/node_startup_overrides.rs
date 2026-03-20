@@ -38,6 +38,7 @@ fn startup_overrides_resolve_node_id_and_validator_keys_path() {
         &settings,
         Some("peer1_0"),
         Some(&custom_keys_dir),
+        None,
     )
     .expect("resolve startup overrides");
 
