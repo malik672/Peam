@@ -103,7 +103,7 @@ fn decode_quic_port(raw: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes(bytes))
 }
 
-fn load_bootnodes_from_enr_file(path: &Path) -> Result<Vec<String>, String> {
+pub fn load_bootnodes_from_enr_file(path: &Path) -> Result<Vec<String>, String> {
     let text = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read bootnodes file {}: {err}", path.display()))?;
     let entries: serde_yaml::Value = serde_yaml::from_str(&text)
@@ -868,14 +868,27 @@ pub fn resolve_validator_startup_overrides(
     settings: &NodeSettings,
     node_id: Option<&str>,
     validator_keys_path: Option<&Path>,
+    validators_path: Option<&Path>,
 ) -> Result<(Option<u64>, PathBuf), String> {
-    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let validators_path = validators_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("validators.yaml")
+    });
     let local_validator_index = match node_id {
         Some(node_name) => {
-            resolve_local_validator_index_for_node_name(config_path, settings, node_name)?
+            if let Some(index) =
+                local_validator_index_from_validators_yaml(&validators_path, node_name)?
+            {
+                Some(index)
+            } else {
+                resolve_local_validator_index_for_node_name(config_path, settings, node_name)?
+            }
         }
         None => None,
     };
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     let validator_keys_dir = validator_keys_path
         .map(Path::to_path_buf)
         .unwrap_or_else(|| config_dir.join("hash-sig-keys"));

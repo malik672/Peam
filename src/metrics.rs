@@ -568,15 +568,46 @@ fn classify_http_route(request: &[u8]) -> HttpRoute {
     }
     match path {
         b"/" | b"/metrics" => HttpRoute::Metrics,
-        b"/health" | b"/lean/health" | b"/lean/v0/health" => HttpRoute::Health,
-        b"/states/finalized" | b"/lean/states/finalized" | b"/lean/v0/states/finalized" => {
-            HttpRoute::FinalizedState
-        }
-        b"/checkpoints/justified"
+        b"/health" | b"/v0/health" | b"/lean/health" | b"/lean/v0/health" => HttpRoute::Health,
+        b"/states/finalized"
+        | b"/v0/states/finalized"
+        | b"/lean/states/finalized"
+        | b"/lean/v0/states/finalized" => HttpRoute::FinalizedState,
+        b"/v0/checkpoints/justified"
+        | b"/checkpoints/justified"
         | b"/lean/checkpoints/justified"
         | b"/lean/v0/checkpoints/justified" => HttpRoute::JustifiedCheckpoint,
-        b"/fork_choice" | b"/lean/fork_choice" | b"/lean/v0/fork_choice" => HttpRoute::ForkChoice,
+        b"/fork_choice" | b"/v0/fork_choice" | b"/lean/fork_choice" | b"/lean/v0/fork_choice" => {
+            HttpRoute::ForkChoice
+        }
         _ => HttpRoute::NotFound,
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::{HttpRoute, classify_http_route};
+
+    fn route_for(path: &str) -> HttpRoute {
+        let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        classify_http_route(request.as_bytes())
+    }
+
+    #[test]
+    fn accepts_v0_route_aliases() {
+        assert!(matches!(route_for("/v0/health"), HttpRoute::Health));
+        assert!(matches!(
+            route_for("/v0/states/finalized"),
+            HttpRoute::FinalizedState
+        ));
+        assert!(matches!(
+            route_for("/v0/checkpoints/justified"),
+            HttpRoute::JustifiedCheckpoint
+        ));
+        assert!(matches!(
+            route_for("/v0/fork_choice"),
+            HttpRoute::ForkChoice
+        ));
     }
 }
 

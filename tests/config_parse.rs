@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use peam::app::{
     NodeSettings, load_node_settings, resolve_local_validator_index_for_node_name,
-    resolve_metrics_identity,
+    resolve_metrics_identity, resolve_validator_startup_overrides,
 };
 use peam::networking::GossipValidatorKind;
 
@@ -356,6 +356,35 @@ fn resolves_local_validator_index_from_node_name() {
     let index = resolve_local_validator_index_for_node_name(&config_path, &settings, "peer1_0")
         .expect("resolve local validator index");
     assert_eq!(index, Some(1));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn resolves_local_validator_index_from_custom_validators_path() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_custom_validators_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("node.conf");
+    fs::write(&config_path, "genesis_time=42\n").expect("write config");
+    let custom_validators = dir.join("custom-validators.yaml");
+    fs::write(&custom_validators, "peer1_0:\n- 1\npeam_0:\n- 0\n").expect("write validators");
+
+    let settings = load_node_settings(&config_path).expect("parse config").1;
+    let (index, validator_keys_dir) = resolve_validator_startup_overrides(
+        &config_path,
+        &settings,
+        Some("peer1_0"),
+        None,
+        Some(custom_validators.as_path()),
+    )
+    .expect("resolve startup overrides");
+    assert_eq!(index, Some(1));
+    assert_eq!(validator_keys_dir, dir.join("hash-sig-keys"));
 
     let _ = fs::remove_dir_all(&dir);
 }

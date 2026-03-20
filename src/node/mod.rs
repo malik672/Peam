@@ -96,10 +96,18 @@ pub struct NodeConfig {
     pub listen_addr: Option<String>,
     /// Optional CLI override for bootnodes.
     pub bootnodes: Option<Vec<String>>,
+    /// Optional CLI override for the metrics port.
+    pub metrics_port: Option<u16>,
     /// Optional CLI override for the HTTP API port.
     pub api_port: Option<u16>,
+    /// Optional CLI override for libp2p node key path.
+    pub node_key_path: Option<PathBuf>,
+    /// Optional CLI override for validator assignments file.
+    pub validators_path: Option<PathBuf>,
     /// Optional CLI override for aggregator mode.
     pub is_aggregator: Option<bool>,
+    /// Optional CLI override for attestation committee count.
+    pub attestation_committee_count: Option<u64>,
     /// Optional CLI override for validator key directory.
     pub validator_keys_path: Option<PathBuf>,
     /// Optional CLI override for node identifier / validator assignment.
@@ -204,13 +212,29 @@ impl Node {
         if let Some(bootnodes) = node_config.bootnodes {
             settings.bootnodes = bootnodes;
         }
+        if let Some(metrics_port) = node_config.metrics_port {
+            if metrics_port == 0 {
+                settings.metrics = false;
+                settings.metrics_port = 0;
+            } else {
+                settings.metrics = true;
+                settings.metrics_port = metrics_port;
+            }
+        }
         if let Some(api_port) = node_config.api_port {
             if api_port == 0 {
                 settings.http_api = false;
                 settings.http_port = 0;
             } else {
+                settings.http_api = true;
                 settings.http_port = api_port;
             }
+        }
+        if let Some(node_key_path) = node_config.node_key_path {
+            settings.node_key_path = Some(node_key_path.to_string_lossy().into_owned());
+        }
+        if let Some(attestation_committee_count) = node_config.attestation_committee_count {
+            settings.attestation_committee_count = attestation_committee_count;
         }
         if let Some(is_aggregator) = node_config.is_aggregator {
             settings.is_aggregator = is_aggregator;
@@ -221,6 +245,7 @@ impl Node {
                 &settings,
                 node_config.node_id.as_deref(),
                 node_config.validator_keys_path.as_deref(),
+                node_config.validators_path.as_deref(),
             )?;
         if let Some(node_id) = node_config.node_id.as_ref() {
             settings.metrics_node_name = Some(node_id.clone());
