@@ -4,7 +4,9 @@ use peam::containers::block::{
     BlockWithAttestation, SignedBlockWithAttestation,
 };
 use peam::containers::checkpoint::Checkpoint;
-use peam::containers::state::{PqSignatureVerifier, SignatureVerifier, State, Validators};
+use peam::containers::state::{
+    NoopSignatureVerifier, PqSignatureVerifier, SignatureVerifier, State, Validators,
+};
 use peam::containers::validator::{Validator, ValidatorIndex};
 use peam::crypto::pq;
 use peam::slot::Slot;
@@ -20,11 +22,12 @@ use peam::types::uint::Uint64;
 fn process_slots_advances_state_and_sets_root() {
     let validators: Validators = SszList::new(vec![]).expect("validators");
     let mut state = State::generate_genesis(Uint64(0), validators);
+    let original_header_root = state.latest_block_header.state_root;
 
     assert_eq!(state.balances.data.len(), 0);
     state.process_slots(Slot(Uint64(1))).expect("process slots");
     assert_eq!(state.slot, Slot(Uint64(1)));
-    assert_eq!(state.latest_block_header.state_root, Bytes32::zero());
+    assert_eq!(state.latest_block_header.state_root, original_header_root);
 }
 
 #[test]
@@ -53,6 +56,57 @@ fn process_block_header_updates_latest_header() {
 
     state.process_block_header(header).expect("process header");
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(1)));
+}
+
+#[test]
+fn state_root_mismatch_error_does_not_mutate_state() {
+    let v = Validator {
+        pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators: Validators = SszList::new(vec![v]).expect("validators");
+    let mut state = State::generate_genesis(Uint64(0), validators);
+    let original = state.clone();
+
+    let mut block = build_block_for_slot(&state, 1, 0);
+    block.state_root = Bytes32::from([0xabu8; 32]);
+    let signed = SignedBlockWithAttestation {
+        message: BlockWithAttestation {
+            block,
+            proposer_attestation: Attestation {
+                aggregation_bits: BitList::new(vec![true]).expect("participants"),
+                data: AttestationData {
+                    slot: Slot(Uint64(1)),
+                    head: Checkpoint {
+                        root: Bytes32::zero(),
+                        slot: Slot(Uint64(1)),
+                    },
+                    target: Checkpoint {
+                        root: Bytes32::zero(),
+                        slot: Slot(Uint64(1)),
+                    },
+                    source: Checkpoint {
+                        root: Bytes32::zero(),
+                        slot: Slot(Uint64(0)),
+                    },
+                },
+            },
+        },
+        signature: BlockSignatures {
+            attestation_signatures: SszList::new(vec![]).expect("signatures"),
+            proposer_signature: Bytes3112::zero(),
+        },
+    };
+
+    let err = state
+        .process_signed_block_with_verifier(&signed, &NoopSignatureVerifier)
+        .expect_err("state-root mismatch should reject block");
+    assert!(err.contains("block state root does not match computed state root"));
+    assert_eq!(
+        state, original,
+        "rejected state-root mismatch must leave state unchanged"
+    );
 }
 
 fn build_block_for_slot(state: &State, slot: u64, proposer: u64) -> Block {

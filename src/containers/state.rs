@@ -20,8 +20,8 @@
 
 use rapidhash::RapidHashMap;
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -249,7 +249,7 @@ impl State {
             return Err("target slot must be in the future".to_string());
         }
 
-        self.slot = Slot(Uint64(target_slot.0.0));
+        self.slot = Slot(Uint64(target_slot.0 .0));
 
         Ok(())
     }
@@ -306,8 +306,8 @@ impl State {
             self.latest_finalized.root = block.parent_root;
         }
 
-        let block_slot = block.slot.0.0;
-        let latest_slot = self.latest_block_header.slot.0.0;
+        let block_slot = block.slot.0 .0;
+        let latest_slot = self.latest_block_header.slot.0 .0;
         let num_empty_slots = block_slot - latest_slot - 1;
 
         // Record the parent root for the previous slot.
@@ -329,7 +329,7 @@ impl State {
         // Extend justified_slots to cover all slots up to (block.slot - 1).
         // matches across clients, even before attestation processing grows it.
         let last_materialized = block_slot.saturating_sub(1);
-        let fin_slot = self.latest_finalized.slot.0.0;
+        let fin_slot = self.latest_finalized.slot.0 .0;
         if last_materialized > fin_slot {
             let required_len = (last_materialized - fin_slot) as usize;
             if required_len > self.justified_slots.len() {
@@ -387,16 +387,16 @@ impl State {
     ) -> Result<(), String> {
         let total_start = Instant::now();
         let old_finalized = self.latest_finalized;
-        let pre_slot = self.slot.0.0;
-        let pre_header_slot = self.latest_block_header.slot.0.0;
+        let pre_slot = self.slot.0 .0;
+        let pre_header_slot = self.latest_block_header.slot.0 .0;
         let pre_header_root = Bytes32::from(self.latest_block_header.hash_tree_root());
         let pre_justified = self.latest_justified;
         let pre_finalized = self.latest_finalized;
 
         let slots_start = Instant::now();
-        let slots_before = self.slot.0.0;
+        let slots_before = self.slot.0 .0;
         self.process_slots(block.slot)?;
-        let slots_after = self.slot.0.0;
+        let slots_after = self.slot.0 .0;
         let capture_trace_roots = state_root_trace_enabled();
         let post_slots_root = if capture_trace_roots {
             Some(Bytes32::from(self.hash_tree_root()))
@@ -563,7 +563,7 @@ impl State {
                 }
                 continue;
             }
-            let source_slot_idx = att.data.source.slot.0.0 as usize;
+            let source_slot_idx = att.data.source.slot.0 .0 as usize;
             let source_matches = self
                 .historical_block_hashes
                 .data
@@ -583,7 +583,7 @@ impl State {
                 }
                 continue;
             }
-            let target_slot_idx = att.data.target.slot.0.0 as usize;
+            let target_slot_idx = att.data.target.slot.0 .0 as usize;
             let target_matches = self
                 .historical_block_hashes
                 .data
@@ -724,7 +724,7 @@ impl State {
                     slot: att.data.source.slot,
                 };
                 // Invariant: source.slot > old_finalized, so delta is strictly positive.
-                let delta = (self.latest_finalized.slot.0.0 - old_finalized.0.0) as usize;
+                let delta = (self.latest_finalized.slot.0 .0 - old_finalized.0 .0) as usize;
                 shift_justified_window(&mut self.justified_slots, delta);
                 finalized_slot = self.latest_finalized.slot;
                 let mut missing_root_to_slot = false;
@@ -745,12 +745,12 @@ impl State {
         }
         if trace_attestations && total_attestations > 0 {
             tracing::info!(
-                state_slot = self.slot.0.0,
+                state_slot = self.slot.0 .0,
                 attestations_total = total_attestations,
-                pre_justified_slot = pre_justified_slot.0.0,
-                post_justified_slot = self.latest_justified.slot.0.0,
-                pre_finalized_slot = pre_finalized_slot.0.0,
-                post_finalized_slot = self.latest_finalized.slot.0.0,
+                pre_justified_slot = pre_justified_slot.0 .0,
+                post_justified_slot = self.latest_justified.slot.0 .0,
+                pre_finalized_slot = pre_finalized_slot.0 .0,
+                post_finalized_slot = self.latest_finalized.slot.0 .0,
                 eligible_votes = stats.eligible_votes,
                 justified_updates = stats.justified_updates,
                 finalized_updates = stats.finalized_updates,
@@ -844,8 +844,12 @@ impl State {
             );
         }
         verifier.verify_signed_block(signed, self)?;
-        match self.state_transition_inner(block, metrics) {
+        // Run the transition on a working copy so rejected blocks cannot
+        // partially mutate the live state.
+        let mut working_state = self.clone();
+        match working_state.state_transition_inner(block, metrics) {
             Ok(()) => {
+                *self = working_state;
                 if trace_attestations {
                     tracing::info!(
                         block_root = ?Bytes32::from(block.hash_tree_root()),
@@ -969,21 +973,21 @@ impl SignatureVerifier for PqSignatureVerifier {
                 &public_keys,
                 &message,
                 proof.proof_data.as_slice(),
-                att.data.slot.0.0 as u32,
+                att.data.slot.0 .0 as u32,
             ) {
                 return Err(err);
             }
         }
 
         let proposer_attestation = &signed.message.proposer_attestation;
-        let proposer_idx = block.proposer_index.0.0 as usize;
+        let proposer_idx = block.proposer_index.0 .0 as usize;
         let proposer = validators
             .get(proposer_idx)
             .ok_or_else(|| "proposer index out of range".to_string())?;
         let proposer_message = proposer_attestation.data.hash_tree_root();
         pq::verify_signature(
             &proposer.pubkey,
-            proposer_attestation.data.slot.0.0 as u32,
+            proposer_attestation.data.slot.0 .0 as u32,
             &proposer_message,
             &signed.signature.proposer_signature,
         )?;
@@ -1357,7 +1361,7 @@ fn is_slot_justified(justified: &JustifiedSlots, finalized: Slot, slot: Slot) ->
     if slot <= finalized {
         return true;
     }
-    let idx = (slot.0.0 - finalized.0.0 - 1) as usize;
+    let idx = (slot.0 .0 - finalized.0 .0 - 1) as usize;
     if idx >= justified.len() {
         return false;
     }
@@ -1383,7 +1387,7 @@ fn set_justified_slot(
     slot: Slot,
 ) -> Result<(), String> {
     // Caller invariant (process_attestations): slot is strictly after finalized.
-    let idx = (slot.0.0 - finalized.0.0 - 1) as usize;
+    let idx = (slot.0 .0 - finalized.0 .0 - 1) as usize;
     if idx >= HISTORICAL_ROOTS_LIMIT {
         return Err("justified slot exceeds limit".to_string());
     }
@@ -1406,7 +1410,7 @@ fn is_next_valid_justifiable_slot(source: Slot, target: Slot, finalized: Slot) -
     if target <= source {
         return false;
     }
-    for raw_slot in (source.0.0 + 1)..target.0.0 {
+    for raw_slot in (source.0 .0 + 1)..target.0 .0 {
         let slot = Slot(Uint64(raw_slot));
         if slot::is_justifiable_after(slot, finalized).unwrap_or(false) {
             return false;
@@ -1479,19 +1483,19 @@ impl SszEncode for State {
         let mut var_pos = 0usize;
 
         unsafe { write_bytes_at(&mut fixed, 0, &self.config.genesis_time.0.to_le_bytes()) };
-        unsafe { write_bytes_at(&mut fixed, 8, &self.slot.0.0.to_le_bytes()) };
+        unsafe { write_bytes_at(&mut fixed, 8, &self.slot.0 .0.to_le_bytes()) };
         unsafe {
             write_bytes_at(
                 &mut fixed,
                 16,
-                &self.latest_block_header.slot.0.0.to_le_bytes(),
+                &self.latest_block_header.slot.0 .0.to_le_bytes(),
             )
         };
         unsafe {
             write_bytes_at(
                 &mut fixed,
                 24,
-                &self.latest_block_header.proposer_index.0.0.to_le_bytes(),
+                &self.latest_block_header.proposer_index.0 .0.to_le_bytes(),
             )
         };
         unsafe {
@@ -1508,7 +1512,7 @@ impl SszEncode for State {
             write_bytes_at(
                 &mut fixed,
                 160,
-                &self.latest_justified.slot.0.0.to_le_bytes(),
+                &self.latest_justified.slot.0 .0.to_le_bytes(),
             )
         };
         unsafe { write_bytes_at(&mut fixed, 168, self.latest_finalized.root.as_ref()) };
@@ -1516,7 +1520,7 @@ impl SszEncode for State {
             write_bytes_at(
                 &mut fixed,
                 200,
-                &self.latest_finalized.slot.0.0.to_le_bytes(),
+                &self.latest_finalized.slot.0 .0.to_le_bytes(),
             )
         };
 
