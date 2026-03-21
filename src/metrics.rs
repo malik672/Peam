@@ -279,6 +279,14 @@ pub struct MetricsRegistry {
     pub peer_connection_outbound: AtomicCounter,
     pub peer_disconnection_inbound: AtomicCounter,
     pub peer_disconnection_outbound: AtomicCounter,
+
+    // -- Sync/cache observability --
+    pub sync_inflight_roots: AtomicU64,
+    pub sync_request_active: AtomicU64,
+    pub sync_request_age_seconds: AtomicU64,
+    pub sync_pending_root_request: AtomicU64,
+    pub sync_pending_range_request: AtomicU64,
+    pub sync_active_peer_selected: AtomicU64,
 }
 
 impl MetricsRegistry {
@@ -332,6 +340,13 @@ impl MetricsRegistry {
             peer_connection_outbound: AtomicCounter::new(),
             peer_disconnection_inbound: AtomicCounter::new(),
             peer_disconnection_outbound: AtomicCounter::new(),
+
+            sync_inflight_roots: AtomicU64::new(0),
+            sync_request_active: AtomicU64::new(0),
+            sync_request_age_seconds: AtomicU64::new(0),
+            sync_pending_root_request: AtomicU64::new(0),
+            sync_pending_range_request: AtomicU64::new(0),
+            sync_active_peer_selected: AtomicU64::new(0),
         }
     }
 }
@@ -1045,6 +1060,36 @@ fn render_metrics(
     write_gauge_metric(&mut out, "lean_syncing", if syncing { 1 } else { 0 });
     write_gauge_metric(&mut out, "lean_sync_target_slot", sync_target_slot);
     write_gauge_metric(&mut out, "lean_sync_pending_depth", sync_pending_depth);
+    write_gauge_metric(
+        &mut out,
+        "lean_sync_inflight_roots",
+        registry.sync_inflight_roots.load(Ordering::Relaxed),
+    );
+    write_gauge_metric(
+        &mut out,
+        "lean_sync_request_active",
+        registry.sync_request_active.load(Ordering::Relaxed),
+    );
+    write_gauge_metric(
+        &mut out,
+        "lean_sync_request_age_seconds",
+        registry.sync_request_age_seconds.load(Ordering::Relaxed),
+    );
+    write_gauge_metric(
+        &mut out,
+        "lean_sync_pending_root_request",
+        registry.sync_pending_root_request.load(Ordering::Relaxed),
+    );
+    write_gauge_metric(
+        &mut out,
+        "lean_sync_pending_range_request",
+        registry.sync_pending_range_request.load(Ordering::Relaxed),
+    );
+    write_gauge_metric(
+        &mut out,
+        "lean_sync_active_peer_selected",
+        registry.sync_active_peer_selected.load(Ordering::Relaxed),
+    );
 
     // -- Storage --
     write_gauge_metric(
@@ -1305,6 +1350,8 @@ mod tests {
         assert!(r.start_time_seconds > 0);
         assert_eq!(r.pq_attestation_signatures_total.get(), 0);
         assert_eq!(r.fc_attestations_valid_total.get(), 0);
+        assert_eq!(r.sync_inflight_roots.load(Ordering::Relaxed), 0);
+        assert_eq!(r.sync_request_active.load(Ordering::Relaxed), 0);
         r.pq_attestation_signatures_total.inc();
         assert_eq!(r.pq_attestation_signatures_total.get(), 1);
     }

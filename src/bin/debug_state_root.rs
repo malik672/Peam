@@ -34,7 +34,10 @@ fn parse_bytes32(hex: &str) -> Result<Bytes32, String> {
     Ok(Bytes32::from(out))
 }
 
-fn load_signed_block(store: &FileStore, root: &Bytes32) -> Result<SignedBlockWithAttestation, String> {
+fn load_signed_block(
+    store: &FileStore,
+    root: &Bytes32,
+) -> Result<SignedBlockWithAttestation, String> {
     store
         .get_signed_block(root)
         .ok_or_else(|| "signed block not found".to_string())
@@ -53,12 +56,12 @@ fn parse_slot(arg: &str) -> Option<u64> {
 
 fn main() -> Result<(), String> {
     let mut args = env::args().skip(1);
-    let store_dir = args
-        .next()
-        .ok_or_else(|| "usage: debug_state_root <store_dir> <block_root_hex|slot:NN>".to_string())?;
-    let selector = args
-        .next()
-        .ok_or_else(|| "usage: debug_state_root <store_dir> <block_root_hex|slot:NN>".to_string())?;
+    let store_dir = args.next().ok_or_else(|| {
+        "usage: debug_state_root <store_dir> <block_root_hex|slot:NN>".to_string()
+    })?;
+    let selector = args.next().ok_or_else(|| {
+        "usage: debug_state_root <store_dir> <block_root_hex|slot:NN>".to_string()
+    })?;
 
     let store = FileStore::open(PathBuf::from(store_dir))?;
     let block_root = if let Some(slot) = parse_slot(&selector) {
@@ -93,10 +96,7 @@ fn main() -> Result<(), String> {
         "block_state_root=0x{}",
         to_hex(&block.state_root.as_array())
     );
-    println!(
-        "parent_root=0x{}",
-        to_hex(&parent_root.as_array())
-    );
+    println!("parent_root=0x{}", to_hex(&parent_root.as_array()));
     println!(
         "parent_state_root=0x{}",
         to_hex(&parent_state_root.as_array())

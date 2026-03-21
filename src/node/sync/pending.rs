@@ -31,5 +31,4 @@ impl PendingBackfill {
         self.pending_since = Some(Instant::now());
         self.fetched_chain_newest_to_oldest.clear();
     }
-
 }

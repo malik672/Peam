@@ -31,6 +31,46 @@ use super::backfill::{
 use super::pending::PendingBackfill;
 
 #[inline]
+fn update_sync_observability(
+    metrics: &MetricsRegistry,
+    pending: &PendingBackfill,
+    in_flight_roots: &RapidHashSet<Bytes32>,
+) {
+    let request_active =
+        pending.pending_root.is_some() || pending.pending_range_start_slot.is_some();
+    let request_age_seconds = pending
+        .pending_since
+        .map(|since| since.elapsed().as_secs())
+        .unwrap_or(0);
+
+    metrics
+        .sync_inflight_roots
+        .store(in_flight_roots.len() as u64, Ordering::Relaxed);
+    metrics
+        .sync_request_active
+        .store(if request_active { 1 } else { 0 }, Ordering::Relaxed);
+    metrics
+        .sync_request_age_seconds
+        .store(request_age_seconds, Ordering::Relaxed);
+    metrics.sync_pending_root_request.store(
+        if pending.pending_root.is_some() { 1 } else { 0 },
+        Ordering::Relaxed,
+    );
+    metrics.sync_pending_range_request.store(
+        if pending.pending_range_start_slot.is_some() {
+            1
+        } else {
+            0
+        },
+        Ordering::Relaxed,
+    );
+    metrics.sync_active_peer_selected.store(
+        if pending.active_peer.is_some() { 1 } else { 0 },
+        Ordering::Relaxed,
+    );
+}
+
+#[inline]
 async fn request_root_from_peer(
     p2p_tx: &tokio::sync::mpsc::Sender<P2pCommand>,
     peer_id_str: &str,
@@ -199,7 +239,7 @@ pub(crate) fn spawn_status_sync_task(
     is_syncing: Arc<AtomicBool>,
     sync_target_slot: Arc<AtomicU64>,
     sync_pending_depth: Arc<AtomicU64>,
-    _metrics: Arc<MetricsRegistry>,
+    metrics: Arc<MetricsRegistry>,
 ) -> JoinHandle<()> {
     const SYNC_SLOT_LAG_THRESHOLD: u64 = 0;
     const MAX_BACKFILL_DEPTH: usize = 512;
@@ -219,10 +259,12 @@ pub(crate) fn spawn_status_sync_task(
         let mut pending = PendingBackfill::default();
         // Single-flight guard: while a root is in this set, never schedule it again.
         let mut in_flight_roots = RapidHashSet::<Bytes32>::default();
+        update_sync_observability(&metrics, &pending, &in_flight_roots);
 
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
+                    update_sync_observability(&metrics, &pending, &in_flight_roots);
                     if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
                         if let Some(since) = pending.pending_since {
                             if since.elapsed() < SYNC_REQUEST_TIMEOUT {
@@ -244,6 +286,7 @@ pub(crate) fn spawn_status_sync_task(
                                 pending.fetched_chain_newest_to_oldest.clear();
                                 pending.active_peer = None;
                                 sync_pending_depth.store(0, Ordering::Relaxed);
+                                update_sync_observability(&metrics, &pending, &in_flight_roots);
                                 // Retry quickly against fresh peer statuses.
                                 last_status_probe = Instant::now()
                                     .checked_sub(STATUS_PROBE_INTERVAL)
@@ -265,6 +308,7 @@ pub(crate) fn spawn_status_sync_task(
                     }
                     // Wait for whichever peer returns an ahead status first.
                     pending.active_peer = None;
+                    update_sync_observability(&metrics, &pending, &in_flight_roots);
                 }
                 recv = events_rx.recv() => {
                     let event = match recv {
@@ -281,6 +325,7 @@ pub(crate) fn spawn_status_sync_task(
                     let NetworkEvent::ReqRespResponse { peer_id, protocol, payload } = event else {
                         continue;
                     };
+                    update_sync_observability(&metrics, &pending, &in_flight_roots);
                     let Some(kind) = LeanSupportedProtocol::parse_protocol_id(&protocol) else {
                         continue;
                     };
@@ -331,6 +376,7 @@ pub(crate) fn spawn_status_sync_task(
                                     in_flight_roots.clear();
                                     sync_target_slot.store(0, Ordering::Relaxed);
                                     sync_pending_depth.store(0, Ordering::Relaxed);
+                                    update_sync_observability(&metrics, &pending, &in_flight_roots);
                                 }
                                 continue;
                             }
@@ -351,6 +397,7 @@ pub(crate) fn spawn_status_sync_task(
                                 continue;
                             }
                             pending.set_target(peer_id.clone(), remote_status.head_root);
+                            update_sync_observability(&metrics, &pending, &in_flight_roots);
                             debug!(
                                 "sync requesting root={:?} from peer={}",
                                 remote_status.head_root,
@@ -371,6 +418,7 @@ pub(crate) fn spawn_status_sync_task(
                                 );
                                 in_flight_roots.remove(&remote_status.head_root);
                                 pending.reset();
+                                update_sync_observability(&metrics, &pending, &in_flight_roots);
                             }
                         }
                         LeanSupportedProtocol::BlocksByRangeV1 => {
@@ -410,6 +458,7 @@ pub(crate) fn spawn_status_sync_task(
                             );
                             pending.reset();
                             sync_pending_depth.store(0, Ordering::Relaxed);
+                            update_sync_observability(&metrics, &pending, &in_flight_roots);
                             let local_head = build_local_status(&state, &store).head_slot.0;
                             let target = sync_target_slot.load(Ordering::Relaxed);
                             if imported && local_head < target {
@@ -469,6 +518,7 @@ pub(crate) fn spawn_status_sync_task(
                             }
                             in_flight_roots.remove(&target_root);
                             pending.active_peer = Some(peer_id.clone());
+                            update_sync_observability(&metrics, &pending, &in_flight_roots);
 
                             let parent_root = signed.message.block.parent_root;
                             let signed_slot = signed.message.block.slot;
@@ -486,6 +536,7 @@ pub(crate) fn spawn_status_sync_task(
                                 is_syncing.store(false, Ordering::Relaxed);
                                 sync_target_slot.store(0, Ordering::Relaxed);
                                 sync_pending_depth.store(0, Ordering::Relaxed);
+                                update_sync_observability(&metrics, &pending, &in_flight_roots);
                                 continue;
                             }
 
@@ -564,6 +615,7 @@ pub(crate) fn spawn_status_sync_task(
                                 pending.reset();
                                 in_flight_roots.clear();
                                 sync_pending_depth.store(0, Ordering::Relaxed);
+                                update_sync_observability(&metrics, &pending, &in_flight_roots);
                                 if target != 0 && local_head < target {
                                     is_syncing.store(true, Ordering::Relaxed);
                                     last_status_probe = Instant::now()
@@ -578,6 +630,7 @@ pub(crate) fn spawn_status_sync_task(
 
                             pending.pending_root = Some(parent_root);
                             pending.pending_since = Some(Instant::now());
+                            update_sync_observability(&metrics, &pending, &in_flight_roots);
                             debug!(
                                 "sync chaining parent request child_root={:?} child_slot={} parent_root={:?} depth={} peer={}",
                                 signed_root,
@@ -617,6 +670,7 @@ pub(crate) fn spawn_status_sync_task(
                                 pending.active_peer = None;
                                 pending.fetched_chain_newest_to_oldest.clear();
                                 sync_pending_depth.store(0, Ordering::Relaxed);
+                                update_sync_observability(&metrics, &pending, &in_flight_roots);
                                 last_status_probe = Instant::now()
                                     .checked_sub(STATUS_PROBE_INTERVAL)
                                     .unwrap_or_else(Instant::now);

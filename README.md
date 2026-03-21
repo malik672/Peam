@@ -1,192 +1,255 @@
-# peam
+# Peam
 
-A minimal, high‑performance Lean Consensus client focused on clean SSZ, fast hashing, and practical networking.
+Peam is a minimal, performance-first Lean consensus client written in Rust.
 
-## Performance philosophy
-Performance is a feature.
+The project is built around a small core, fast SSZ and hashing paths, lean storage, and practical multi-client interoperability. The goal is not to be feature-heavy; the goal is to keep the critical path cheap, observable, and easy to reason about.
 
-Fast software does not just feel better to use; it changes how developers use it. Short feedback loops make tools more interactive, more trustworthy, and more likely to be used as a first pass instead of a last resort.
+## Status
 
-That means performance cannot be treated as a final cleanup pass. The biggest gains usually come from architecture, data flow, data structures, and serialization choices made early. Hot-spot tuning matters, but it cannot recover a design that bakes in avoidable overhead.
+- Alpha software
+- Suitable for experimentation, devnets, and benchmarking
+- Not intended for production mainnet use yet
 
-Peam therefore treats performance as a first-class design constraint:
-- optimize the architecture, not just the profiler output
-- prefer fast foundations over compensating layers
-- pay local complexity where it buys global simplicity
-- keep the critical path direct, observable, and cheap
+## What Peam Optimizes For
 
-A fast core reduces the need for elaborate caching, excessive bookkeeping, and coordination layers. That keeps the system simpler, easier to reason about, and easier to evolve.
+- Small, auditable codebase
+- Low-memory operation
+- Fast serialization and merkleization paths
+- Straightforward networking and sync behavior
+- Clean operational surface for mixed-client devnets
 
-## Project status
-- **Alpha**: APIs, storage layout, and behavior may change between releases.
-- The codebase is suitable for experimentation and benchmarking, not production mainnet use.
+## Prerequisites
 
-## Ops quick start
-
-### Prerequisites
 - Rust toolchain (`cargo`, `rustc`)
 - Git
-- Docker (optional, for images)
+- Docker (optional)
 
-### Build & test
+## Build
+
 ```bash
 cargo build
 cargo test
 ```
 
-### Run a single node
-Peam expects a small text config file (key=value). At minimum you need `genesis_time`.
+To build the binary only:
 
-Create a config file (example `node.conf`):
 ```bash
-cat > node.conf <<'EOF'
+cargo build --release -p peam --bin peam
+```
+
+## Quick Start
+
+Peam runs from a small `key=value` config file.
+
+Example `node.conf`:
+
+```text
 genesis_time=42
-# Optional network settings
-# listen_addr=/ip4/0.0.0.0/udp/9000/quic-v1
-# bootnodes=/ip4/127.0.0.1/udp/9001/quic-v1/p2p/12D3KooW...
-# validator_count=4
-# local_validator_index=0
-# http_api=true
-# metrics=true
-EOF
+http_api=true
+http_address=127.0.0.1
+http_port=5052
+metrics=true
+metrics_address=127.0.0.1
+metrics_port=8080
+listen_addr=/ip4/0.0.0.0/udp/9000/quic-v1
 ```
 
 Run the node:
+
 ```bash
 cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data
 ```
 
-Run the node with checkpoint sync:
+Print the genesis root only:
+
+```bash
+cargo run --release -- --config node.conf
+```
+
+## Runtime Overrides
+
+Peam supports direct CLI overrides for the main devnet and quickstart paths.
+
+Example:
+
+```bash
+cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data \
+  --listen /ip4/0.0.0.0/udp/9001/quic-v1 \
+  --bootnode /ip4/127.0.0.1/udp/9000/quic-v1/p2p/<peer-id> \
+  --metrics-port 8081 \
+  --http-port 5053 \
+  --node-id peam_0 \
+  --validator-keys /path/to/hash-sig-keys \
+  --is-aggregator
+```
+
+Checkpoint sync:
+
 ```bash
 cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data \
   --checkpoint-sync-url http://localhost:5052
 ```
 
-Run with direct runtime overrides:
+leanSpec-style aliases supported by the CLI:
+
+- `--genesis`
+- `--custom_genesis`
+- `--network`
+- `--bootnodes`
+- `--validators`
+- `--validator-registry-path`
+- `--node-key`
+- `--metrics-port`
+- `--api-port`
+- `--http-port`
+- `--aggregator`
+
+For the full CLI surface:
+
 ```bash
-cargo run --release -- --run --config node.conf --data-dir /tmp/peam_data \
-  --listen /ip4/0.0.0.0/udp/9001/quic-v1 \
-  --bootnode /ip4/127.0.0.1/udp/9000/quic-v1/p2p/<peer-id> \
-  --api-port 5052 \
-  --is-aggregator
+cargo run --release -- -- --help
 ```
 
-To print the genesis root only (no node):
-```bash
-cargo run --release -- --config node.conf
-```
+## Config
 
-CLI flags are still small, but now include the main leanSpec-style runtime overrides:
-`--config`, `--data-dir`, `--run`, `--genesis-time`, `--checkpoint-sync-url`,
-`--listen`, `--bootnode`, `--api-port`, and `--is-aggregator`.
-Most other operational settings still live in the config file.
+Most operational settings can be supplied in the config file.
 
-### Run a multi-client devnet
-```bash
-./scripts/run_devnet2_3clients.sh
-```
+Common keys:
 
-### Ops notes
-- Data lives under `--data-dir` (defaults to `data_dir/store` when `storage_dir` is unset).
-- Logs are written by the devnet scripts into `.tmp/<run>/logs/`.
-- Metrics (if enabled) bind to `metrics_address:metrics_port` in the node config.
-- HTTP API endpoints are served when `http_api=true` (defaults to true).
-  - `/lean/v0/health`
-  - `/lean/v0/states/finalized`
-  - `/lean/v0/checkpoints/justified`
-  - `/lean/v0/fork_choice`
-  - `/metrics` (only when `metrics=true`)
-- Clean old devnet runs to reclaim disk:
-```bash
-rm -rf .tmp/devnet*
-```
-
-### Config keys (common)
-```text
-genesis_time=<u64>                 # required
-http_api=true|false                # default true
-metrics=true|false                 # default false
-metrics_address=127.0.0.1
-metrics_port=8080
-listen_addr=/ip4/0.0.0.0/udp/9000/quic-v1
-bootnodes=/ip4/.../p2p/...
-trusted_peers=/ip4/.../p2p/...
-validator_count=4
-local_validator_index=0
-checkpoint_sync_url=http://host:port
-```
-
-### Config keys (full)
 ```text
 genesis_time=<u64>
 http_api=true|false
+http_address=127.0.0.1
+http_port=5052
 metrics=true|false
 metrics_address=127.0.0.1
 metrics_port=8080
-metrics_node_name=peam_0
-metrics_client_name=peam
 listen_addr=/ip4/0.0.0.0/udp/9000/quic-v1
 node_key_path=/path/to/node.key
 bootnodes=/ip4/.../p2p/...
+bootnodes_file=/path/to/nodes.yaml
 trusted_peers=/ip4/.../p2p/...
-allowed_topics=/leanconsensus/devnet0/block/ssz_snappy,...
-topic_scores=/leanconsensus/devnet0/block/ssz_snappy:2,...
-topic_validators=/leanconsensus/devnet0/block/ssz_snappy=block,...
-max_gossip_bytes=2000000
-max_reqresp_bytes=4000000
-discovery_interval_secs=5
-score_decay_interval_secs=30
-score_decay_amount=1
-ban_threshold=-100
-is_aggregator=true|false
-attestation_committee_count=1
 validator_count=4
 local_validator_index=0
-storage_dir=store
-validator_config_path=validator-config.yaml
+attestation_committee_count=1
+is_aggregator=true|false
+validator_config_path=/path/to/validator-config.yaml
 checkpoint_sync_url=http://host:port
+storage_dir=store
 ```
 
-### Publish a devnet tag
-Push a tag (or dispatch the workflow with tags) to publish new images:
+A few notes:
+
+- `bootnodes_file` accepts a `nodes.yaml` / ENR file and is the cleanest path for quickstart-style deployments.
+- If `http_port` is omitted, it falls back to `metrics_port`.
+- If `http_address` is omitted, it falls back to `metrics_address`.
+- Setting `--metrics-port 0` disables metrics.
+- Setting `--api-port 0` disables the HTTP API listener.
+
+## HTTP API And Metrics
+
+Peam exposes:
+
+- `GET /v0/health`
+- `GET /lean/v0/health`
+- `GET /v0/states/finalized`
+- `GET /lean/v0/states/finalized`
+- `GET /v0/checkpoints/justified`
+- `GET /lean/v0/checkpoints/justified`
+- `GET /v0/fork_choice`
+- `GET /lean/v0/fork_choice`
+- `GET /metrics`
+
+By default:
+
+- HTTP API is enabled
+- Metrics are disabled unless `metrics=true`
+
+Example:
+
 ```bash
-git tag devnet3
-git push origin devnet3
+curl http://127.0.0.1:5052/v0/health
+curl http://127.0.0.1:8080/metrics | head
 ```
-Or use workflow dispatch with `tags=devnet3,devnet3-2026-03-19`.
 
 ## Docker
-Build from the Peam repo root.
+
+Build locally:
 
 ```bash
 docker build -t peam:local .
 ```
 
 Published images:
+
 - `ghcr.io/malik672/peam:latest`
 - `ghcr.io/malik672/peam:sha-<commit>`
-- `ghcr.io/malik672/peam:devnet3`
-- `ghcr.io/malik672/peam:devnet3-2026-03-19`
-- `ghcr.io/malik672/peam:<tag>` for pushed release/devnet tags
+- `ghcr.io/malik672/peam:<tag>`
 
-The GitHub Actions workflow at [`.github/workflows/docker_publish.yml`](./.github/workflows/docker_publish.yml)
-publishes multi-arch images to GHCR on `master`, on pushed tags, and on manual dispatch.
-
-For a local multi-arch build:
+Run with Docker:
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t peam:local .
+docker run --rm \
+  -v "$PWD/node.conf:/config/node.conf:ro" \
+  -v /tmp/peam_data:/data \
+  ghcr.io/malik672/peam:latest \
+  --run --config /config/node.conf --data-dir /data
 ```
 
-## Devnet status
-- Currently devnet 3
+The Docker publish workflow is:
+
+- `.github/workflows/docker_publish.yml`
+
+## Devnet Usage
+
+Run the mixed-client devnet script from the Peam repo:
+
+```bash
+./scripts/run_devnet2_3clients.sh
+```
+
+Logs are written under:
+
+```text
+.tmp/<run>/logs/
+```
+
+Clean old runs:
+
+```bash
+rm -rf .tmp/devnet*
+```
+
+## Development Notes
+
+- Peam uses a disk-backed store for long-lived chain data.
+- Fork choice is in memory and optimized for the live working set.
+- Metrics and logging are intended to be useful in mixed-client debugging, not only local happy-path runs.
 
 ## Contributing
-PRs welcome. Please run `cargo test` before opening a PR.
-Release notes are tracked in `CHANGELOG.md`.
+
+PRs are welcome.
+
+Before opening one, please run:
+
+```bash
+cargo test
+```
+
+If you are changing sync, state transition, or fork choice behavior, it is worth running at least one mixed-client devnet before pushing.
 
 ## License
-Dual-licensed under MIT or Apache-2.0. See `LICENSE` and `LICENSE-APACHE`.
+
+Dual-licensed under:
+
+- MIT
+- Apache-2.0
+
+See:
+
+- `LICENSE`
+- `LICENSE-APACHE`
 
 ## Acknowledgements
-- Some networking test structure and PQ verification flow were adapted from the Ream client.
+
+- Some networking test structure and PQ verification flow were adapted from Ream.

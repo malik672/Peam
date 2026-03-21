@@ -147,7 +147,10 @@ fn verify_checkpoint_state_rejects_header_root_mismatch() {
     state.latest_finalized.root = Bytes32::from([2u8; 32]);
 
     let err = verify_checkpoint_state(&state, &expected_genesis).unwrap_err();
-    assert!(err.contains("finalized root does not match header root"), "{err}");
+    assert!(
+        err.contains("finalized root does not match header root"),
+        "{err}"
+    );
 }
 
 #[test]

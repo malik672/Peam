@@ -421,7 +421,9 @@ fn finalized_advance_prunes_old_fork_choice_history() {
 
     let (block_2a, state_2a, root_2a) = build_signed_block(&anchor_state, 2, false);
     let (block_2b, state_2b, root_2b) = build_signed_block(&anchor_state, 2, true);
-    store.on_block(block_2a, state_2a.clone()).expect("block 2a");
+    store
+        .on_block(block_2a, state_2a.clone())
+        .expect("block 2a");
     store.on_block(block_2b, state_2b).expect("block 2b");
 
     let (mut block_3, mut state_3, _root_3) = build_signed_block(&state_2a, 3, false);

@@ -833,7 +833,10 @@ impl ForkChoiceStore {
         if !self.node_indices.contains_key(&self.latest_justified.root) {
             self.latest_justified = self.latest_finalized;
         }
-        if !self.node_indices.contains_key(&self.previous_justified.root) {
+        if !self
+            .node_indices
+            .contains_key(&self.previous_justified.root)
+        {
             self.previous_justified = self.latest_justified;
         }
         if !self.node_indices.contains_key(&self.safe_target) {

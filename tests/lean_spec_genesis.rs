@@ -1,7 +1,7 @@
 #![allow(clippy::uninit_vec)]
 
-use peam::containers::block::{Attestations, BlockBody};
 use peam::checkpoint_sync::build_anchor_block;
+use peam::containers::block::{Attestations, BlockBody};
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
 use peam::slot::Slot;

@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use crate::containers::attestation::{Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT};
 use crate::containers::block::{
-    AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures,
-    BlockWithAttestation, SignedBlockWithAttestation,
+    AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures, BlockWithAttestation,
+    SignedBlockWithAttestation,
 };
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
