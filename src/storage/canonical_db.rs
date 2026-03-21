@@ -209,7 +209,15 @@ impl CanonicalDb {
     /// A missing key yields `None` for that position (normal for a fresh DB).
     pub(super) fn load_meta(
         &self,
-    ) -> Result<(Option<Bytes32>, Option<Bytes32>, Option<Bytes32>, Option<u64>), String> {
+    ) -> Result<
+        (
+            Option<Bytes32>,
+            Option<Bytes32>,
+            Option<Bytes32>,
+            Option<u64>,
+        ),
+        String,
+    > {
         let read_txn = self.db.begin_read().map_err(to_string)?;
         let table = read_txn.open_table(META_TABLE).map_err(to_string)?;
 
@@ -526,9 +534,7 @@ fn upsert_or_remove_meta_u64(
 ) -> Result<(), String> {
     if let Some(value) = value {
         let bytes = value.to_le_bytes();
-        table
-            .insert(key, bytes.as_ref())
-            .map_err(to_string)?;
+        table.insert(key, bytes.as_ref()).map_err(to_string)?;
     } else {
         let _ = table.remove(key).map_err(to_string)?;
     }

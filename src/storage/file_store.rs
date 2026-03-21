@@ -36,8 +36,8 @@
 //! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tracing::warn;
 
@@ -111,15 +111,15 @@ struct StateSnapshot {
 impl StateSnapshot {
     fn capture(state: &State) -> Self {
         Self {
-            slot: state.slot.0 .0,
+            slot: state.slot.0.0,
             state_root: Bytes32::from(state.hash_tree_root()),
-            header_slot: state.latest_block_header.slot.0 .0,
+            header_slot: state.latest_block_header.slot.0.0,
             header_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
             header_parent_root: state.latest_block_header.parent_root,
             header_state_root: state.latest_block_header.state_root,
-            justified_slot: state.latest_justified.slot.0 .0,
+            justified_slot: state.latest_justified.slot.0.0,
             justified_root: state.latest_justified.root,
-            finalized_slot: state.latest_finalized.slot.0 .0,
+            finalized_slot: state.latest_finalized.slot.0.0,
             finalized_root: state.latest_finalized.root,
             historical_len: state.historical_block_hashes.data.len(),
             historical_tail: state.historical_block_hashes.data.last().copied(),
@@ -385,7 +385,7 @@ impl FileStore {
         if self.finalized_slot.is_none() {
             self.finalized_slot = self
                 .finalized
-                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0 .0));
+                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0.0));
         }
         self.recovery.loaded_states = self.state_by_slot.len();
         self.recovery.loaded_blocks = self.block_by_slot.len();
@@ -470,7 +470,7 @@ impl FileStore {
     ) -> Result<(), String> {
         static PERSIST_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let block = signed.message.block.clone();
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         let state_root = block.state_root;
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
@@ -480,7 +480,7 @@ impl FileStore {
             self.head = Some(root);
             self.justified = Some(meta_justified.root);
             self.finalized = Some(meta_finalized.root);
-            self.finalized_slot = Some(meta_finalized.slot.0 .0);
+            self.finalized_slot = Some(meta_finalized.slot.0.0);
             self.set_meta_dirty();
         }
 
@@ -501,7 +501,7 @@ impl FileStore {
             );
         }
 
-        let fin_slot = meta_finalized.slot.0 .0;
+        let fin_slot = meta_finalized.slot.0.0;
         let block_canonical = self.index_block_slot(slot, root, state_root);
         self.index_state_slot(slot, state_root);
 
@@ -911,7 +911,7 @@ impl Store for FileStore {
 
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
-        let slot = state.slot.0 .0;
+        let slot = state.slot.0.0;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_state(root, &state).is_err() {
             return;
@@ -930,7 +930,7 @@ impl Store for FileStore {
 
     #[inline]
     fn put_block(&mut self, root: Bytes32, block: Block) {
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         let state_root = block.state_root;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_block(root, &block).is_err() {
@@ -997,7 +997,7 @@ impl Store for FileStore {
             warn!("set_finalized called with unknown root; ignoring");
             return;
         };
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         if let Some(current) = self.finalized_slot {
             if slot < current {
                 warn!(
@@ -1019,7 +1019,7 @@ impl Store for FileStore {
     /// Sets finalized checkpoint root + slot explicitly, then flushes metadata.
     #[inline]
     fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint) {
-        let slot = checkpoint.slot.0 .0;
+        let slot = checkpoint.slot.0.0;
         if let Some(current) = self.finalized_slot {
             if slot < current {
                 warn!(

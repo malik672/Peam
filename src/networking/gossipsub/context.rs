@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::containers::state::State;
-use crate::storage::{FileStore, Store};
 use crate::slot::{Slot, slot_index_from_unix_millis, unix_now_millis};
 use crate::ssz::HashTreeRoot;
+use crate::storage::{FileStore, Store};
 use crate::types::bytes::Bytes32;
 use crate::types::uint::Uint64;
 
@@ -231,10 +231,10 @@ impl RecentRootCache {
 
     #[inline]
     fn contains(&self, root: &Bytes32) -> bool {
-        self.entries
-            .iter()
-            .flatten()
-            .any(|entry| entry.root == *root && self.entries[(entry.slot as usize) % RECENT_ROOT_CACHE_LEN].is_some())
+        self.entries.iter().flatten().any(|entry| {
+            entry.root == *root
+                && self.entries[(entry.slot as usize) % RECENT_ROOT_CACHE_LEN].is_some()
+        })
     }
 }
 
@@ -244,7 +244,12 @@ impl StateGossipContext {
         let db_hit = self
             .store
             .as_ref()
-            .and_then(|store| store.read().ok().map(|guard| guard.get_block(root).is_some()))
+            .and_then(|store| {
+                store
+                    .read()
+                    .ok()
+                    .map(|guard| guard.get_block(root).is_some())
+            })
             .unwrap_or(false);
         tracing::trace!(
             queried_root = ?root,

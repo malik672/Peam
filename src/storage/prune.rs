@@ -42,9 +42,7 @@ impl FileStore {
         let mut report = PruneReport::default();
         info!(
             finalized_slot,
-            keep_recent_slots,
-            prune_before,
-            "storage prune started"
+            keep_recent_slots, prune_before, "storage prune started"
         );
 
         // Canonical state index prune.

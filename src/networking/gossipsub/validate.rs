@@ -267,10 +267,10 @@ fn validate_subnet_attestation_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::containers::attestation::{Attestation, AggregatedSignatureProof};
+    use crate::containers::attestation::{AggregatedSignatureProof, Attestation};
     use crate::containers::block::{
-        AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures, BlockWithAttestation,
-        SignedBlockWithAttestation,
+        AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures,
+        BlockWithAttestation, SignedBlockWithAttestation,
     };
     use crate::containers::checkpoint::Checkpoint;
     use crate::containers::validator::ValidatorIndex;
@@ -321,7 +321,10 @@ mod tests {
         }
     }
 
-    fn block_with_unknown_attestation_roots(slot: u64, parent_root: Bytes32) -> SignedBlockWithAttestation {
+    fn block_with_unknown_attestation_roots(
+        slot: u64,
+        parent_root: Bytes32,
+    ) -> SignedBlockWithAttestation {
         let attestation = Attestation {
             aggregation_bits: BitList::new(vec![true]).expect("bitlist"),
             data: AttestationData {
@@ -348,16 +351,19 @@ mod tests {
                     parent_root,
                     state_root: Bytes32::zero(),
                     body: BlockBody {
-                        attestations: Attestations::new(vec![attestation.clone()]).expect("attestations"),
+                        attestations: Attestations::new(vec![attestation.clone()])
+                            .expect("attestations"),
                     },
                 },
                 proposer_attestation: attestation,
             },
             signature: BlockSignatures {
-                attestation_signatures: AttestationSignatures::new(vec![AggregatedSignatureProof {
-                    participants: BitList::new(vec![true]).expect("participants"),
-                    proof_data: ByteList::new(vec![0]).expect("proof bytes"),
-                }])
+                attestation_signatures: AttestationSignatures::new(vec![
+                    AggregatedSignatureProof {
+                        participants: BitList::new(vec![true]).expect("participants"),
+                        proof_data: ByteList::new(vec![0]).expect("proof bytes"),
+                    },
+                ])
                 .expect("attestation signatures"),
                 proposer_signature: Bytes3112::zero(),
             },
