@@ -398,3 +398,51 @@ fn head_slot_and_validator_count_getters() {
         store.latest_justified().slot
     );
 }
+
+#[test]
+fn finalized_advance_prunes_old_fork_choice_history() {
+    let validators = Validators::new(vec![
+        Validator {
+            pubkey: Bytes52::from([0x01u8; 52]),
+            index: ValidatorIndex(Uint64(0)),
+            balance: Uint64(0),
+        },
+        Validator {
+            pubkey: Bytes52::from([0x02u8; 52]),
+            index: ValidatorIndex(Uint64(1)),
+            balance: Uint64(0),
+        },
+    ])
+    .expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+
+    let (anchor_block, anchor_state, anchor_root) = build_signed_block(&state, 1, false);
+    let mut store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+
+    let (block_2a, state_2a, root_2a) = build_signed_block(&anchor_state, 2, false);
+    let (block_2b, state_2b, root_2b) = build_signed_block(&anchor_state, 2, true);
+    store.on_block(block_2a, state_2a.clone()).expect("block 2a");
+    store.on_block(block_2b, state_2b).expect("block 2b");
+
+    let (mut block_3, mut state_3, _root_3) = build_signed_block(&state_2a, 3, false);
+    state_3.latest_justified = Checkpoint {
+        root: root_2a,
+        slot: Slot(Uint64(2)),
+    };
+    state_3.latest_finalized = Checkpoint {
+        root: root_2a,
+        slot: Slot(Uint64(2)),
+    };
+    block_3.message.block.state_root = Bytes32::from(state_3.hash_tree_root());
+    state_3.latest_block_header.state_root = block_3.message.block.state_root;
+    let root_3 = Bytes32::from(block_3.message.block.hash_tree_root());
+
+    store.on_block(block_3, state_3).expect("block 3");
+
+    assert_eq!(store.latest_finalized().root, root_2a);
+    assert_eq!(store.head(), root_3);
+    assert!(store.checkpoint_for_root(anchor_root).is_none());
+    assert!(store.checkpoint_for_root(root_2b).is_none());
+    assert!(store.checkpoint_for_root(root_2a).is_some());
+    assert!(store.checkpoint_for_root(root_3).is_some());
+}

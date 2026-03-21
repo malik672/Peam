@@ -36,8 +36,8 @@
 //! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 use tracing::warn;
 
@@ -79,6 +79,139 @@ pub struct FileStore {
     pub(super) index_dirty: bool,
     /// True when fork-choice metadata changed in-memory but is not yet persisted.
     pub(super) meta_dirty: bool,
+}
+
+#[derive(Debug)]
+struct StateSnapshot {
+    slot: u64,
+    state_root: Bytes32,
+    header_slot: u64,
+    header_root: Bytes32,
+    header_parent_root: Bytes32,
+    header_state_root: Bytes32,
+    justified_slot: u64,
+    justified_root: Bytes32,
+    finalized_slot: u64,
+    finalized_root: Bytes32,
+    historical_len: usize,
+    historical_tail: Option<Bytes32>,
+    historical_root: Bytes32,
+    justified_slots_len: usize,
+    justified_slots_root: Bytes32,
+    validators_len: usize,
+    validators_root: Bytes32,
+    balances_len: usize,
+    balances_root: Bytes32,
+    justifications_roots_len: usize,
+    justifications_roots_root: Bytes32,
+    justifications_validators_len: usize,
+    justifications_validators_root: Bytes32,
+}
+
+impl StateSnapshot {
+    fn capture(state: &State) -> Self {
+        Self {
+            slot: state.slot.0 .0,
+            state_root: Bytes32::from(state.hash_tree_root()),
+            header_slot: state.latest_block_header.slot.0 .0,
+            header_root: Bytes32::from(state.latest_block_header.hash_tree_root()),
+            header_parent_root: state.latest_block_header.parent_root,
+            header_state_root: state.latest_block_header.state_root,
+            justified_slot: state.latest_justified.slot.0 .0,
+            justified_root: state.latest_justified.root,
+            finalized_slot: state.latest_finalized.slot.0 .0,
+            finalized_root: state.latest_finalized.root,
+            historical_len: state.historical_block_hashes.data.len(),
+            historical_tail: state.historical_block_hashes.data.last().copied(),
+            historical_root: Bytes32::from(state.historical_block_hashes.hash_tree_root()),
+            justified_slots_len: state.justified_slots.len(),
+            justified_slots_root: Bytes32::from(state.justified_slots.hash_tree_root()),
+            validators_len: state.validators.data.len(),
+            validators_root: Bytes32::from(state.validators.hash_tree_root()),
+            balances_len: state.balances.data.len(),
+            balances_root: Bytes32::from(state.balances.hash_tree_root()),
+            justifications_roots_len: state.justifications_roots.data.len(),
+            justifications_roots_root: Bytes32::from(state.justifications_roots.hash_tree_root()),
+            justifications_validators_len: state.justifications_validators.len(),
+            justifications_validators_root: Bytes32::from(
+                state.justifications_validators.hash_tree_root(),
+            ),
+        }
+    }
+
+    fn differing_fields(&self, other: &Self) -> Vec<&'static str> {
+        let mut diffs = Vec::new();
+        if self.slot != other.slot {
+            diffs.push("slot");
+        }
+        if self.state_root != other.state_root {
+            diffs.push("state_root");
+        }
+        if self.header_slot != other.header_slot {
+            diffs.push("header_slot");
+        }
+        if self.header_root != other.header_root {
+            diffs.push("header_root");
+        }
+        if self.header_parent_root != other.header_parent_root {
+            diffs.push("header_parent_root");
+        }
+        if self.header_state_root != other.header_state_root {
+            diffs.push("header_state_root");
+        }
+        if self.justified_slot != other.justified_slot {
+            diffs.push("justified_slot");
+        }
+        if self.justified_root != other.justified_root {
+            diffs.push("justified_root");
+        }
+        if self.finalized_slot != other.finalized_slot {
+            diffs.push("finalized_slot");
+        }
+        if self.finalized_root != other.finalized_root {
+            diffs.push("finalized_root");
+        }
+        if self.historical_len != other.historical_len {
+            diffs.push("historical_len");
+        }
+        if self.historical_tail != other.historical_tail {
+            diffs.push("historical_tail");
+        }
+        if self.historical_root != other.historical_root {
+            diffs.push("historical_root");
+        }
+        if self.justified_slots_len != other.justified_slots_len {
+            diffs.push("justified_slots_len");
+        }
+        if self.justified_slots_root != other.justified_slots_root {
+            diffs.push("justified_slots_root");
+        }
+        if self.validators_len != other.validators_len {
+            diffs.push("validators_len");
+        }
+        if self.validators_root != other.validators_root {
+            diffs.push("validators_root");
+        }
+        if self.balances_len != other.balances_len {
+            diffs.push("balances_len");
+        }
+        if self.balances_root != other.balances_root {
+            diffs.push("balances_root");
+        }
+        if self.justifications_roots_len != other.justifications_roots_len {
+            diffs.push("justifications_roots_len");
+        }
+        if self.justifications_roots_root != other.justifications_roots_root {
+            diffs.push("justifications_roots_root");
+        }
+        if self.justifications_validators_len != other.justifications_validators_len {
+            diffs.push("justifications_validators_len");
+        }
+        if self.justifications_validators_root != other.justifications_validators_root {
+            diffs.push("justifications_validators_root");
+        }
+        diffs
+    }
 }
 
 impl FileStore {
@@ -252,7 +385,7 @@ impl FileStore {
         if self.finalized_slot.is_none() {
             self.finalized_slot = self
                 .finalized
-                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0.0));
+                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0 .0));
         }
         self.recovery.loaded_states = self.state_by_slot.len();
         self.recovery.loaded_blocks = self.block_by_slot.len();
@@ -337,7 +470,7 @@ impl FileStore {
     ) -> Result<(), String> {
         static PERSIST_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let block = signed.message.block.clone();
-        let slot = block.slot.0.0;
+        let slot = block.slot.0 .0;
         let state_root = block.state_root;
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
@@ -347,7 +480,7 @@ impl FileStore {
             self.head = Some(root);
             self.justified = Some(meta_justified.root);
             self.finalized = Some(meta_finalized.root);
-            self.finalized_slot = Some(meta_finalized.slot.0.0);
+            self.finalized_slot = Some(meta_finalized.slot.0 .0);
             self.set_meta_dirty();
         }
 
@@ -368,7 +501,7 @@ impl FileStore {
             );
         }
 
-        let fin_slot = meta_finalized.slot.0.0;
+        let fin_slot = meta_finalized.slot.0 .0;
         let block_canonical = self.index_block_slot(slot, root, state_root);
         self.index_state_slot(slot, state_root);
 
@@ -427,6 +560,80 @@ impl FileStore {
         Ok(parent_state)
     }
 
+    fn log_state_root_mismatch_context(
+        &self,
+        root: Bytes32,
+        signed: &SignedBlockWithAttestation,
+        live_pre_state: &State,
+        live_post_state: &State,
+    ) {
+        let block = &signed.message.block;
+        let live_pre = StateSnapshot::capture(live_pre_state);
+        let live_post = StateSnapshot::capture(live_post_state);
+        let parent_root = block.parent_root;
+        let Some(parent_block) = self.load_block_by_root(&parent_root) else {
+            warn!(
+                block_root = ?root,
+                block_slot = block.slot.0.0,
+                block_parent = ?parent_root,
+                live_pre = ?live_pre,
+                live_post = ?live_post,
+                "state-root mismatch investigation missing parent block in store"
+            );
+            return;
+        };
+        let Some(parent_state) = self.load_state_by_root(&parent_block.state_root) else {
+            warn!(
+                block_root = ?root,
+                block_slot = block.slot.0.0,
+                block_parent = ?parent_root,
+                parent_state_root = ?parent_block.state_root,
+                live_pre = ?live_pre,
+                live_post = ?live_post,
+                "state-root mismatch investigation missing parent state in store"
+            );
+            return;
+        };
+        let parent_pre = StateSnapshot::capture(&parent_state);
+        let mut parent_replayed = parent_state.clone();
+        match parent_replayed.process_signed_block(signed) {
+            Ok(()) => {
+                let parent_post = StateSnapshot::capture(&parent_replayed);
+                warn!(
+                    block_root = ?root,
+                    block_slot = block.slot.0.0,
+                    block_parent = ?parent_root,
+                    parent_state_root = ?parent_block.state_root,
+                    live_parent_matches_header = block.parent_root == live_pre.header_root,
+                    live_pre_equals_parent_pre = live_pre.state_root == parent_pre.state_root,
+                    live_post_equals_parent_post = live_post.state_root == parent_post.state_root,
+                    live_pre_vs_parent_pre = ?live_pre.differing_fields(&parent_pre),
+                    live_post_vs_parent_post = ?live_post.differing_fields(&parent_post),
+                    live_pre = ?live_pre,
+                    parent_pre = ?parent_pre,
+                    live_post = ?live_post,
+                    parent_post = ?parent_post,
+                    "state-root mismatch investigation snapshot"
+                );
+            }
+            Err(replay_err) => {
+                warn!(
+                    block_root = ?root,
+                    block_slot = block.slot.0.0,
+                    block_parent = ?parent_root,
+                    parent_state_root = ?parent_block.state_root,
+                    live_pre_equals_parent_pre = live_pre.state_root == parent_pre.state_root,
+                    live_pre_vs_parent_pre = ?live_pre.differing_fields(&parent_pre),
+                    live_pre = ?live_pre,
+                    parent_pre = ?parent_pre,
+                    live_post = ?live_post,
+                    replay_err = %replay_err,
+                    "state-root mismatch investigation parent replay failed"
+                );
+            }
+        }
+    }
+
     #[inline]
     fn put_signed_block_inner(
         &mut self,
@@ -437,6 +644,7 @@ impl FileStore {
     ) -> Result<(), String> {
         let import_start = metrics.map(|_| Instant::now());
         let result = (|| {
+            let pre_import_state = state.clone();
             let pre_import_head_slot = state.latest_block_header.slot;
             let pre_import_head_root = Bytes32::from(state.latest_block_header.hash_tree_root());
             let pre_import_justified = state.latest_justified;
@@ -447,6 +655,9 @@ impl FileStore {
                 state.process_signed_block(&signed)
             };
             if let Err(err) = process_result {
+                if err.contains("block state root does not match computed state root") {
+                    self.log_state_root_mismatch_context(root, &signed, &pre_import_state, state);
+                }
                 if !err.contains("block parent root does not match latest header root") {
                     return Err(err);
                 }
@@ -700,7 +911,7 @@ impl Store for FileStore {
 
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
-        let slot = state.slot.0.0;
+        let slot = state.slot.0 .0;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_state(root, &state).is_err() {
             return;
@@ -719,7 +930,7 @@ impl Store for FileStore {
 
     #[inline]
     fn put_block(&mut self, root: Bytes32, block: Block) {
-        let slot = block.slot.0.0;
+        let slot = block.slot.0 .0;
         let state_root = block.state_root;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_block(root, &block).is_err() {
@@ -786,7 +997,7 @@ impl Store for FileStore {
             warn!("set_finalized called with unknown root; ignoring");
             return;
         };
-        let slot = block.slot.0.0;
+        let slot = block.slot.0 .0;
         if let Some(current) = self.finalized_slot {
             if slot < current {
                 warn!(
@@ -808,7 +1019,7 @@ impl Store for FileStore {
     /// Sets finalized checkpoint root + slot explicitly, then flushes metadata.
     #[inline]
     fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint) {
-        let slot = checkpoint.slot.0.0;
+        let slot = checkpoint.slot.0 .0;
         if let Some(current) = self.finalized_slot {
             if slot < current {
                 warn!(

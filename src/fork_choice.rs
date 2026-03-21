@@ -1,4 +1,4 @@
-use rapidhash::RapidHashMap;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -186,8 +186,21 @@ impl ForkChoiceStore {
             self.previous_justified = self.latest_justified;
             self.latest_justified = post_state.latest_justified;
         }
-        if post_state.latest_finalized.slot > self.latest_finalized.slot {
+        let finalized_advanced = post_state.latest_finalized.slot > self.latest_finalized.slot;
+        if finalized_advanced {
             self.latest_finalized = post_state.latest_finalized;
+        }
+        if finalized_advanced {
+            let pruned = self.prune_finalized_history();
+            if pruned > 0 {
+                tracing::debug!(
+                    finalized_root = ?self.latest_finalized.root,
+                    finalized_slot = self.latest_finalized.slot.0.0,
+                    pruned_blocks = pruned,
+                    retained_blocks = self.blocks.len(),
+                    "fork choice pruned finalized history"
+                );
+            }
         }
         let old_head = self.head;
         let head = self.find_head();
@@ -704,6 +717,143 @@ impl ForkChoiceStore {
         }
         true
     }
+
+    fn prune_finalized_history(&mut self) -> usize {
+        let finalized_root = self.latest_finalized.root;
+        if finalized_root == Bytes32::zero() || !self.blocks.contains_key(&finalized_root) {
+            return 0;
+        }
+
+        let old_blocks = std::mem::take(&mut self.blocks);
+        let old_states = std::mem::take(&mut self.states);
+        let old_parents = std::mem::take(&mut self.parents);
+        let old_children = std::mem::take(&mut self.children);
+        let old_latest_votes = std::mem::take(&mut self.latest_votes);
+        let old_latest_new_votes = std::mem::take(&mut self.latest_new_votes);
+
+        let mut kept_roots = RapidHashSet::default();
+        let mut stack = vec![finalized_root];
+        while let Some(root) = stack.pop() {
+            if !kept_roots.insert(root) {
+                continue;
+            }
+            if let Some(children) = old_children.get(&root) {
+                for child in children {
+                    if old_blocks.contains_key(child) {
+                        stack.push(*child);
+                    }
+                }
+            }
+        }
+
+        let mut blocks = RapidHashMap::default();
+        let mut states = RapidHashMap::default();
+        let mut parents = RapidHashMap::default();
+        let mut children: RapidHashMap<Bytes32, Vec<Bytes32>> = RapidHashMap::default();
+        let mut nodes = Vec::new();
+        let mut node_indices = RapidHashMap::default();
+        let mut build_stack = vec![(finalized_root, None::<usize>)];
+
+        while let Some((root, parent_idx)) = build_stack.pop() {
+            if node_indices.contains_key(&root) {
+                continue;
+            }
+            let Some(signed) = old_blocks.get(&root).cloned() else {
+                continue;
+            };
+            let Some(state) = old_states.get(&root).cloned() else {
+                continue;
+            };
+            let slot = signed.message.block.slot.0.0;
+            let proposer_index = signed.message.block.proposer_index.0.0;
+            let idx = nodes.len();
+            node_indices.insert(root, idx);
+            blocks.insert(root, signed);
+            states.insert(root, state);
+            nodes.push(ProtoNode {
+                root,
+                parent: parent_idx,
+                children: Vec::new(),
+                slot,
+                proposer_index,
+                weight: 0,
+                best_child: None,
+            });
+
+            if let Some(parent_idx) = parent_idx {
+                let parent_root = nodes[parent_idx].root;
+                nodes[parent_idx].children.push(idx);
+                parents.insert(root, parent_root);
+                children.entry(parent_root).or_default().push(root);
+            } else {
+                parents.insert(root, Bytes32::zero());
+            }
+
+            if let Some(child_roots) = old_children.get(&root) {
+                for child_root in child_roots.iter().rev() {
+                    if kept_roots.contains(child_root) {
+                        build_stack.push((*child_root, Some(idx)));
+                    }
+                }
+            }
+        }
+
+        self.blocks = blocks;
+        self.states = states;
+        self.parents = parents;
+        self.children = children;
+        self.nodes = nodes;
+        self.node_indices = node_indices;
+
+        for idx in (0..self.nodes.len()).rev() {
+            self.recompute_best_child(idx);
+        }
+
+        self.latest_votes = old_latest_votes
+            .into_iter()
+            .filter_map(|(validator_id, root)| {
+                normalize_pruned_vote_root(root, finalized_root, &kept_roots, &old_parents)
+                    .map(|normalized| (validator_id, normalized))
+            })
+            .collect();
+        self.latest_new_votes = old_latest_new_votes
+            .into_iter()
+            .filter_map(|(validator_id, root)| {
+                normalize_pruned_vote_root(root, finalized_root, &kept_roots, &old_parents)
+                    .map(|normalized| (validator_id, normalized))
+            })
+            .collect();
+
+        let active_vote_roots: Vec<Bytes32> = self.latest_votes.values().copied().collect();
+        for root in active_vote_roots {
+            self.apply_vote_delta(root, 1);
+        }
+
+        let finalized_slot = self.latest_finalized.slot.0.0;
+        if !self.node_indices.contains_key(&self.latest_justified.root) {
+            self.latest_justified = self.latest_finalized;
+        }
+        if !self.node_indices.contains_key(&self.previous_justified.root) {
+            self.previous_justified = self.latest_justified;
+        }
+        if !self.node_indices.contains_key(&self.safe_target) {
+            self.safe_target = finalized_root;
+        }
+
+        self.head = self.find_head();
+        self.head_slot = self
+            .blocks
+            .get(&self.head)
+            .map(|block| block.message.block.slot.0.0)
+            .unwrap_or(finalized_slot);
+        if !self.node_indices.contains_key(&self.head) {
+            self.head = finalized_root;
+            self.head_slot = finalized_slot;
+        }
+        self.refresh_safe_target();
+
+        old_blocks.len().saturating_sub(self.blocks.len())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -763,6 +913,31 @@ fn resolve_vote_root(
 ) -> Option<Bytes32> {
     let head_root = attestation.data.head.root;
     blocks.contains_key(&head_root).then_some(head_root)
+}
+
+#[inline]
+fn normalize_pruned_vote_root(
+    root: Bytes32,
+    finalized_root: Bytes32,
+    kept_roots: &RapidHashSet<Bytes32>,
+    old_parents: &RapidHashMap<Bytes32, Bytes32>,
+) -> Option<Bytes32> {
+    if kept_roots.contains(&root) {
+        return Some(root);
+    }
+    let mut cursor = finalized_root;
+    loop {
+        if cursor == root {
+            return Some(finalized_root);
+        }
+        let Some(parent) = old_parents.get(&cursor) else {
+            return None;
+        };
+        if *parent == Bytes32::zero() {
+            return None;
+        }
+        cursor = *parent;
+    }
 }
 
 #[inline]
