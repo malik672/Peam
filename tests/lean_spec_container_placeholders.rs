@@ -263,80 +263,61 @@ fn lean_spec_state_justified_slots() {
     ])
     .expect("validators");
     let mut state = State::generate_genesis(Uint64(0), validators);
+    let block_1 = build_block_for_slot(&state, 1, 1, vec![]);
+    state.process_slots(block_1.slot).expect("process slots for block 1");
+    state.process_block(&block_1).expect("process block 1");
+    state.latest_block_header.state_root = block_1.state_root;
+    let block_2_preview = build_block_for_slot(&state, 2, 2, vec![]);
 
-    state.process_slots(Slot(Uint64(1))).expect("process slots");
-    let parent_root_1 = Bytes32::from(state.latest_block_header.hash_tree_root());
-    let body = BlockBody {
-        attestations: Attestations::new(vec![]).expect("attestations"),
-    };
-    let header_1 = BlockHeader {
-        slot: Slot(Uint64(1)),
-        proposer_index: ValidatorIndex(Uint64(1)),
-        parent_root: parent_root_1,
-        state_root: Bytes32::zero(),
-        body_root: Bytes32::from(body.hash_tree_root()),
-    };
-    state
-        .process_block_header(header_1)
-        .expect("process header");
     let att_1 = Attestation {
-        aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
-        data: AttestationData {
-            slot: Slot(Uint64(1)),
-            head: Checkpoint {
-                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-                slot: Slot(Uint64(1)),
-            },
-            target: Checkpoint {
-                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-                slot: Slot(Uint64(1)),
-            },
-            source: Checkpoint {
-                root: state.latest_justified.root,
-                slot: state.latest_justified.slot,
-            },
-        },
-    };
-    state
-        .process_attestations(&Attestations::new(vec![att_1]).expect("attestations"))
-        .expect("process attestations");
-    assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
-    assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
-    assert_eq!(state.justified_slots.len(), 1);
-
-    state.process_slots(Slot(Uint64(2))).expect("process slots");
-    let parent_root_2 = Bytes32::from(state.latest_block_header.hash_tree_root());
-    let header_2 = BlockHeader {
-        slot: Slot(Uint64(2)),
-        proposer_index: ValidatorIndex(Uint64(2)),
-        parent_root: parent_root_2,
-        state_root: Bytes32::zero(),
-        body_root: Bytes32::from(body.hash_tree_root()),
-    };
-    state
-        .process_block_header(header_2)
-        .expect("process header");
-    let att_2 = Attestation {
         aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
         data: AttestationData {
             slot: Slot(Uint64(2)),
             head: Checkpoint {
-                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-                slot: Slot(Uint64(2)),
+                root: block_2_preview.parent_root,
+                slot: Slot(Uint64(1)),
             },
             target: Checkpoint {
-                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-                slot: Slot(Uint64(2)),
+                root: block_2_preview.parent_root,
+                slot: Slot(Uint64(1)),
             },
             source: Checkpoint {
-                root: state.latest_justified.root,
-                slot: state.latest_justified.slot,
+                root: block_1.parent_root,
+                slot: Slot(Uint64(0)),
             },
         },
     };
-    state
-        .process_attestations(&Attestations::new(vec![att_2]).expect("attestations"))
-        .expect("process attestations");
+    let block_2 = build_block_for_slot(&state, 2, 2, vec![att_1]);
+    state.process_slots(block_2.slot).expect("process slots for block 2");
+    state.process_block(&block_2).expect("process block 2");
+    state.latest_block_header.state_root = block_2.state_root;
+    assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
+    assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
+    assert_eq!(state.justified_slots.len(), 1);
+    let block_3_preview = build_block_for_slot(&state, 3, 0, vec![]);
+
+    let att_2 = Attestation {
+        aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
+        data: AttestationData {
+            slot: Slot(Uint64(3)),
+            head: Checkpoint {
+                root: block_3_preview.parent_root,
+                slot: Slot(Uint64(2)),
+            },
+            target: Checkpoint {
+                root: block_3_preview.parent_root,
+                slot: Slot(Uint64(2)),
+            },
+            source: Checkpoint {
+                root: block_2.parent_root,
+                slot: Slot(Uint64(1)),
+            },
+        },
+    };
+    let block_3 = build_block_for_slot(&state, 3, 0, vec![att_2]);
+    state.process_slots(block_3.slot).expect("process slots for block 3");
+    state.process_block(&block_3).expect("process block 3");
+    state.latest_block_header.state_root = block_3.state_root;
 
     // Finalization advanced to slot 1, so justified window rebased by 1 slot.
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(1)));
