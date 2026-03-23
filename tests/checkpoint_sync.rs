@@ -25,6 +25,7 @@ fn make_validators(n: usize) -> Validators {
 fn base_state(genesis_time: u64, validator_count: usize) -> State {
     let validators = make_validators(validator_count);
     let mut state = State::generate_genesis(Uint64(genesis_time), validators);
+    state.latest_block_header.state_root = Bytes32::zero();
     let header_root = Bytes32::from(state.latest_block_header.hash_tree_root());
     state.latest_finalized.root = header_root;
     state.latest_justified.root = header_root;
@@ -168,7 +169,8 @@ fn verify_checkpoint_state_rejects_state_root_mismatch() {
 
 #[test]
 fn build_anchor_block_uses_computed_state_root_when_header_is_zero() {
-    let state = base_state(10, 2);
+    let mut state = base_state(10, 2);
+    state.latest_block_header.state_root = Bytes32::zero();
     let anchor = build_anchor_block(&state);
     let expected_root = Bytes32::from(state.hash_tree_root());
     assert_eq!(anchor.state_root, expected_root);

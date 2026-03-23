@@ -31,6 +31,20 @@ fn process_slots_advances_state_and_sets_root() {
 }
 
 #[test]
+fn process_slots_caches_zeroed_latest_header_state_root() {
+    let validators: Validators = SszList::new(vec![]).expect("validators");
+    let mut state = State::generate_genesis(Uint64(0), validators);
+    state.latest_block_header.state_root = Bytes32::zero();
+
+    let expected_root = Bytes32::from(state.hash_tree_root());
+
+    state.process_slots(Slot(Uint64(1))).expect("process slots");
+
+    assert_eq!(state.slot, Slot(Uint64(1)));
+    assert_eq!(state.latest_block_header.state_root, expected_root);
+}
+
+#[test]
 fn process_block_header_updates_latest_header() {
     let v = Validator {
         pubkey: Bytes52::from([0x01u8; 52]),
@@ -763,6 +777,7 @@ fn attestations_accumulate_votes_across_calls_for_justification_and_finalization
     state
         .process_block_header(header_1)
         .expect("process header slot 1");
+    state.latest_block_header.state_root = Bytes32::from(state.hash_tree_root());
     state.latest_justified.root = header_1.parent_root;
     state.latest_finalized.root = header_1.parent_root;
 
@@ -814,6 +829,7 @@ fn attestations_accumulate_votes_across_calls_for_justification_and_finalization
     state
         .process_block_header(header_2)
         .expect("process header slot 2");
+    state.latest_block_header.state_root = Bytes32::from(state.hash_tree_root());
 
     let target_2 = Checkpoint {
         root: Bytes32::from(state.latest_block_header.hash_tree_root()),

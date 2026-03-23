@@ -249,7 +249,12 @@ impl State {
             return Err("target slot must be in the future".to_string());
         }
 
-        self.slot = Slot(Uint64(target_slot.0.0));
+        while self.slot < target_slot {
+            if self.latest_block_header.state_root == Bytes32::zero() {
+                self.latest_block_header.state_root = Bytes32::from(self.hash_tree_root());
+            }
+            self.slot = Slot(Uint64(self.slot.0.0 + 1));
+        }
 
         Ok(())
     }
