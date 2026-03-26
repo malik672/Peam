@@ -362,11 +362,9 @@ pub(crate) fn spawn_status_sync_task(
                                 remote_status.finalized_slot.0
                             );
                             let current_target = sync_target_slot.load(Ordering::Relaxed);
-                            let remote_head_known = {
-                                let store_guard = store.read().expect("store lock");
-                                store_guard.get_block(&remote_status.head_root).is_some()
-                            };
-                            let needs_root_backfill = !remote_head_known
+                            let remote_head_matches_local =
+                                remote_status.head_root == local_status.head_root;
+                            let needs_root_backfill = !remote_head_matches_local
                                 && remote_status.head_slot.0 + SYNC_SLOT_LAG_THRESHOLD
                                     >= local_head_slot;
                             if !needs_root_backfill {
@@ -592,23 +590,32 @@ pub(crate) fn spawn_status_sync_task(
                                     newest,
                                     peer_id
                                 );
-                                let imported = import_backfill_chain(
+                                let imported_blocks = import_backfill_chain(
                                     &state,
                                     &store,
                                     &fork_choice,
                                     &pending.fetched_chain_newest_to_oldest,
                                 );
-                                if imported {
-                                    enqueue_proposer_attestations_from_backfill_chain(
-                                        &pending_attestations,
-                                        &pending.fetched_chain_newest_to_oldest,
-                                    );
-                                    warn!("sync imported {} blocks", pending.fetched_chain_newest_to_oldest.len());
-                                } else {
-                                    warn!(
-                                        "sync import_backfill_chain failed depth={}",
-                                        pending.fetched_chain_newest_to_oldest.len()
-                                    );
+                                match imported_blocks {
+                                    Some(imported) if imported > 0 => {
+                                        enqueue_proposer_attestations_from_backfill_chain(
+                                            &pending_attestations,
+                                            &pending.fetched_chain_newest_to_oldest,
+                                        );
+                                        warn!("sync imported {imported} blocks");
+                                    }
+                                    Some(_) => {
+                                        debug!(
+                                            "sync import completed without new blocks depth={}",
+                                            pending.fetched_chain_newest_to_oldest.len()
+                                        );
+                                    }
+                                    None => {
+                                        warn!(
+                                            "sync import_backfill_chain failed depth={}",
+                                            pending.fetched_chain_newest_to_oldest.len()
+                                        );
+                                    }
                                 }
                                 let local_head = build_local_status(&state, &store).head_slot.0;
                                 let target = sync_target_slot.load(Ordering::Relaxed);

@@ -16,31 +16,14 @@ use crate::types::uint::Uint64;
 #[inline]
 pub(super) fn build_local_status(
     state: &Arc<RwLock<State>>,
-    store: &Arc<RwLock<FileStore>>,
+    _store: &Arc<RwLock<FileStore>>,
 ) -> Status {
     let state_guard = state.read().expect("state lock");
-    let store_guard = store.read().expect("store lock");
-    let (head_root, head_slot) = store_guard
-        .head()
-        .and_then(|root| {
-            store_guard
-                .get_block(&root)
-                .map(|block| (root, Uint64(block.slot.0.0)))
-        })
-        .unwrap_or_else(|| {
-            (
-                Bytes32::from(state_guard.latest_block_header.hash_tree_root()),
-                Uint64(state_guard.slot.0.0),
-            )
-        });
-    let finalized_root = store_guard
-        .finalized()
-        .unwrap_or(state_guard.latest_finalized.root);
     Status {
-        finalized_root,
+        finalized_root: state_guard.latest_finalized.root,
         finalized_slot: state_guard.latest_finalized.slot.0,
-        head_root,
-        head_slot,
+        head_root: Bytes32::from(state_guard.latest_block_header.hash_tree_root()),
+        head_slot: Uint64(state_guard.latest_block_header.slot.0.0),
     }
 }
 
@@ -50,9 +33,9 @@ pub(super) fn import_backfill_chain(
     store: &Arc<RwLock<FileStore>>,
     fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
     fetched_newest_to_oldest: &[SignedBlockWithAttestation],
-) -> bool {
+) -> Option<usize> {
     if fetched_newest_to_oldest.is_empty() {
-        return true;
+        return Some(0);
     }
 
     let oldest = fetched_newest_to_oldest
@@ -151,7 +134,7 @@ pub(super) fn import_backfill_chain(
                 "sync import failed root={root:?} err=target slot must be in the future replay_slot={} block_slot={} expected_parent={expected_parent:?} block_parent={:?}",
                 replay_state.slot.0.0, block.slot.0.0, block.parent_root
             );
-            return false;
+            return None;
         }
         if let Err(err) =
             store_guard.put_backfill_signed_block(root, signed.clone(), &mut replay_state)
@@ -160,7 +143,7 @@ pub(super) fn import_backfill_chain(
                 "sync import failed root={root:?} err={err} replay_slot={} block_slot={} expected_parent={expected_parent:?} block_parent={:?}",
                 replay_state.slot.0.0, block.slot.0.0, block.parent_root
             );
-            return false;
+            return None;
         }
         imported += 1;
         if fc_guard.is_none() {
@@ -176,7 +159,7 @@ pub(super) fn import_backfill_chain(
 
     if imported == 0 {
         debug!("sync import finished imported_blocks=0 (state unchanged)");
-        return true;
+        return Some(0);
     }
 
     // Merge replay result into live state without allowing checkpoint/slot rollback.
@@ -221,7 +204,7 @@ pub(super) fn import_backfill_chain(
         );
     }
     info!("sync import finished imported_blocks={imported}");
-    true
+    Some(imported)
 }
 
 #[inline]

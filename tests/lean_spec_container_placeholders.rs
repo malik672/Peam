@@ -264,7 +264,9 @@ fn lean_spec_state_justified_slots() {
     .expect("validators");
     let mut state = State::generate_genesis(Uint64(0), validators);
     let block_1 = build_block_for_slot(&state, 1, 1, vec![]);
-    state.process_slots(block_1.slot).expect("process slots for block 1");
+    state
+        .process_slots(block_1.slot)
+        .expect("process slots for block 1");
     state.process_block(&block_1).expect("process block 1");
     state.latest_block_header.state_root = block_1.state_root;
     let block_2_preview = build_block_for_slot(&state, 2, 2, vec![]);
@@ -288,7 +290,9 @@ fn lean_spec_state_justified_slots() {
         },
     };
     let block_2 = build_block_for_slot(&state, 2, 2, vec![att_1]);
-    state.process_slots(block_2.slot).expect("process slots for block 2");
+    state
+        .process_slots(block_2.slot)
+        .expect("process slots for block 2");
     state.process_block(&block_2).expect("process block 2");
     state.latest_block_header.state_root = block_2.state_root;
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
@@ -315,7 +319,9 @@ fn lean_spec_state_justified_slots() {
         },
     };
     let block_3 = build_block_for_slot(&state, 3, 0, vec![att_2]);
-    state.process_slots(block_3.slot).expect("process slots for block 3");
+    state
+        .process_slots(block_3.slot)
+        .expect("process slots for block 3");
     state.process_block(&block_3).expect("process block 3");
     state.latest_block_header.state_root = block_3.state_root;
 
