@@ -13,10 +13,10 @@
 //! | 16 – 127   | 112 B| `latest_block_header` |
 //! | 128 – 167  | 40 B | `latest_justified` |
 //! | 168 – 207  | 40 B | `latest_finalized` |
-//! | 208 – 231  | 24 B | variable-field offsets (6 × 4 B, little-endian) |
+//! | 208 – 227  | 20 B | variable-field offsets (5 × 4 B, little-endian) |
 //!
 //! Variable fields follow in order: `historical_block_hashes`, `justified_slots`,
-//! `validators`, `balances`, `justifications_roots`, `justifications_validators`.
+//! `validators`, `justifications_roots`, `justifications_validators`.
 
 use rapidhash::RapidHashMap;
 
@@ -49,7 +49,7 @@ use crate::unsafe_vec::write_bytes_at;
 /// this capacity.
 pub const HISTORICAL_ROOTS_LIMIT: usize = 262_144;
 
-/// Maximum number of validators in the active registry (`validators` and `balances`).
+/// Maximum number of validators in the active registry.
 pub const VALIDATOR_REGISTRY_LIMIT: usize = 4_096;
 
 /// Maximum number of per-attestation validator bits in [`JustificationValidators`].
@@ -66,9 +66,6 @@ pub type JustificationRoots = SszList<Bytes32, HISTORICAL_ROOTS_LIMIT>;
 
 /// SSZ list of active [`Validator`] records, indexed by `ValidatorIndex`.
 pub type Validators = SszList<Validator, VALIDATOR_REGISTRY_LIMIT>;
-
-/// SSZ list of validator balances (Gwei), parallel index to [`Validators`].
-pub type Balances = SszList<Uint64, VALIDATOR_REGISTRY_LIMIT>;
 
 /// Compact bitfield tracking which slots have been justified since the last finalization.
 ///
@@ -139,9 +136,6 @@ pub struct State {
     /// Active validator registry, indexed by `ValidatorIndex`.
     pub validators: Validators,
 
-    /// Validator balances in Gwei, parallel index to [`State::validators`].
-    pub balances: Balances,
-
     /// Checkpoint roots recorded for each justification event.
     pub justifications_roots: JustificationRoots,
 
@@ -180,7 +174,6 @@ impl State {
             historical_block_hashes: SszList::new(vec![]).expect("historical block hashes"),
             justified_slots: BitList::default(),
             validators,
-            balances: SszList::default(),
             justifications_roots: SszList::default(),
             justifications_validators: BitList::default(),
         };
@@ -192,18 +185,9 @@ impl State {
     }
 
     /// Generic genesis constructor for tests, fixtures, and custom validator sets.
-    ///
-    /// Initializes balances to zero for each entry in `validators`.
     #[inline]
     pub fn generate_genesis(genesis_time: Uint64, validators: Validators) -> State {
         let empty_body_root = Bytes32::from(EMPTY_BLOCK_BODY_ROOT_BYTES);
-        let num_validators = validators.data.len();
-        let mut balances_vec: Vec<Uint64> = Vec::with_capacity(num_validators);
-        unsafe { balances_vec.set_len(num_validators) };
-        for i in 0..num_validators {
-            unsafe { write_at(&mut balances_vec, i, Uint64(0)) };
-        }
-        let balances = SszList::new(balances_vec).expect("balances list");
         let latest_block_header = BlockHeader {
             slot: Slot(Uint64(0)),
             proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
@@ -227,7 +211,6 @@ impl State {
             historical_block_hashes: SszList::new(vec![]).expect("historical block hashes"),
             justified_slots: BitList::default(),
             validators,
-            balances,
             justifications_roots: SszList::default(),
             justifications_validators: BitList::default(),
         };
@@ -1467,22 +1450,17 @@ impl SszEncode for State {
     #[inline]
     fn encode_ssz(&self) -> Vec<u8> {
         let fixed_len = 8 + 8 + 112 + 40 + 40;
-        let offsets_len = 4 * 6;
+        let offsets_len = 4 * 5;
         let mut fixed = Vec::with_capacity(fixed_len + offsets_len);
         unsafe { fixed.set_len(fixed_len + offsets_len) };
 
         let hist = self.historical_block_hashes.encode_ssz();
         let justified = self.justified_slots.encode_ssz();
         let validators = self.validators.encode_ssz();
-        let balances = self.balances.encode_ssz();
         let roots = self.justifications_roots.encode_ssz();
         let just_validators = self.justifications_validators.encode_ssz();
-        let variable_len = hist.len()
-            + justified.len()
-            + validators.len()
-            + balances.len()
-            + roots.len()
-            + just_validators.len();
+        let variable_len =
+            hist.len() + justified.len() + validators.len() + roots.len() + just_validators.len();
         let mut variable = Vec::with_capacity(variable_len);
         unsafe { variable.set_len(variable_len) };
         let mut var_pos = 0usize;
@@ -1529,7 +1507,7 @@ impl SszEncode for State {
             )
         };
 
-        let mut offsets = [0u32; 6];
+        let mut offsets = [0u32; 5];
         let mut off_idx = 0usize;
         let mut offset = fixed_len + offsets_len;
 
@@ -1553,13 +1531,6 @@ impl SszEncode for State {
         offset += validators.len();
         unsafe { write_bytes_at(&mut variable, var_pos, &validators) };
         var_pos += validators.len();
-
-        // Note: offsets are computed from trusted lengths; no extra checks here by design.
-        offsets[off_idx] = offset as u32;
-        off_idx += 1;
-        offset += balances.len();
-        unsafe { write_bytes_at(&mut variable, var_pos, &balances) };
-        var_pos += balances.len();
 
         // Note: offsets are computed from trusted lengths; no extra checks here by design.
         offsets[off_idx] = offset as u32;
@@ -1590,16 +1561,16 @@ impl SszEncode for State {
 impl SszDecode for State {
     #[inline]
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
-        let _fixed_len = 8 + 8 + 112 + 40 + 40 + (4 * 6);
+        let _fixed_len = 8 + 8 + 112 + 40 + 40 + (4 * 5);
         let config = Config::decode_ssz(&bytes[0..8])?;
         let slot = Slot::decode_ssz(&bytes[8..16])?;
         let latest_block_header = BlockHeader::decode_ssz(&bytes[16..128])?;
         let latest_justified = Checkpoint::decode_ssz(&bytes[128..168])?;
         let latest_finalized = Checkpoint::decode_ssz(&bytes[168..208])?;
 
-        let mut offsets = [0u32; 6];
+        let mut offsets = [0u32; 5];
         let mut off_idx = 208;
-        for i in 0..6 {
+        for i in 0..5 {
             let mut buf = [0u8; 4];
             buf.copy_from_slice(&bytes[off_idx..off_idx + 4]);
             offsets[i] = u32::from_le_bytes(buf);
@@ -1607,18 +1578,17 @@ impl SszDecode for State {
         }
 
         let scope = bytes.len();
-        let mut bounds = [0usize; 7];
-        for i in 0..6 {
+        let mut bounds = [0usize; 6];
+        for i in 0..5 {
             bounds[i] = offsets[i] as usize;
         }
-        bounds[6] = scope;
+        bounds[5] = scope;
 
         let hist = SszList::decode_ssz(&bytes[bounds[0]..bounds[1]])?;
         let justified = BitList::decode_ssz(&bytes[bounds[1]..bounds[2]])?;
         let validators = SszList::decode_ssz(&bytes[bounds[2]..bounds[3]])?;
-        let balances = SszList::decode_ssz(&bytes[bounds[3]..bounds[4]])?;
-        let roots = SszList::decode_ssz(&bytes[bounds[4]..bounds[5]])?;
-        let just_validators = BitList::decode_ssz(&bytes[bounds[5]..bounds[6]])?;
+        let roots = SszList::decode_ssz(&bytes[bounds[3]..bounds[4]])?;
+        let just_validators = BitList::decode_ssz(&bytes[bounds[4]..bounds[5]])?;
 
         Ok(State {
             config,
@@ -1629,7 +1599,6 @@ impl SszDecode for State {
             historical_block_hashes: hist,
             justified_slots: justified,
             validators,
-            balances,
             justifications_roots: roots,
             justifications_validators: just_validators,
         })
@@ -1650,7 +1619,7 @@ impl State {
     /// `decode_ssz_checked` call fails.
     #[inline]
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
-        let fixed_len = 8 + 8 + 112 + 40 + 40 + (4 * 6);
+        let fixed_len = 8 + 8 + 112 + 40 + 40 + (4 * 5);
         if bytes.len() < fixed_len {
             return Err("State input shorter than fixed section".to_string());
         }
@@ -1660,9 +1629,9 @@ impl State {
         let latest_justified = Checkpoint::decode_ssz_checked(&bytes[128..168])?;
         let latest_finalized = Checkpoint::decode_ssz_checked(&bytes[168..208])?;
 
-        let mut offsets = [0u32; 6];
+        let mut offsets = [0u32; 5];
         let mut off_idx = 208;
-        for i in 0..6 {
+        for i in 0..5 {
             let mut buf = [0u8; 4];
             buf.copy_from_slice(&bytes[off_idx..off_idx + 4]);
             offsets[i] = u32::from_le_bytes(buf);
@@ -1670,18 +1639,18 @@ impl State {
         }
 
         let scope = bytes.len();
-        let mut bounds = [0usize; 7];
-        for i in 0..6 {
+        let mut bounds = [0usize; 6];
+        for i in 0..5 {
             bounds[i] = offsets[i] as usize;
         }
-        bounds[6] = scope;
+        bounds[5] = scope;
 
         let fixed_end = fixed_len;
         if bounds[0] != fixed_end {
             return Err("State first offset must equal fixed section length".to_string());
         }
         let mut prev = fixed_end;
-        for b in bounds.iter().take(6) {
+        for b in bounds.iter().take(5) {
             if *b < fixed_end || *b < prev || *b > scope {
                 return Err("State offsets are invalid".to_string());
             }
@@ -1691,9 +1660,8 @@ impl State {
         let hist = SszList::decode_ssz_checked(&bytes[bounds[0]..bounds[1]])?;
         let justified = BitList::decode_ssz_checked(&bytes[bounds[1]..bounds[2]])?;
         let validators = SszList::decode_ssz_checked(&bytes[bounds[2]..bounds[3]])?;
-        let balances = SszList::decode_ssz_checked(&bytes[bounds[3]..bounds[4]])?;
-        let roots = SszList::decode_ssz_checked(&bytes[bounds[4]..bounds[5]])?;
-        let just_validators = BitList::decode_ssz_checked(&bytes[bounds[5]..bounds[6]])?;
+        let roots = SszList::decode_ssz_checked(&bytes[bounds[3]..bounds[4]])?;
+        let just_validators = BitList::decode_ssz_checked(&bytes[bounds[4]..bounds[5]])?;
 
         Ok(State {
             config,
@@ -1704,7 +1672,6 @@ impl State {
             historical_block_hashes: hist,
             justified_slots: justified,
             validators,
-            balances,
             justifications_roots: roots,
             justifications_validators: just_validators,
         })
@@ -1713,8 +1680,7 @@ impl State {
 
 /// Computes the consensus hash-tree root of [`State`].
 ///
-/// For lean-client interop, the consensus state root excludes local-only
-/// `balances` metadata and hashes the 10 consensus fields.
+/// Hashes the 10 lean consensus fields of [`State`].
 impl HashTreeRoot for State {
     #[inline]
     fn hash_tree_root(&self) -> [u8; 32] {

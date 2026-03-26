@@ -21,6 +21,4 @@ fn state_encode_decode_roundtrip() {
 
     assert_eq!(decoded.slot, Slot(Uint64(0)));
     assert_eq!(decoded.validators.data.len(), 1);
-    assert_eq!(decoded.balances.data.len(), 1);
-    assert_eq!(decoded.balances.data[0], Uint64(0));
 }

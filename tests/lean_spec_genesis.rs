@@ -42,7 +42,6 @@ fn genesis_default_configuration() {
     assert_eq!(state.slot, Slot(Uint64(0)));
     assert_eq!(state.config.genesis_time, Uint64(0));
     assert_eq!(state.validators.data.len(), 4);
-    assert_eq!(state.balances.data.len(), 4);
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
     assert_eq!(state.latest_justified.root, Bytes32::zero());
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
@@ -89,5 +88,4 @@ fn genesis_custom_validator_set() {
     let state = State::generate_genesis(Uint64(0), validators);
 
     assert_eq!(state.validators.data.len(), 8);
-    assert_eq!(state.balances.data.len(), 8);
 }

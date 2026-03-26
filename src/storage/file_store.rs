@@ -100,8 +100,6 @@ struct StateSnapshot {
     justified_slots_root: Bytes32,
     validators_len: usize,
     validators_root: Bytes32,
-    balances_len: usize,
-    balances_root: Bytes32,
     justifications_roots_len: usize,
     justifications_roots_root: Bytes32,
     justifications_validators_len: usize,
@@ -128,8 +126,6 @@ impl StateSnapshot {
             justified_slots_root: Bytes32::from(state.justified_slots.hash_tree_root()),
             validators_len: state.validators.data.len(),
             validators_root: Bytes32::from(state.validators.hash_tree_root()),
-            balances_len: state.balances.data.len(),
-            balances_root: Bytes32::from(state.balances.hash_tree_root()),
             justifications_roots_len: state.justifications_roots.data.len(),
             justifications_roots_root: Bytes32::from(state.justifications_roots.hash_tree_root()),
             justifications_validators_len: state.justifications_validators.len(),
@@ -191,12 +187,6 @@ impl StateSnapshot {
         }
         if self.validators_root != other.validators_root {
             diffs.push("validators_root");
-        }
-        if self.balances_len != other.balances_len {
-            diffs.push("balances_len");
-        }
-        if self.balances_root != other.balances_root {
-            diffs.push("balances_root");
         }
         if self.justifications_roots_len != other.justifications_roots_len {
             diffs.push("justifications_roots_len");

@@ -67,9 +67,8 @@ fn validator_encode_decode_roundtrip() {
     let mut expected = Vec::new();
     expected.extend_from_slice(pubkey.as_ref());
     expected.extend_from_slice(&5u64.to_le_bytes());
-    expected.extend_from_slice(&0u64.to_le_bytes());
     assert_eq!(encoded, expected);
-    assert_eq!(encoded.len(), 68);
+    assert_eq!(encoded.len(), 60);
 
     let decoded = Validator::decode_ssz_checked(&encoded).expect("decode");
     assert_eq!(decoded, validator);
@@ -92,11 +91,7 @@ fn validator_hash_tree_root_matches_manual_chunks() {
     let pubkey_root = hash_nodes(&chunk0, &chunk1);
 
     let index_chunk = chunk_from_bytes(&12u64.to_le_bytes());
-    let balance_chunk = chunk_from_bytes(&0u64.to_le_bytes());
-    let expected = {
-        let roots = [pubkey_root, index_chunk, balance_chunk];
-        peam::ssz::hash::merkleize_unsafe(&roots)
-    };
+    let expected = hash_nodes(&pubkey_root, &index_chunk);
 
     assert_eq!(validator.hash_tree_root(), expected.as_array());
 }

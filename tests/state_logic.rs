@@ -24,7 +24,6 @@ fn process_slots_advances_state_and_sets_root() {
     let mut state = State::generate_genesis(Uint64(0), validators);
     let original_header_root = state.latest_block_header.state_root;
 
-    assert_eq!(state.balances.data.len(), 0);
     state.process_slots(Slot(Uint64(1))).expect("process slots");
     assert_eq!(state.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_block_header.state_root, original_header_root);

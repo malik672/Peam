@@ -58,7 +58,6 @@ fn state_can_be_constructed_with_empty_lists() {
         historical_block_hashes: SszList::new(vec![]).expect("historical list"),
         justified_slots: BitList::new(vec![]).expect("justified slots"),
         validators: SszList::new(vec![]).expect("validators"),
-        balances: SszList::new(vec![]).expect("balances"),
         justifications_roots: SszList::new(vec![]).expect("justifications roots"),
         justifications_validators: BitList::new(vec![]).expect("justifications validators"),
     };
