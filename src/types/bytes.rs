@@ -1,13 +1,11 @@
 use crate::ssz::hash::{chunkify_fixed, hash_nodes, mix_in_length};
 use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::unsafe_vec::write_bytes_at;
+pub use peam_ssz::types::bytes::Bytes32;
 
 /// 32-byte fixed-size value. Used for block roots, state roots, and all
 /// Merkle tree outputs. SSZ `hash_tree_root` returns the inner bytes directly
 /// (identity — a single chunk is already its own root).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct Bytes32([u8; 32]);
-
 /// 52-byte fixed-size value. Holds a post-quantum (XMSS) public key.
 /// SSZ hash_tree_root splits into two 32-byte chunks (left: bytes 0..32,
 /// right: bytes 32..52 zero-padded) and hashes the pair.
@@ -26,24 +24,6 @@ pub struct ByteList<const LIMIT: usize> {
 /// SSZ hash_tree_root chunkifies into 98 chunks and merkleizes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Bytes3112([u8; 3112]);
-
-impl Bytes32 {
-    pub fn zero() -> Self {
-        Self([0u8; 32])
-    }
-
-    #[inline]
-    // extract the first 32 bytes of the input and return it as a Bytes32
-    pub fn from_slice(bytes: &[u8]) -> Self {
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&bytes[0..32]);
-        Self(out)
-    }
-
-    pub fn as_array(&self) -> [u8; 32] {
-        self.0
-    }
-}
 
 impl Bytes52 {
     pub fn from_slice(bytes: &[u8]) -> Self {
@@ -92,20 +72,8 @@ impl Bytes3112 {
     }
 }
 
-impl AsRef<[u8]> for Bytes32 {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
 impl AsRef<[u8]> for Bytes52 {
     fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl AsRef<[u8; 32]> for Bytes32 {
-    fn as_ref(&self) -> &[u8; 32] {
         &self.0
     }
 }
@@ -205,42 +173,9 @@ impl SszFixedLen for Bytes3112 {
     }
 }
 
-impl From<[u8; 32]> for Bytes32 {
-    fn from(value: [u8; 32]) -> Self {
-        Self(value)
-    }
-}
-
 impl From<[u8; 52]> for Bytes52 {
     fn from(value: [u8; 52]) -> Self {
         Self(value)
-    }
-}
-
-impl SszEncode for Bytes32 {
-    fn encode_ssz(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32);
-        unsafe { out.set_len(32) };
-        unsafe { write_bytes_at(&mut out, 0, &self.0) };
-        out
-    }
-}
-
-impl SszDecode for Bytes32 {
-    fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
-        Ok(Bytes32::from_slice(bytes))
-    }
-}
-
-impl HashTreeRoot for Bytes32 {
-    fn hash_tree_root(&self) -> [u8; 32] {
-        self.0
-    }
-}
-
-impl SszFixedLen for Bytes32 {
-    fn fixed_len() -> usize {
-        32
     }
 }
 
