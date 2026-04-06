@@ -135,8 +135,8 @@ fn lean_spec_attestation_aggregation() {
         .iter()
         .find(|att| att.data == data_b)
         .expect("group b");
-    assert_eq!(a.aggregation_bits.len(), 4);
-    assert_eq!(b.aggregation_bits.len(), 6);
+    assert_eq!(a.aggregation_bits.len, 4);
+    assert_eq!(b.aggregation_bits.len, 6);
     assert!(a.aggregation_bits.data[0] & (1u8 << 1) != 0);
     assert!(a.aggregation_bits.data[0] & (1u8 << 3) != 0);
     assert!(b.aggregation_bits.data[0] & (1u8 << 5) != 0);
@@ -297,7 +297,7 @@ fn lean_spec_state_justified_slots() {
     state.latest_block_header.state_root = block_2.state_root;
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
-    assert_eq!(state.justified_slots.len(), 1);
+    assert_eq!(state.justified_slots.len, 1);
     let block_3_preview = build_block_for_slot(&state, 3, 0, vec![]);
 
     let att_2 = Attestation {
@@ -328,7 +328,7 @@ fn lean_spec_state_justified_slots() {
     // Finalization advanced to slot 1, so justified window rebased by 1 slot.
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_justified.slot, Slot(Uint64(2)));
-    assert_eq!(state.justified_slots.len(), 1);
+    assert_eq!(state.justified_slots.len, 1);
 }
 
 #[test]
@@ -391,5 +391,5 @@ fn lean_spec_state_process_attestations() {
         .expect("process attestations");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
-    assert!(state.justified_slots.len() >= 1);
+    assert!(state.justified_slots.len >= 1);
 }

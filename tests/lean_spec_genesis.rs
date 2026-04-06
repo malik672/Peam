@@ -58,9 +58,9 @@ fn genesis_default_configuration() {
     assert_eq!(state.latest_block_header.state_root, expected_state_root);
     assert_eq!(state.latest_block_header.body_root, empty_body_root());
     assert_eq!(state.historical_block_hashes.data.len(), 0);
-    assert_eq!(state.justified_slots.len(), 0);
+    assert_eq!(state.justified_slots.len, 0);
     assert_eq!(state.justifications_roots.data.len(), 0);
-    assert_eq!(state.justifications_validators.len(), 0);
+    assert_eq!(state.justifications_validators.len, 0);
 }
 
 #[test]

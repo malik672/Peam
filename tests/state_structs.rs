@@ -85,6 +85,6 @@ fn justification_aliases_are_constructible() {
     let validators: JustificationValidators = BitList::new(vec![]).expect("validators");
 
     assert_eq!(roots.data.len(), 0);
-    assert_eq!(slots.len(), 0);
-    assert_eq!(validators.len(), 0);
+    assert_eq!(slots.len, 0);
+    assert_eq!(validators.len, 0);
 }

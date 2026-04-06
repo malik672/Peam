@@ -700,7 +700,7 @@ fn attestations_update_latest_justified() {
         .expect("process attestations");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
-    assert!(state.justified_slots.len() >= 1);
+    assert!(state.justified_slots.len >= 1);
     let idx = 0usize;
     let byte = idx / 8;
     let bit = idx % 8;
@@ -739,7 +739,7 @@ fn attestations_with_zero_validators_do_not_justify() {
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
-    assert_eq!(state.justified_slots.len(), 0);
+    assert_eq!(state.justified_slots.len, 0);
 }
 
 #[test]

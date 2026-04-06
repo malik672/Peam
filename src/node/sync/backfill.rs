@@ -341,7 +341,7 @@ fn log_backfill_attestation_payload_sample(
         first_body_source_root = ?first_attestation.map(|att| att.data.source.root),
         first_body_target_root = ?first_attestation.map(|att| att.data.target.root),
         first_body_participants_len_bits =
-            first_attestation.map(|att| att.aggregation_bits.len()),
+            first_attestation.map(|att| att.aggregation_bits.len),
         "sync backfill attestation payload sample"
     );
 }

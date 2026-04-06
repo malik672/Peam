@@ -320,7 +320,7 @@ impl State {
         let fin_slot = self.latest_finalized.slot.0.0;
         if last_materialized > fin_slot {
             let required_len = (last_materialized - fin_slot) as usize;
-            if required_len > self.justified_slots.len() {
+            if required_len > self.justified_slots.len {
                 self.justified_slots.len = required_len;
                 let byte_len = (required_len + 7) / 8;
                 if self.justified_slots.data.len() < byte_len {
@@ -937,7 +937,7 @@ impl SignatureVerifier for PqSignatureVerifier {
 
         for (att, proof) in attestations.iter().zip(proofs.iter()) {
             public_keys.clear();
-            let bit_len = att.aggregation_bits.len();
+            let bit_len = att.aggregation_bits.len;
             for (byte_idx, byte) in att.aggregation_bits.data.iter().copied().enumerate() {
                 let mut remaining = byte;
                 while remaining != 0 {
@@ -1071,7 +1071,7 @@ fn log_attestation_decision_sample(
         head_root = ?data.head.root,
         source_root = ?data.source.root,
         target_root = ?data.target.root,
-        participants_len_bits = att.aggregation_bits.len(),
+        participants_len_bits = att.aggregation_bits.len,
         "attestation decision sample"
     );
 }
@@ -1103,7 +1103,7 @@ fn log_attestation_slot_mismatch_sample(
         head_root = ?data.head.root,
         source_root = ?data.source.root,
         target_root = ?data.target.root,
-        participants_len_bits = att.aggregation_bits.len(),
+        participants_len_bits = att.aggregation_bits.len,
         "attestation root-to-slot mismatch sample"
     );
 }
@@ -1132,7 +1132,7 @@ fn log_vote_threshold_sample(
         target_root = ?data.target.root,
         votes_count,
         total_validators,
-        participants_len_bits = att.aggregation_bits.len(),
+        participants_len_bits = att.aggregation_bits.len,
         "attestation vote threshold sample"
     );
 }
@@ -1175,7 +1175,7 @@ fn log_imported_block_attestation_envelope_sample(
         first_body_head_root = ?first_body_att.map(|att| att.data.head.root),
         first_body_source_root = ?first_body_att.map(|att| att.data.source.root),
         first_body_target_root = ?first_body_att.map(|att| att.data.target.root),
-        first_body_participants_len_bits = first_body_att.map(|att| att.aggregation_bits.len()),
+        first_body_participants_len_bits = first_body_att.map(|att| att.aggregation_bits.len),
         "state transition imported block attestation envelope sample"
     );
 }
@@ -1203,7 +1203,7 @@ fn merge_participant_votes_from_bits<const LIMIT: usize>(
     validator_count: usize,
 ) {
     // Caller invariant: validator_count > 0 and participants has at least one set bit.
-    let max_bits = participants.len().min(validator_count);
+    let max_bits = participants.len.min(validator_count);
     let full_bytes = max_bits / 8;
     for byte_idx in 0..full_bytes {
         let mut new_bits = participants.data.get(byte_idx).copied().unwrap_or(0u8);
@@ -1350,7 +1350,7 @@ fn is_slot_justified(justified: &JustifiedSlots, finalized: Slot, slot: Slot) ->
         return true;
     }
     let idx = (slot.0.0 - finalized.0.0 - 1) as usize;
-    if idx >= justified.len() {
+    if idx >= justified.len {
         return false;
     }
     let byte = idx / 8;
@@ -1380,7 +1380,7 @@ fn set_justified_slot(
         return Err("justified slot exceeds limit".to_string());
     }
     let new_len = idx + 1;
-    if new_len > justified.len() {
+    if new_len > justified.len {
         justified.len = new_len;
     }
     let byte_len = (justified.len + 7) / 8;
@@ -1415,12 +1415,12 @@ fn is_next_valid_justifiable_slot(source: Slot, target: Slot, finalized: Slot) -
 #[inline]
 fn shift_justified_window(justified: &mut JustifiedSlots, delta: usize) {
     // Caller invariant: delta is strictly positive.
-    if delta >= justified.len() {
+    if delta >= justified.len {
         justified.len = 0;
         justified.data.clear();
         return;
     }
-    let new_len = justified.len() - delta;
+    let new_len = justified.len - delta;
     let mut new_data = vec![0u8; (new_len + 7) / 8];
     for i in 0..new_len {
         let src = i + delta;

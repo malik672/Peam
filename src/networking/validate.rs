@@ -173,7 +173,7 @@ fn gather_pubkeys(
     participants: &BitList<VALIDATOR_REGISTRY_LIMIT>,
 ) -> Option<Vec<Bytes52>> {
     let mut out = Vec::new();
-    let total = participants.len();
+    let total = participants.len;
     for idx in 0..total {
         if bit_is_set(participants, idx) {
             let pubkey = *registry.get(idx)?;
@@ -185,7 +185,7 @@ fn gather_pubkeys(
 
 /// Returns `true` if bit `idx` is set in `participants`.
 fn bit_is_set(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>, idx: usize) -> bool {
-    if idx >= participants.len() {
+    if idx >= participants.len {
         return false;
     }
     let byte = idx / 8;
@@ -199,7 +199,7 @@ fn bit_is_set(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>, idx: usize) -> b
 /// Returns the indices of all set bits in `participants`, in ascending order.
 fn set_bits(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
-    let len = participants.len();
+    let len = participants.len;
     for i in 0..len {
         if bit_is_set(participants, i) {
             out.push(i);

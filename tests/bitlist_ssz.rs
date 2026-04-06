@@ -34,7 +34,7 @@ fn bitlist_hash_tree_root_matches_manual_packed_bits() {
     let chunks = chunkify_fixed(&packed);
     let limit_chunks = 16_usize.div_ceil(BYTES_PER_CHUNK * 8);
     let root = merkleize_with_limit(&chunks, limit_chunks).expect("merkleize");
-    let expected = mix_in_length(&root, list.len());
+    let expected = mix_in_length(&root, list.len);
 
     assert_eq!(list.hash_tree_root(), expected.as_array());
 }

@@ -904,7 +904,7 @@ fn log_vote_drop_unknown_head_sample(attestation: &Attestation) {
         head_root = ?data.head.root,
         source_root = ?data.source.root,
         target_root = ?data.target.root,
-        participants_len_bits = attestation.aggregation_bits.len(),
+        participants_len_bits = attestation.aggregation_bits.len,
         "fork choice dropped attestation vote: unknown head root"
     );
 }
@@ -946,7 +946,7 @@ fn normalize_pruned_vote_root(
 #[inline]
 fn bitlist_indices<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
-    let len = bits.len();
+    let len = bits.len;
     for i in 0..len {
         let byte = i / 8;
         let bit = i % 8;

@@ -197,7 +197,7 @@ fn single_set_bit(
     bits: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
 ) -> Option<usize> {
     let mut found = None;
-    let len = bits.len();
+    let len = bits.len;
     //SIMDDDDDDDDDDDDDDDD
     for i in 0..len {
         let byte = i / 8;

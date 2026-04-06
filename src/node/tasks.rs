@@ -485,7 +485,7 @@ pub(super) fn spawn_attestation_aggregation_task(
                     target_root = ?attestation.data.target.root,
                     source_slot = attestation.data.source.slot.0.0,
                     source_root = ?attestation.data.source.root,
-                    participants_len_bits = attestation.aggregation_bits.len(),
+                    participants_len_bits = attestation.aggregation_bits.len,
                     "published aggregated attestation"
                 );
             }
@@ -496,7 +496,7 @@ pub(super) fn spawn_attestation_aggregation_task(
 #[inline]
 fn set_bits(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
-    let bit_len = bits.len();
+    let bit_len = bits.len;
     for (byte_idx, byte) in bits.data.iter().copied().enumerate() {
         let mut remaining = byte;
         while remaining != 0 {
