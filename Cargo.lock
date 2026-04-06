@@ -3565,8 +3565,6 @@ dependencies = [
 [[package]]
 name = "peam-ssz"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c1b89b67f7f989056671ed201c776b1953124f1d0b988204351b27141540303"
 dependencies = [
  "sha2",
 ]
