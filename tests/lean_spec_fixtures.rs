@@ -189,5 +189,5 @@ fn lean_spec_block_body_empty_fixture() {
     let decoded = BlockBody::decode_ssz(&bytes).expect("decode block body");
     let encoded = decoded.encode_ssz();
     assert_eq!(encoded, bytes);
-    assert!(decoded.attestations.data.is_empty());
+    assert!(decoded.attestations.is_empty());
 }

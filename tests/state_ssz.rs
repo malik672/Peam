@@ -20,5 +20,5 @@ fn state_encode_decode_roundtrip() {
     let decoded = State::decode_ssz_checked(&encoded).expect("decode");
 
     assert_eq!(decoded.slot, Slot(Uint64(0)));
-    assert_eq!(decoded.validators.data.len(), 1);
+    assert_eq!(decoded.validators.len(), 1);
 }

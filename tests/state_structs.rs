@@ -75,7 +75,7 @@ fn validators_list_accepts_validators() {
     };
 
     let list: Validators = SszList::new(vec![v]).expect("validators");
-    assert_eq!(list.data.len(), 1);
+    assert_eq!(list.len(), 1);
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn justification_aliases_are_constructible() {
     let slots: JustifiedSlots = BitList::new(vec![]).expect("slots");
     let validators: JustificationValidators = BitList::new(vec![]).expect("validators");
 
-    assert_eq!(roots.data.len(), 0);
+    assert_eq!(roots.len(), 0);
     assert_eq!(slots.len, 0);
     assert_eq!(validators.len, 0);
 }
