@@ -200,13 +200,13 @@ fn log_imported_block_attestation_payload_sample(
     }
     let block = &signed.message.block;
     let proposer = &signed.message.proposer_attestation.data;
-    let first_body_att = block.body.attestations.data.first();
+    let first_body_att = block.body.attestations.first();
     tracing::info!(
         reason,
         block_root = ?block_root,
         block_slot = block.slot.0.0,
         parent_root = ?block.parent_root,
-        body_attestation_count = block.body.attestations.data.len(),
+        body_attestation_count = block.body.attestations.len(),
         proposer_att_slot = proposer.slot.0.0,
         proposer_head_slot = proposer.head.slot.0.0,
         proposer_source_slot = proposer.source.slot.0.0,

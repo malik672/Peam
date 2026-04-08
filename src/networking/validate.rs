@@ -270,19 +270,18 @@ pub fn validate_gossip(
                 return false;
             }
             let proofs = &block.block.signature.attestation_signatures;
-            if block_body.attestations.data.len() != proofs.data.len() {
+            if block_body.attestations.len() != proofs.len() {
                 warn!(
                     "gossip block rejected: attestation/proof length mismatch attestations={} proofs={}",
-                    block_body.attestations.data.len(),
-                    proofs.data.len()
+                    block_body.attestations.len(),
+                    proofs.len()
                 );
                 return false;
             }
             for (idx, (attestation, proof)) in block_body
                 .attestations
-                .data
                 .iter()
-                .zip(proofs.data.iter())
+                .zip(proofs.iter())
                 .enumerate()
             {
                 if proof.participants != attestation.aggregation_bits {

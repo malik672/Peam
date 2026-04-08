@@ -210,7 +210,7 @@ impl RecentRootCache {
         let latest_header_root = Bytes32::from(state.latest_block_header.hash_tree_root());
         self.insert(latest_header_slot, latest_header_root);
 
-        let historical = &state.historical_block_hashes.data;
+        let historical = state.historical_block_hashes.as_slice();
         let start = historical.len().saturating_sub(RECENT_ROOT_CACHE_LEN);
         for (slot, root) in historical.iter().copied().enumerate().skip(start) {
             if root == Bytes32::zero() {

@@ -40,7 +40,6 @@ use crate::types::bitlist::BitList;
 use crate::types::bytes::Bytes32;
 use crate::types::collections::SszList;
 use crate::types::uint::Uint64;
-use crate::unsafe_vec::write_at;
 use crate::unsafe_vec::write_bytes_at;
 
 /// Maximum number of historical block roots retained in [`HistoricalBlockHashes`].
@@ -275,7 +274,7 @@ impl State {
             return Err("block slot not greater than latest header slot".to_string());
         }
 
-        let num_validators = self.validators.data.len() as u64;
+        let num_validators = self.validators.len() as u64;
         if !block
             .proposer_index
             .is_proposer_for(self.slot, num_validators)
@@ -299,19 +298,14 @@ impl State {
         let num_empty_slots = block_slot - latest_slot - 1;
 
         // Record the parent root for the previous slot.
-        self.historical_block_hashes.data.push(block.parent_root);
+        self.historical_block_hashes.push(block.parent_root)?;
 
         // For skipped slots between `latest_slot` and `block_slot`, append zero
         // placeholders so history length still tracks slot progress.
         if num_empty_slots > 0 {
             let add = num_empty_slots as usize;
-            let data = &mut self.historical_block_hashes.data;
-            let start = data.len();
-            data.reserve(add);
-            unsafe { data.set_len(start + add) };
-            for i in 0..add {
-                unsafe { write_at(data, start + i, Bytes32::zero()) };
-            }
+            self.historical_block_hashes
+                .extend_copy(add, Bytes32::zero())?;
         }
 
         // Extend justified_slots to cover all slots up to (block.slot - 1).
@@ -410,7 +404,7 @@ impl State {
         }
 
         let att_start = Instant::now();
-        let att_count = block.body.attestations.data.len();
+        let att_count = block.body.attestations.len();
         self.process_attestations(&block.body.attestations)?;
         let post_attestations_root = if capture_trace_roots {
             Some(Bytes32::from(self.hash_tree_root()))
@@ -499,20 +493,19 @@ impl State {
     /// ignored (soft-fail) so a block is not invalidated by irrelevant votes.
     #[inline]
     pub fn process_attestations(&mut self, attestations: &Attestations) -> Result<(), String> {
-        let total_validators = self.validators.data.len();
+        let total_validators = self.validators.len();
         if total_validators == 0 {
             return Ok(());
         }
         if self
             .justifications_roots
-            .data
             .iter()
             .any(|root| *root == Bytes32::zero())
         {
             return Err("zero hash is not allowed in justifications roots".to_string());
         }
         let mut justification_votes: Option<RapidHashMap<Bytes32, JustificationVotes>> = None;
-        let mut root_to_slot = build_historical_root_slots(&self.historical_block_hashes.data);
+        let mut root_to_slot = build_historical_root_slots(self.historical_block_hashes.as_slice());
         let latest_root = Bytes32::from(self.latest_block_header.hash_tree_root());
         if latest_root != Bytes32::zero() && !root_to_slot.contains_key(&latest_root) {
             root_to_slot.insert(latest_root, self.latest_block_header.slot);
@@ -523,9 +516,9 @@ impl State {
 
         let mut finalized_slot = self.latest_finalized.slot;
         let mut stats = AttestationDecisionStats::default();
-        let total_attestations = attestations.data.len();
+        let total_attestations = attestations.len();
 
-        for att in attestations.data.iter() {
+        for att in attestations.iter() {
             if att.data.target.slot <= att.data.source.slot {
                 if trace_attestations {
                     stats.target_below_source += 1;
@@ -554,7 +547,6 @@ impl State {
             let source_slot_idx = att.data.source.slot.0.0 as usize;
             let source_matches = self
                 .historical_block_hashes
-                .data
                 .get(source_slot_idx)
                 .map_or(false, |root| *root == att.data.source.root);
             if !source_matches {
@@ -574,10 +566,9 @@ impl State {
             let target_slot_idx = att.data.target.slot.0.0 as usize;
             let target_matches = self
                 .historical_block_hashes
-                .data
                 .get(target_slot_idx)
                 .map_or(false, |root| *root == att.data.target.root)
-                || (target_slot_idx == self.historical_block_hashes.data.len()
+                || (target_slot_idx == self.historical_block_hashes.len()
                     && att.data.target.slot == self.latest_block_header.slot
                     && att.data.target.root == latest_root);
             if !target_matches {
@@ -842,7 +833,7 @@ impl State {
                     tracing::info!(
                         block_root = ?Bytes32::from(block.hash_tree_root()),
                         block_slot = block.slot.0.0,
-                        body_attestation_count = block.body.attestations.data.len(),
+                        body_attestation_count = block.body.attestations.len(),
                         pre_state_slot = pre_state_slot.0.0,
                         post_state_slot = self.slot.0.0,
                         pre_justified_slot = pre_justified_slot.0.0,
@@ -859,7 +850,7 @@ impl State {
                     tracing::info!(
                         block_root = ?Bytes32::from(block.hash_tree_root()),
                         block_slot = block.slot.0.0,
-                        body_attestation_count = block.body.attestations.data.len(),
+                        body_attestation_count = block.body.attestations.len(),
                         pre_state_slot = pre_state_slot.0.0,
                         pre_justified_slot = pre_justified_slot.0.0,
                         pre_finalized_slot = pre_finalized_slot.0.0,
@@ -918,8 +909,8 @@ impl SignatureVerifier for PqSignatureVerifier {
         state: &State,
     ) -> Result<(), String> {
         let block = &signed.message.block;
-        let attestations = &block.body.attestations.data;
-        let proofs = &signed.signature.attestation_signatures.data;
+        let attestations = block.body.attestations.as_slice();
+        let proofs = signed.signature.attestation_signatures.as_slice();
         if attestations.len() != proofs.len() {
             return Err(format!(
                 "attestation signatures count {} does not match attestations {}",
@@ -932,7 +923,7 @@ impl SignatureVerifier for PqSignatureVerifier {
             PQ_AGG_VERIFIER_INIT.call_once(pq::setup_aggregate_verifier);
         }
 
-        let validators = &state.validators.data;
+        let validators = state.validators.as_slice();
         let mut public_keys = Vec::new();
 
         for (att, proof) in attestations.iter().zip(proofs.iter()) {
@@ -1151,13 +1142,13 @@ fn log_imported_block_attestation_envelope_sample(
     }
     let block = &signed.message.block;
     let proposer = &signed.message.proposer_attestation.data;
-    let first_body_att = block.body.attestations.data.first();
+    let first_body_att = block.body.attestations.first();
     tracing::info!(
         reason,
         block_root = ?Bytes32::from(block.hash_tree_root()),
         block_slot = block.slot.0.0,
         parent_root = ?block.parent_root,
-        body_attestation_count = block.body.attestations.data.len(),
+        body_attestation_count = block.body.attestations.len(),
         pre_state_slot = pre_state_slot.0.0,
         pre_justified_slot = pre_justified_slot.0.0,
         pre_finalized_slot = pre_finalized_slot.0.0,
@@ -1250,12 +1241,12 @@ fn decode_justification_votes(
     validator_count: usize,
 ) -> RapidHashMap<Bytes32, JustificationVotes> {
     let mut out = RapidHashMap::default();
-    if validator_count == 0 || state.justifications_roots.data.is_empty() {
+    if validator_count == 0 || state.justifications_roots.is_empty() {
         return out;
     }
     let byte_count = validator_count.div_ceil(8);
     let byte_aligned = validator_count % 8 == 0;
-    for (root_idx, root) in state.justifications_roots.data.iter().copied().enumerate() {
+    for (root_idx, root) in state.justifications_roots.iter().copied().enumerate() {
         let mut votes = JustificationVotes::new(validator_count);
         if byte_aligned {
             let base_byte = root_idx * byte_count;

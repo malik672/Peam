@@ -140,7 +140,7 @@ impl<S: Store + Send + Sync + 'static> ReqRespHandler for StoreReqRespHandler<S>
                 // Return one block per response chunk, preserving request order.
                 let store = self.store.read().expect("store lock");
                 let mut blocks = Vec::new();
-                for root in req.roots.data.iter().take(MAX_BLOCKS_PER_ROOT_REQUEST) {
+                for root in req.roots.iter().take(MAX_BLOCKS_PER_ROOT_REQUEST) {
                     if let Some(found) = store.get_signed_block(root) {
                         blocks.push(LeanResponseMessage::BlocksByRoot(found));
                     } else {

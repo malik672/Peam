@@ -3,13 +3,16 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::containers::attestation::Attestation;
-use crate::containers::block::SignedBlockWithAttestation;
+use crate::containers::block::{
+    Block, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
+};
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
 use crate::slot::Slot;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
-use crate::types::bytes::Bytes32;
+use crate::types::bytes::{Bytes32, Bytes3112};
+use crate::types::collections::SszList;
 use crate::types::uint::Uint64;
 
 const JUSTIFICATION_LOOKBACK_SLOTS: u64 = 3;
@@ -128,7 +131,7 @@ impl ForkChoiceStore {
             previous_justified: anchor_state.latest_justified,
             latest_finalized: anchor_state.latest_finalized,
             reorgs_total: 0,
-            validator_count: anchor_state.validators.data.len(),
+            validator_count: anchor_state.validators.len(),
             blocks,
             states,
             parents,
@@ -158,6 +161,56 @@ impl ForkChoiceStore {
         signed_block: SignedBlockWithAttestation,
         post_state: State,
     ) -> Result<(), String> {
+        self.import_block_internal(signed_block, post_state, true)
+    }
+
+    /// Preview the proposer-attestation data that should be derived from the
+    /// post-import fork-choice view of `block`, without applying the proposer's
+    /// own vote to that preview.
+    pub fn preview_proposer_attestation_data(
+        &self,
+        block: Block,
+        post_state: State,
+    ) -> Result<crate::containers::attestation::AttestationData, String> {
+        let block_root = Bytes32::from(block.hash_tree_root());
+        let block_slot = block.slot;
+        let mut preview = self.clone();
+        let preview_signed = placeholder_signed_block(block)?;
+        preview.import_block_internal(preview_signed, post_state, false)?;
+
+        let source = preview.latest_justified;
+        let mut target = preview
+            .attestation_target(preview.latest_finalized.slot)
+            .unwrap_or(source);
+        if target.slot < source.slot {
+            target = source;
+        }
+        if target.slot > block_slot {
+            target = Checkpoint {
+                root: block_root,
+                slot: block_slot,
+            };
+        }
+        let head = preview.checkpoint_for_root(preview.head()).unwrap_or(Checkpoint {
+            root: block_root,
+            slot: block_slot,
+        });
+
+        Ok(crate::containers::attestation::AttestationData {
+            slot: block_slot,
+            head,
+            target,
+            source,
+        })
+    }
+
+    #[inline]
+    fn import_block_internal(
+        &mut self,
+        signed_block: SignedBlockWithAttestation,
+        post_state: State,
+        include_proposer_attestation: bool,
+    ) -> Result<(), String> {
         let block = signed_block.message.block.clone();
         let proposer_attestation = signed_block.message.proposer_attestation.clone();
         if !state_matches_block_root(&post_state, block.state_root) {
@@ -176,10 +229,12 @@ impl ForkChoiceStore {
 
         // Block-included attestations are already verified in block processing,
         // so they become immediately active votes.
-        for att in block.body.attestations.data.iter() {
+        for att in block.body.attestations.iter() {
             let _ = self.apply_attestation_votes(att, VoteDisposition::Active);
         }
-        let _ = self.apply_attestation_votes(&proposer_attestation, VoteDisposition::Active);
+        if include_proposer_attestation {
+            let _ = self.apply_attestation_votes(&proposer_attestation, VoteDisposition::Active);
+        }
         // Keep checkpoint progression monotonic even when importing side branches.
         // This prevents sync/backfill replay from regressing fork-choice checkpoints.
         if post_state.latest_justified.slot > self.latest_justified.slot {
@@ -421,7 +476,7 @@ impl ForkChoiceStore {
     pub fn head_validator_count(&self) -> usize {
         self.states
             .get(&self.head)
-            .map(|state| state.validators.data.len())
+            .map(|state| state.validators.len())
             .unwrap_or(0)
     }
 
@@ -958,4 +1013,44 @@ fn bitlist_indices<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
         }
     }
     out
+}
+
+#[inline]
+fn placeholder_signed_block(block: Block) -> Result<SignedBlockWithAttestation, String> {
+    let block_root = Bytes32::from(block.hash_tree_root());
+    let proposer_index = block.proposer_index.0.0 as usize;
+    if proposer_index >= crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT {
+        return Err(format!(
+            "proposer validator index {proposer_index} exceeds registry limit {}",
+            crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT
+        ));
+    }
+
+    let mut proposer_bits = vec![false; proposer_index + 1];
+    proposer_bits[proposer_index] = true;
+    let aggregation_bits = BitList::new(proposer_bits)?;
+    let checkpoint = Checkpoint {
+        root: block_root,
+        slot: block.slot,
+    };
+
+    Ok(SignedBlockWithAttestation {
+        message: BlockWithAttestation {
+            block,
+            proposer_attestation: Attestation {
+                aggregation_bits,
+                data: crate::containers::attestation::AttestationData {
+                    slot: checkpoint.slot,
+                    head: checkpoint,
+                    target: checkpoint,
+                    source: checkpoint,
+                },
+            },
+        },
+        signature: BlockSignatures {
+            attestation_signatures: SszList::new(Vec::new())
+                .expect("empty attestation signatures fit within limit"),
+            proposer_signature: Bytes3112::zero(),
+        },
+    })
 }
