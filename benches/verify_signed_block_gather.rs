@@ -44,7 +44,7 @@ fn make_attestation_bits(
 
 fn old_set_bits(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
-    let len = bits.len();
+    let len = bits.len;
     for i in 0..len {
         let byte = bits.data[i / 8];
         if (byte & (1u8 << (i % 8))) != 0 {
@@ -77,7 +77,7 @@ fn new_collect_all(
     let mut public_keys = Vec::new();
     for bits in attestations {
         public_keys.clear();
-        let bit_len = bits.len();
+        let bit_len = bits.len;
         for (byte_idx, byte) in bits.data.iter().copied().enumerate() {
             let mut remaining = byte;
             while remaining != 0 {
