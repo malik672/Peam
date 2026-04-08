@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-peam-ssz = { path = "../peam-ssz" }
+peam-ssz = "2.0.1"
 sha2 = "0.10"
 rapidhash = "1.0"
 redb = "3.1.0"
