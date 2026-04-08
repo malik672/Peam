@@ -503,8 +503,8 @@ async fn ream_blocks_by_root_catchup_smoke() {
             let LeanRequestMessage::BlocksByRoot(req) = req else {
                 panic!("unexpected request variant");
             };
-            assert_eq!(req.roots.data.len(), 1);
-            assert_eq!(req.roots.data[0], *root);
+            assert_eq!(req.roots.len(), 1);
+            assert_eq!(req.roots.get(0), Some(root));
             break;
         }
 

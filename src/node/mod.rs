@@ -311,7 +311,7 @@ impl Node {
         let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
             match build_devnet_pq_validator_keys_from_hash_sig_dir(
                 &hash_sig_keys_dir,
-                expected_genesis_state.validators.data.len(),
+                expected_genesis_state.validators.len(),
             ) {
                 Ok(keys) => (
                     keys,
@@ -325,7 +325,7 @@ impl Node {
                     );
                     (
                         build_devnet_pq_validator_keys(
-                            expected_genesis_state.validators.data.len(),
+                            expected_genesis_state.validators.len(),
                         ),
                         "deterministic_devnet".to_string(),
                     )
@@ -333,7 +333,7 @@ impl Node {
             }
         } else {
             (
-                build_devnet_pq_validator_keys(expected_genesis_state.validators.data.len()),
+                build_devnet_pq_validator_keys(expected_genesis_state.validators.len()),
                 "deterministic_devnet".to_string(),
             )
         };
@@ -349,7 +349,7 @@ impl Node {
         );
         let devnet_validator_keys =
             filter_keys_against_genesis(&expected_genesis_state, devnet_validator_keys);
-        if let Some(first) = expected_genesis_state.validators.data.first() {
+        if let Some(first) = expected_genesis_state.validators.first() {
             tracing::info!(
                 first_validator_pubkey = ?first.pubkey,
                 "peam startup: first validator pubkey"
@@ -358,13 +358,12 @@ impl Node {
         let local_validator_index = settings.local_validator_index as usize;
         let Some(expected) = expected_genesis_state
             .validators
-            .data
             .get(local_validator_index)
         else {
             return Err(format!(
                 "local_validator_index {} out of range for {} genesis validators",
                 settings.local_validator_index,
-                expected_genesis_state.validators.data.len()
+                expected_genesis_state.validators.len()
             ));
         };
         let Some(Some(local_key)) = devnet_validator_keys.get(local_validator_index) else {
@@ -574,7 +573,7 @@ expected {:?}, got {:?}",
         // Default to PQ verification for gossip signatures when validator keys exist.
         let signature_verifier = {
             let state_guard = self.state.read().expect("state lock");
-            verifier_from_validators(&state_guard.validators.data)
+            verifier_from_validators(state_guard.validators.as_slice())
         };
         let reqresp_handler = Arc::new(StoreReqRespHandler::new(
             self.state.clone(),

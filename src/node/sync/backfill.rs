@@ -318,8 +318,8 @@ fn log_backfill_attestation_payload_sample(
     }
     let block = &signed.message.block;
     let proposer = &signed.message.proposer_attestation.data;
-    let attestation_count = block.body.attestations.data.len();
-    let first_attestation = block.body.attestations.data.first();
+    let attestation_count = block.body.attestations.len();
+    let first_attestation = block.body.attestations.first();
     info!(
         block_root = ?block_root,
         block_slot = block.slot.0.0,
@@ -341,7 +341,7 @@ fn log_backfill_attestation_payload_sample(
         first_body_source_root = ?first_attestation.map(|att| att.data.source.root),
         first_body_target_root = ?first_attestation.map(|att| att.data.target.root),
         first_body_participants_len_bits =
-            first_attestation.map(|att| att.aggregation_bits.len()),
+            first_attestation.map(|att| att.aggregation_bits.len),
         "sync backfill attestation payload sample"
     );
 }

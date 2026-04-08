@@ -85,7 +85,7 @@ fn validate_block_basic(block: &SignedBlockWithAttestation) -> ValidationResult 
     if proposer_attestation.data.slot != message.block.slot {
         return ValidationResult::Reject("proposer attestation slot mismatch".to_string());
     }
-    for att in message.block.body.attestations.data.iter() {
+    for att in message.block.body.attestations.iter() {
         let res = validate_attestation_fields(&att.data, Some(message.block.slot.0.0));
         if !matches!(res, ValidationResult::Accept) {
             return res;

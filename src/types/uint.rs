@@ -36,4 +36,8 @@ impl SszFixedLen for Uint64 {
     fn fixed_len() -> usize {
         8
     }
+
+    fn tree_pack_basic() -> bool {
+        true
+    }
 }

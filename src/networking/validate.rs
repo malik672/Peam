@@ -173,7 +173,7 @@ fn gather_pubkeys(
     participants: &BitList<VALIDATOR_REGISTRY_LIMIT>,
 ) -> Option<Vec<Bytes52>> {
     let mut out = Vec::new();
-    let total = participants.len();
+    let total = participants.len;
     for idx in 0..total {
         if bit_is_set(participants, idx) {
             let pubkey = *registry.get(idx)?;
@@ -185,7 +185,7 @@ fn gather_pubkeys(
 
 /// Returns `true` if bit `idx` is set in `participants`.
 fn bit_is_set(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>, idx: usize) -> bool {
-    if idx >= participants.len() {
+    if idx >= participants.len {
         return false;
     }
     let byte = idx / 8;
@@ -199,7 +199,7 @@ fn bit_is_set(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>, idx: usize) -> b
 /// Returns the indices of all set bits in `participants`, in ascending order.
 fn set_bits(participants: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
-    let len = participants.len();
+    let len = participants.len;
     for i in 0..len {
         if bit_is_set(participants, i) {
             out.push(i);
@@ -270,19 +270,18 @@ pub fn validate_gossip(
                 return false;
             }
             let proofs = &block.block.signature.attestation_signatures;
-            if block_body.attestations.data.len() != proofs.data.len() {
+            if block_body.attestations.len() != proofs.len() {
                 warn!(
                     "gossip block rejected: attestation/proof length mismatch attestations={} proofs={}",
-                    block_body.attestations.data.len(),
-                    proofs.data.len()
+                    block_body.attestations.len(),
+                    proofs.len()
                 );
                 return false;
             }
             for (idx, (attestation, proof)) in block_body
                 .attestations
-                .data
                 .iter()
-                .zip(proofs.data.iter())
+                .zip(proofs.iter())
                 .enumerate()
             {
                 if proof.participants != attestation.aggregation_bits {

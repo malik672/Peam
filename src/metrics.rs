@@ -897,7 +897,7 @@ fn render_metrics(
     } else {
         state.latest_justified.slot.0.0
     };
-    let active_validators = state.validators.data.len().max(fc_active_validators);
+    let active_validators = state.validators.len().max(fc_active_validators);
     let is_agg = if registry.is_aggregator.load(Ordering::Relaxed) {
         1
     } else {

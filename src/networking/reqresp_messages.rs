@@ -33,7 +33,7 @@ fn decode_blocks_by_root_response_compat(
     if let Ok(resp) = BlocksByRootResponse::decode_ssz(data) {
         return resp
             .blocks
-            .data
+            .into_inner()
             .into_iter()
             .next()
             .ok_or_else(|| "empty BlocksByRoot response payload".to_string());
@@ -51,7 +51,7 @@ fn decode_blocks_by_range_response_compat(
     if let Ok(resp) = BlocksByRangeResponse::decode_ssz(data) {
         return resp
             .blocks
-            .data
+            .into_inner()
             .into_iter()
             .next()
             .ok_or_else(|| "empty BlocksByRange response payload".to_string());
@@ -156,7 +156,7 @@ impl LeanRequestMessage {
         match self {
             LeanRequestMessage::Status(_) => 1,
             LeanRequestMessage::BlocksByRange(req) => req.count.0,
-            LeanRequestMessage::BlocksByRoot(req) => req.roots.data.len() as u64,
+            LeanRequestMessage::BlocksByRoot(req) => req.roots.len() as u64,
         }
     }
 

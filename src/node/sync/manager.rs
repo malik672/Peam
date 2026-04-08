@@ -222,7 +222,7 @@ fn log_sync_proposer_attestation_sample(
         proposer_head_root = ?proposer.head.root,
         proposer_source_root = ?proposer.source.root,
         proposer_target_root = ?proposer.target.root,
-        body_attestation_count = block.body.attestations.data.len(),
+        body_attestation_count = block.body.attestations.len(),
         "sync proposer attestation payload sample"
     );
 }
@@ -435,7 +435,7 @@ pub(crate) fn spawn_status_sync_task(
                                     continue;
                                 }
                             };
-                            let blocks = response.blocks.data;
+                            let blocks = response.blocks.into_inner();
                             let last_slot = blocks
                                 .last()
                                 .map(|block| block.message.block.slot.0.0)

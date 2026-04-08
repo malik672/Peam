@@ -20,7 +20,7 @@ fn build_signed_block(
     slot: u64,
     include_attestation: bool,
 ) -> (SignedBlockWithAttestation, State, Bytes32) {
-    let validator_count = base_state.validators.data.len() as u64;
+    let validator_count = base_state.validators.len() as u64;
     let proposer = if validator_count == 0 {
         0
     } else {

@@ -57,14 +57,14 @@ pub fn fetch_checkpoint_state(base_url: &str) -> Result<State, String> {
 }
 
 pub fn verify_checkpoint_state(state: &State, expected_genesis: &State) -> Result<(), String> {
-    if state.validators.data.is_empty() {
+    if state.validators.is_empty() {
         return Err("checkpoint state has empty validator registry".to_string());
     }
-    if state.validators.data.len() != expected_genesis.validators.data.len() {
+    if state.validators.len() != expected_genesis.validators.len() {
         return Err(format!(
             "checkpoint validator count {} does not match genesis {}",
-            state.validators.data.len(),
-            expected_genesis.validators.data.len()
+            state.validators.len(),
+            expected_genesis.validators.len()
         ));
     }
     if state.config.genesis_time != expected_genesis.config.genesis_time {
@@ -73,10 +73,9 @@ pub fn verify_checkpoint_state(state: &State, expected_genesis: &State) -> Resul
             state.config.genesis_time.0, expected_genesis.config.genesis_time.0
         ));
     }
-    for (idx, validator) in state.validators.data.iter().enumerate() {
+    for (idx, validator) in state.validators.iter().enumerate() {
         let expected = expected_genesis
             .validators
-            .data
             .get(idx)
             .ok_or_else(|| format!("missing genesis validator {idx}"))?;
         if validator.pubkey != expected.pubkey {

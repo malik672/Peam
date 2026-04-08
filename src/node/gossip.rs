@@ -180,7 +180,7 @@ fn log_pending_attestation_sample(reason: &'static str, attestation: &Attestatio
         head_root = ?data.head.root,
         source_root = ?data.source.root,
         target_root = ?data.target.root,
-        participants_len_bits = attestation.aggregation_bits.len(),
+        participants_len_bits = attestation.aggregation_bits.len,
         "pending attestation ingress sample"
     );
 }
@@ -200,13 +200,13 @@ fn log_imported_block_attestation_payload_sample(
     }
     let block = &signed.message.block;
     let proposer = &signed.message.proposer_attestation.data;
-    let first_body_att = block.body.attestations.data.first();
+    let first_body_att = block.body.attestations.first();
     tracing::info!(
         reason,
         block_root = ?block_root,
         block_slot = block.slot.0.0,
         parent_root = ?block.parent_root,
-        body_attestation_count = block.body.attestations.data.len(),
+        body_attestation_count = block.body.attestations.len(),
         proposer_att_slot = proposer.slot.0.0,
         proposer_head_slot = proposer.head.slot.0.0,
         proposer_source_slot = proposer.source.slot.0.0,
@@ -221,7 +221,7 @@ fn log_imported_block_attestation_payload_sample(
         first_body_head_root = ?first_body_att.map(|att| att.data.head.root),
         first_body_source_root = ?first_body_att.map(|att| att.data.source.root),
         first_body_target_root = ?first_body_att.map(|att| att.data.target.root),
-        first_body_participants_len_bits = first_body_att.map(|att| att.aggregation_bits.len()),
+        first_body_participants_len_bits = first_body_att.map(|att| att.aggregation_bits.len),
         "imported block attestation payload sample"
     );
 }
@@ -363,7 +363,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                 target_root = ?att.data.target.root,
                 source_slot = att.data.source.slot.0.0,
                 source_root = ?att.data.source.root,
-                participants_len_bits = att.proof.participants.len(),
+                participants_len_bits = att.proof.participants.len,
                 "gossip aggregated attestation received"
             );
             let pending = Attestation {

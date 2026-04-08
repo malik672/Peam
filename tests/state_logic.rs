@@ -137,7 +137,7 @@ fn build_block_for_slot(state: &State, slot: u64, proposer: u64) -> Block {
         state_root: Bytes32::zero(),
         body,
     };
-    if state.validators.data.is_empty() {
+    if state.validators.is_empty() {
         return block;
     }
     let mut post = state.clone();
@@ -170,7 +170,7 @@ fn build_block_with_attestations_for_slot(
         state_root: Bytes32::zero(),
         body,
     };
-    if state.validators.data.is_empty() {
+    if state.validators.is_empty() {
         return block;
     }
     let mut post = state.clone();
@@ -216,7 +216,7 @@ fn lean_spec_process_first_block_after_genesis() {
     assert_eq!(state.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(1)));
     assert_eq!(state.latest_block_header.state_root, block.state_root);
-    assert_eq!(state.historical_block_hashes.data.len(), 1);
+    assert_eq!(state.historical_block_hashes.len(), 1);
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn lean_spec_blocks_with_gaps() {
     assert_eq!(state.slot, Slot(Uint64(8)));
     assert_eq!(state.latest_block_header.slot, Slot(Uint64(8)));
     assert_ne!(state.latest_block_header.state_root, Bytes32::zero());
-    assert_eq!(state.historical_block_hashes.data.len(), 8);
+    assert_eq!(state.historical_block_hashes.len(), 8);
 }
 
 #[test]
@@ -604,9 +604,9 @@ fn process_block_header_pushes_historical_hashes() {
     };
 
     state.process_block_header(header).expect("process header");
-    assert_eq!(state.historical_block_hashes.data.len(), 2);
-    assert_eq!(state.historical_block_hashes.data[0], parent_root);
-    assert_eq!(state.historical_block_hashes.data[1], Bytes32::zero());
+    assert_eq!(state.historical_block_hashes.len(), 2);
+    assert_eq!(state.historical_block_hashes.get(0), Some(&parent_root));
+    assert_eq!(state.historical_block_hashes.get(1), Some(&Bytes32::zero()));
 }
 
 #[test]
@@ -700,7 +700,7 @@ fn attestations_update_latest_justified() {
         .expect("process attestations");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
-    assert!(state.justified_slots.len() >= 1);
+    assert!(state.justified_slots.len >= 1);
     let idx = 0usize;
     let byte = idx / 8;
     let bit = idx % 8;
@@ -739,7 +739,7 @@ fn attestations_with_zero_validators_do_not_justify() {
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
     assert_eq!(state.latest_finalized.slot, Slot(Uint64(0)));
-    assert_eq!(state.justified_slots.len(), 0);
+    assert_eq!(state.justified_slots.len, 0);
 }
 
 #[test]
@@ -799,7 +799,7 @@ fn attestations_accumulate_votes_across_calls_for_justification_and_finalization
         .expect("process first vote for slot 1");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(0)));
-    assert_eq!(state.justifications_roots.data.len(), 1);
+    assert_eq!(state.justifications_roots.len(), 1);
 
     let att_1b = Attestation {
         aggregation_bits: BitList::new(vec![false, true, false]).expect("bits"),
@@ -815,7 +815,7 @@ fn attestations_accumulate_votes_across_calls_for_justification_and_finalization
         .expect("process second vote for slot 1");
 
     assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
-    assert_eq!(state.justifications_roots.data.len(), 0);
+    assert_eq!(state.justifications_roots.len(), 0);
 
     state.process_slots(Slot(Uint64(2))).expect("process slots");
     let header_2 = BlockHeader {
@@ -971,7 +971,7 @@ fn finalizes_when_target_is_next_valid_justifiable_slot_not_adjacent_slot() {
     }
 
     let source_slot = Slot(Uint64(6));
-    let source_root = state.historical_block_hashes.data[6];
+    let source_root = state.historical_block_hashes.as_slice()[6];
     state.justified_slots.len = 6;
     state.justified_slots.data = vec![0u8; 1];
     state.justified_slots.data[0] |= 1u8 << 5;
@@ -1042,8 +1042,8 @@ fn duplicate_historical_roots_keep_pending_justifications_after_prune() {
     }
 
     // Create a duplicate non-zero root at an older and newer slot.
-    let pending_root = state.historical_block_hashes.data[2];
-    state.historical_block_hashes.data[7] = pending_root;
+    let pending_root = state.historical_block_hashes.as_slice()[2];
+    state.historical_block_hashes.as_mut_slice()[7] = pending_root;
 
     // Seed one pending vote for `pending_root`.
     state.justifications_roots = SszList::new(vec![pending_root]).expect("roots");
@@ -1059,8 +1059,8 @@ fn duplicate_historical_roots_keep_pending_justifications_after_prune() {
 
     let source_slot = Slot(Uint64(5));
     let target_slot = Slot(Uint64(6));
-    let source_root = state.historical_block_hashes.data[5];
-    let target_root = state.historical_block_hashes.data[6];
+    let source_root = state.historical_block_hashes.as_slice()[5];
+    let target_root = state.historical_block_hashes.as_slice()[6];
     let att = Attestation {
         aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
         data: AttestationData {
@@ -1085,7 +1085,7 @@ fn duplicate_historical_roots_keep_pending_justifications_after_prune() {
         .expect("process attestations");
 
     assert_eq!(state.latest_finalized.slot, source_slot);
-    assert_eq!(state.justifications_roots.data, vec![pending_root]);
+    assert_eq!(state.justifications_roots.as_slice(), &[pending_root]);
 }
 
 #[test]
@@ -1113,11 +1113,11 @@ fn process_block_header_fills_empty_slots_with_zero_hashes() {
     };
 
     state.process_block_header(header).expect("process header");
-    assert_eq!(state.historical_block_hashes.data.len(), 4);
-    assert_eq!(state.historical_block_hashes.data[0], parent_root);
-    assert_eq!(state.historical_block_hashes.data[1], Bytes32::zero());
-    assert_eq!(state.historical_block_hashes.data[2], Bytes32::zero());
-    assert_eq!(state.historical_block_hashes.data[3], Bytes32::zero());
+    assert_eq!(state.historical_block_hashes.len(), 4);
+    assert_eq!(state.historical_block_hashes.get(0), Some(&parent_root));
+    assert_eq!(state.historical_block_hashes.get(1), Some(&Bytes32::zero()));
+    assert_eq!(state.historical_block_hashes.get(2), Some(&Bytes32::zero()));
+    assert_eq!(state.historical_block_hashes.get(3), Some(&Bytes32::zero()));
 }
 
 #[test]
@@ -1145,7 +1145,7 @@ fn historical_block_hashes_count_matches_expected() {
     };
 
     state.process_block_header(header).expect("process header");
-    assert_eq!(state.historical_block_hashes.data.len(), 3);
+    assert_eq!(state.historical_block_hashes.len(), 3);
 }
 
 #[test]

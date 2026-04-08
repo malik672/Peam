@@ -204,7 +204,6 @@ pub(super) fn filter_keys_against_genesis(
         };
         let matches = state
             .validators
-            .data
             .get(i)
             .map_or(false, |v| v.pubkey == key.pubkey);
         if matches {
@@ -251,7 +250,7 @@ pub(super) fn spawn_signed_attestation_task(
 
     {
         let guard = state.read().expect("state lock");
-        let Some(v) = guard.validators.data.get(local_validator_index) else {
+        let Some(v) = guard.validators.get(local_validator_index) else {
             warn!("local validator index {local_validator_index} out of range; signing disabled");
             return None;
         };
@@ -485,7 +484,7 @@ pub(super) fn spawn_attestation_aggregation_task(
                     target_root = ?attestation.data.target.root,
                     source_slot = attestation.data.source.slot.0.0,
                     source_root = ?attestation.data.source.root,
-                    participants_len_bits = attestation.aggregation_bits.len(),
+                    participants_len_bits = attestation.aggregation_bits.len,
                     "published aggregated attestation"
                 );
             }
@@ -496,7 +495,7 @@ pub(super) fn spawn_attestation_aggregation_task(
 #[inline]
 fn set_bits(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
     let mut out = Vec::new();
-    let bit_len = bits.len();
+    let bit_len = bits.len;
     for (byte_idx, byte) in bits.data.iter().copied().enumerate() {
         let mut remaining = byte;
         while remaining != 0 {
@@ -766,13 +765,13 @@ fn produce_block_with_signatures(
     slot: u64,
     local_validator_index: usize,
     local_secret_key: &crate::crypto::pq::LeanSigSecretKey,
-    proposer_target: Checkpoint,
+    fork_choice: Option<&ForkChoiceStore>,
     pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
     devnet_validator_keys: &DevnetValidatorKeyCache,
     metrics: &MetricsRegistry,
 ) -> Option<(SignedBlockWithAttestation, State)> {
     let block_slot = crate::slot::Slot(Uint64(slot));
-    let (parent_root, source) = {
+    let parent_root = {
         let mut temp = pre_state.clone();
         if block_slot > temp.slot {
             if let Err(err) = temp.process_slots(block_slot) {
@@ -780,10 +779,7 @@ fn produce_block_with_signatures(
                 return None;
             }
         }
-        (
-            Bytes32::from(temp.latest_block_header.hash_tree_root()),
-            temp.latest_justified,
-        )
+        Bytes32::from(temp.latest_block_header.hash_tree_root())
     };
     let (block_attestations, attestation_proofs) = build_block_attestation_payload(
         slot,
@@ -825,16 +821,25 @@ fn produce_block_with_signatures(
 
     let mut proposer_bits = vec![false; local_validator_index + 1];
     proposer_bits[local_validator_index] = true;
-    let mut target = proposer_target;
-    if target.slot < source.slot {
-        target = source;
-    }
-    if target.slot > block_slot {
-        target = Checkpoint {
-            root: block_root,
+    let proposer_data = if let Some(fork_choice) = fork_choice {
+        match fork_choice.preview_proposer_attestation_data(block.clone(), post_state.clone()) {
+            Ok(data) => data,
+            Err(err) => {
+                warn!("failed to preview proposer attestation data: {err}");
+                return None;
+            }
+        }
+    } else {
+        AttestationData {
             slot: block_slot,
-        };
-    }
+            head: Checkpoint {
+                root: block_root,
+                slot: block_slot,
+            },
+            target: post_state.latest_justified,
+            source: post_state.latest_justified,
+        }
+    };
     let proposer_attestation = Attestation {
         aggregation_bits: match crate::types::bitlist::BitList::new(proposer_bits) {
             Ok(v) => v,
@@ -843,15 +848,7 @@ fn produce_block_with_signatures(
                 return None;
             }
         },
-        data: AttestationData {
-            slot: block_slot,
-            head: Checkpoint {
-                root: block_root,
-                slot: block_slot,
-            },
-            target,
-            source,
-        },
+        data: proposer_data,
     };
 
     let proposer_message = proposer_attestation.data.hash_tree_root();
@@ -944,7 +941,7 @@ pub(super) fn spawn_block_production_task(
 
     {
         let guard = state.read().expect("state lock");
-        let Some(v) = guard.validators.data.get(local_validator_index) else {
+        let Some(v) = guard.validators.get(local_validator_index) else {
             warn!(
                 "local validator index {local_validator_index} out of range; block production disabled"
             );
@@ -969,7 +966,7 @@ pub(super) fn spawn_block_production_task(
 
             let (validator_count, state_slot) = {
                 let guard = state.read().expect("state lock");
-                (guard.validators.data.len(), guard.slot.0.0)
+                (guard.validators.len(), guard.slot.0.0)
             };
 
             if validator_count == 0 {
@@ -989,21 +986,13 @@ pub(super) fn spawn_block_production_task(
             let mut imported_block: Option<SignedBlockWithAttestation> = None;
             for attempt in 0..2 {
                 let pre_state = state.read().expect("state lock").clone();
-                let proposer_target = {
-                    let source = pre_state.latest_justified;
-                    let finalized_slot = pre_state.latest_finalized.slot;
-                    let fc_guard = fork_choice.read().expect("fork choice lock");
-                    fc_guard
-                        .as_ref()
-                        .and_then(|fc| fc.attestation_target(finalized_slot))
-                        .unwrap_or(source)
-                };
+                let fork_choice_snapshot = fork_choice.read().expect("fork choice lock").clone();
                 let Some((signed, post_state)) = produce_block_with_signatures(
                     &pre_state,
                     slot,
                     local_validator_index,
                     local_secret_key.as_ref(),
-                    proposer_target,
+                    fork_choice_snapshot.as_ref(),
                     &pending_block_attestations,
                     &devnet_validator_keys,
                     &metrics,
@@ -1054,7 +1043,7 @@ pub(super) fn spawn_block_production_task(
                         if parent_mismatch {
                             requeue_block_attestations(
                                 &pending_block_attestations,
-                                &signed.message.block.body.attestations.data,
+                                signed.message.block.body.attestations.as_slice(),
                             );
                             if attempt == 0 {
                                 continue;
@@ -1077,7 +1066,7 @@ pub(super) fn spawn_block_production_task(
                 root = ?root,
                 slot = signed.message.block.slot.0.0,
                 parent_root = ?signed.message.block.parent_root,
-                attestation_count = signed.message.block.body.attestations.data.len(),
+                attestation_count = signed.message.block.body.attestations.len(),
                 "local block produced and imported"
             );
 

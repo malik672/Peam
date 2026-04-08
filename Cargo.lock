@@ -3544,6 +3544,7 @@ dependencies = [
  "leansig",
  "libp2p",
  "libp2p-swarm-derive",
+ "peam-ssz",
  "rand 0.9.2",
  "rapidhash 1.4.0",
  "redb",
@@ -3559,6 +3560,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+]
+
+[[package]]
+name = "peam-ssz"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b19af75e0ba71021cc61f4fc10daef14a4f0a704d89001f4ecc0e128b79cf346"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]

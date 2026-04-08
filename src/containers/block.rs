@@ -156,8 +156,8 @@ impl SignedBlockWithAttestation {
     /// - that bit's index equals `block.proposer_index`
     pub fn validate_basic(&self) -> Result<(), String> {
         let block = &self.message.block;
-        let sig_count = self.signature.attestation_signatures.data.len();
-        let att_count = block.body.attestations.data.len();
+        let sig_count = self.signature.attestation_signatures.len();
+        let att_count = block.body.attestations.len();
         if sig_count != att_count {
             return Err(format!(
                 "attestation signatures count {} does not match attestations {}",
@@ -167,9 +167,8 @@ impl SignedBlockWithAttestation {
         for (idx, (attestation, proof)) in block
             .body
             .attestations
-            .data
             .iter()
-            .zip(self.signature.attestation_signatures.data.iter())
+            .zip(self.signature.attestation_signatures.iter())
             .enumerate()
         {
             if proof.participants != attestation.aggregation_bits {
@@ -197,7 +196,7 @@ fn single_set_bit(
     bits: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
 ) -> Option<usize> {
     let mut found = None;
-    let len = bits.len();
+    let len = bits.len;
     //SIMDDDDDDDDDDDDDDDD
     for i in 0..len {
         let byte = i / 8;

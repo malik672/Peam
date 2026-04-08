@@ -17,7 +17,7 @@ fn bitlist_enforces_limit() {
     assert!(ok.is_ok());
 
     let too_long = BitList::<2>::new(vec![true, false, true]);
-    assert!(too_long.is_ok());
+    assert!(too_long.is_err());
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn bitvector_enforces_length() {
     assert!(ok.is_ok());
 
     let bad = BitVector::<4>::new(vec![true, false, true]);
-    assert!(bad.is_ok());
+    assert!(bad.is_err());
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn validators_list_accepts_validators() {
     };
 
     let list: Validators = SszList::new(vec![v]).expect("validators");
-    assert_eq!(list.data.len(), 1);
+    assert_eq!(list.len(), 1);
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn justification_aliases_are_constructible() {
     let slots: JustifiedSlots = BitList::new(vec![]).expect("slots");
     let validators: JustificationValidators = BitList::new(vec![]).expect("validators");
 
-    assert_eq!(roots.data.len(), 0);
-    assert_eq!(slots.len(), 0);
-    assert_eq!(validators.len(), 0);
+    assert_eq!(roots.len(), 0);
+    assert_eq!(slots.len, 0);
+    assert_eq!(validators.len, 0);
 }
