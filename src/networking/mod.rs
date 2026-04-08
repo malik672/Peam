@@ -386,8 +386,8 @@ impl Default for NetworkingConfig {
             signature_verifier: Arc::new(NoopGossipVerifier),
             reqresp_handler: Arc::new(NoopReqRespHandler),
             gossip_context: Arc::new(NoopGossipContext),
-            max_gossip_bytes: 2_000_000,
-            max_reqresp_bytes: 4_000_000,
+            max_gossip_bytes: 10 * 1024 * 1024,
+            max_reqresp_bytes: 10 * 1024 * 1024,
         }
     }
 }

@@ -267,8 +267,8 @@ fn local_validator_index_from_validator_config(
 /// | `allowed_topics`            | block + attestation_0 + aggregation devnet3 topics |
 /// | `topic_scores`              | block=2, attestation_0=1, aggregation=1      |
 /// | `topic_validators`          | block + attestation_0 + aggregation validators |
-/// | `max_gossip_bytes`          | `2_000_000`                                  |
-/// | `max_reqresp_bytes`         | `4_000_000`                                  |
+/// | `max_gossip_bytes`          | `10_485_760`                                 |
+/// | `max_reqresp_bytes`         | `10_485_760`                                 |
 /// | `is_aggregator`            | `false`                                      |
 /// | `attestation_committee_count` | `1`                                    |
 /// | `validator_count`           | `5`                                          |
@@ -363,8 +363,8 @@ fn default_node_settings() -> NodeSettings {
         allowed_topics: default_allowed_topics(),
         topic_scores: default_topic_scores(),
         topic_validators: default_topic_validators(),
-        max_gossip_bytes: 2_000_000,
-        max_reqresp_bytes: 4_000_000,
+        max_gossip_bytes: 10 * 1024 * 1024,
+        max_reqresp_bytes: 10 * 1024 * 1024,
         is_aggregator: false,
         attestation_committee_count: 1,
         validator_count: DEFAULT_VALIDATOR_COUNT,
@@ -731,8 +731,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             allowed_topics: default_allowed_topics(),
             topic_scores: default_topic_scores(),
             topic_validators: default_topic_validators(),
-            max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
-            max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            max_gossip_bytes: max_gossip_bytes.unwrap_or(10 * 1024 * 1024),
+            max_reqresp_bytes: max_reqresp_bytes.unwrap_or(10 * 1024 * 1024),
             is_aggregator: is_aggregator.unwrap_or(false),
             attestation_committee_count: attestation_committee_count.unwrap_or(1),
             validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
@@ -762,8 +762,8 @@ pub fn load_node_settings(path: &Path) -> Result<(Config, NodeSettings), String>
             allowed_topics,
             topic_scores,
             topic_validators,
-            max_gossip_bytes: max_gossip_bytes.unwrap_or(2_000_000),
-            max_reqresp_bytes: max_reqresp_bytes.unwrap_or(4_000_000),
+            max_gossip_bytes: max_gossip_bytes.unwrap_or(10 * 1024 * 1024),
+            max_reqresp_bytes: max_reqresp_bytes.unwrap_or(10 * 1024 * 1024),
             is_aggregator: is_aggregator.unwrap_or(false),
             attestation_committee_count: attestation_committee_count.unwrap_or(1),
             validator_count: validator_count.unwrap_or(DEFAULT_VALIDATOR_COUNT),
