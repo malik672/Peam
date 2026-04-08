@@ -17,7 +17,7 @@ fn bitlist_enforces_limit() {
     assert!(ok.is_ok());
 
     let too_long = BitList::<2>::new(vec![true, false, true]);
-    assert!(too_long.is_ok());
+    assert!(too_long.is_err());
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn bitvector_enforces_length() {
     assert!(ok.is_ok());
 
     let bad = BitVector::<4>::new(vec![true, false, true]);
-    assert!(bad.is_ok());
+    assert!(bad.is_err());
 }
 
 #[test]
