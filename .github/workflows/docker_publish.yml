@@ -62,6 +62,7 @@ jobs:
 
           if [[ "${GITHUB_REF}" == "refs/heads/master" ]]; then
             tags+=("${image}:latest")
+            tags+=("${image}:devnet3")
           fi
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then

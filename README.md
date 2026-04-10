@@ -14,7 +14,7 @@ The project is built around a small core, fast SSZ and hashing paths, lean stora
 
 - Small, auditable codebase
 - Low-memory operation
-- Fast serialization and merkleization paths
+- Fast serialization and merkleization paths using peam-ssz
 - Straightforward networking and sync behavior
 - Clean operational surface for mixed-client devnets
 
