@@ -279,7 +279,10 @@ impl FileStore {
             .ok()?
     }
 
-    /// State lookup that accepts either a state root or a block root.
+    /// Compatibility lookup that accepts either a state root or a block root.
+    ///
+    /// The primary storage identity is block-root keyed. State-root lookup is
+    /// retained only to support older callers and external compatibility paths.
     #[inline]
     fn load_state_by_identifier(&self, root: &Bytes32) -> Option<State> {
         let block_root = self.state_root_to_block_root.get(root).copied().unwrap_or(*root);
@@ -995,22 +998,21 @@ impl Store for FileStore {
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
         let slot = state.slot.0.0;
-        // Standalone `put_state` callers only provide a single root identity,
-        // so preserve that behavior by using the supplied root as the blob key
-        // and secondary lookup target.
+        // `put_state` is keyed by the owning block root.
         let block_root = root;
+        let state_root = Bytes32::from(state.hash_tree_root());
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_state(block_root, &state).is_err() {
             return;
         }
         if self
             .canonical_db
-            .persist_state_root_mapping(root, block_root)
+            .persist_state_root_mapping(state_root, block_root)
             .is_err()
         {
             return;
         }
-        self.state_root_to_block_root.insert(root, block_root);
+        self.state_root_to_block_root.insert(state_root, block_root);
         self.index_state_slot(slot, block_root);
     }
 
@@ -1053,9 +1055,7 @@ impl Store for FileStore {
     /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
     fn get_state_by_slot(&self, slot: u64) -> Option<State> {
         if let Some(entry) = self.pending_blocks.get(slot) {
-            return self
-                .load_state_by_block_root(&entry.block_root)
-                .or_else(|| self.load_state_by_identifier(&entry.block_root));
+            return self.load_state_by_block_root(&entry.block_root);
         }
         let root = self.state_by_slot.get(&slot).copied()?;
         self.load_state_by_block_root(&root)

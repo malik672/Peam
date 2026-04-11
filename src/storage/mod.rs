@@ -83,9 +83,16 @@ pub struct RecoveryReport {
 /// Canonical lookup is slot-driven (`get_*_by_slot`). Root-driven lookups
 /// (`get_*`) also reach non-canonical fork data in [`FileStore`].
 pub trait Store {
-    /// Returns a decoded state for `root`, or `None` if not found/decoding fails.
+    /// Returns a decoded state for the owning block root `root`, or `None` if
+    /// not found/decoding fails.
+    ///
+    /// Implementations may preserve compatibility with state-root lookup, but
+    /// the intended storage contract is block-root-first.
     fn get_state(&self, root: &Bytes32) -> Option<State>;
-    /// Inserts or replaces the state keyed by `root`.
+    ///
+    /// `root` should be the owning block root for this post-state. Implementations
+    /// may preserve limited compatibility with older callers that pass a state
+    /// root here, but the intended storage contract is block-root-first.
     fn put_state(&mut self, root: Bytes32, state: State);
     /// Returns a decoded block for `root`, or `None` if not found/decoding fails.
     fn get_block(&self, root: &Bytes32) -> Option<Block>;
