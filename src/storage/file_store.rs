@@ -590,9 +590,14 @@ impl FileStore {
         metrics: Option<&crate::metrics::MetricsRegistry>,
     ) -> Result<State, String> {
         let parent_root = signed.message.block.parent_root;
-        let _parent_block = self
-            .load_block_by_root(&parent_root)
-            .ok_or_else(|| "block parent root unknown in store".to_string())?;
+        let parent_exists = self
+            .canonical_db
+            .with_block_blob(parent_root, |_| Some(()))
+            .map_err(|err| err.to_string())?
+            .is_some();
+        if !parent_exists {
+            return Err("block parent root unknown in store".to_string());
+        }
         let mut parent_state = self
             .load_state_by_block_root(&parent_root)
             .ok_or_else(|| "parent state root missing in store".to_string())?;
@@ -1015,7 +1020,7 @@ impl Store for FileStore {
     /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
     fn get_state_by_slot(&self, slot: u64) -> Option<State> {
         if let Some(entry) = self.pending_blocks.get(slot) {
-            return self.load_state_by_identifier(&entry.state_root);
+            return self.load_state_by_block_root(&entry.block_root);
         }
         let root = self.state_by_slot.get(&slot).copied()?;
         self.load_state_by_identifier(&root)
