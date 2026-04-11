@@ -147,11 +147,11 @@ impl PendingSlotCache {
     pub(super) fn extend_referenced_roots(
         &self,
         block_roots: &mut rapidhash::RapidHashSet<Bytes32>,
-        state_roots: &mut rapidhash::RapidHashSet<Bytes32>,
+        state_block_roots: &mut rapidhash::RapidHashSet<Bytes32>,
     ) {
         for entry in self.entries.iter().flatten() {
             block_roots.insert(entry.block_root);
-            state_roots.insert(entry.state_root);
+            state_block_roots.insert(entry.block_root);
         }
     }
 }

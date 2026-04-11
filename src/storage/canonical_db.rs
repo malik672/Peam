@@ -12,14 +12,16 @@
 //! │ canonical_state_slot       │ u64 (slot)   │ [u8] (Bytes32 root)       │
 //! │ canonical_block_slot       │ u64 (slot)   │ [u8] (Bytes32 root)       │
 //! │ canonical_meta             │ &str (key)   │ [u8] (Bytes32 root)       │
+//! │ canonical_state_root_index │ [u8]         │ [u8] (block root)         │
 //! │ canonical_state_blob       │ [u8] (root)  │ [u8] (LEANSTRG envelope)  │
 //! │ canonical_block_blob       │ [u8] (root)  │ [u8] (LEANSTRG envelope)  │
 //! │ canonical_signed_block_blob│ [u8] (root)  │ [u8] (LEANSTRG envelope)  │
 //! └────────────────────────────┴──────────────┴───────────────────────────┘
 //! ```
 //!
-//! Slot tables map `slot → root` (canonical index). Blob tables map
-//! `root → envelope` (the actual serialized data). Meta stores three
+//! Slot tables map `slot → root` (canonical index). `canonical_state_root_index`
+//! maps `state_root → block_root`. Blob tables map `root → envelope` (the
+//! actual serialized data). Meta stores three
 //! string-keyed roots: `"head"`, `"finalized"`, `"justified"`, plus
 //! an optional `"finalized_slot"` u64 for checkpoint sync metadata.
 //!
@@ -47,7 +49,10 @@ const BLOCK_SLOT_TABLE: TableDefinition<'static, u64, &'static [u8]> =
 /// plus `"finalized_slot" → u64` (LE bytes).
 const META_TABLE: TableDefinition<'static, &'static str, &'static [u8]> =
     TableDefinition::new("canonical_meta");
-/// State blobs keyed by root: `Bytes32 state_root → LEANSTRG envelope`.
+/// State root lookup: `Bytes32 state_root → Bytes32 block_root`.
+const STATE_ROOT_INDEX_TABLE: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("canonical_state_root_index");
+/// State blobs keyed by block root: `Bytes32 block_root → LEANSTRG envelope`.
 const STATE_BLOB_TABLE: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("canonical_state_blob");
 /// Block blobs keyed by root: `Bytes32 block_root → LEANSTRG envelope`.
@@ -110,12 +115,13 @@ impl CanonicalDb {
         read_txn.open_table(STATE_SLOT_TABLE).is_ok()
             && read_txn.open_table(BLOCK_SLOT_TABLE).is_ok()
             && read_txn.open_table(META_TABLE).is_ok()
+            && read_txn.open_table(STATE_ROOT_INDEX_TABLE).is_ok()
             && read_txn.open_table(STATE_BLOB_TABLE).is_ok()
             && read_txn.open_table(BLOCK_BLOB_TABLE).is_ok()
             && read_txn.open_table(SIGNED_BLOCK_BLOB_TABLE).is_ok()
     }
 
-    /// Creates all 6 tables if they don't already exist.
+    /// Creates all canonical tables if they don't already exist.
     ///
     /// redb's `open_table` inside a write txn is idempotent — it creates the
     /// table on first call and returns the existing handle on subsequent calls.
@@ -128,6 +134,9 @@ impl CanonicalDb {
             let _ = write_txn.open_table(STATE_SLOT_TABLE).map_err(to_string)?;
             let _ = write_txn.open_table(BLOCK_SLOT_TABLE).map_err(to_string)?;
             let _ = write_txn.open_table(META_TABLE).map_err(to_string)?;
+            let _ = write_txn
+                .open_table(STATE_ROOT_INDEX_TABLE)
+                .map_err(to_string)?;
             let _ = write_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
             let _ = write_txn.open_table(BLOCK_BLOB_TABLE).map_err(to_string)?;
             let _ = write_txn
@@ -147,6 +156,21 @@ impl CanonicalDb {
     /// Called once at startup by [`FileStore::load_from_disk`].
     pub(super) fn load_block_index(&self) -> Result<RapidHashMap<u64, Bytes32>, String> {
         self.load_slot_index(BLOCK_SLOT_TABLE)
+    }
+
+    /// Loads the full `state_root -> block_root` lookup table into memory.
+    pub(super) fn load_state_root_index(&self) -> Result<RapidHashMap<Bytes32, Bytes32>, String> {
+        let read_txn = self.db.begin_read().map_err(to_string)?;
+        let table = read_txn.open_table(STATE_ROOT_INDEX_TABLE).map_err(to_string)?;
+        let mut out = RapidHashMap::default();
+        for row in table.iter().map_err(to_string)? {
+            let (state_root, block_root) = row.map_err(to_string)?;
+            out.insert(
+                bytes_to_root(state_root.value())?,
+                bytes_to_root(block_root.value())?,
+            );
+        }
+        Ok(out)
     }
 
     /// Generic slot-index loader. Opens a read txn, iterates every row in the
@@ -314,9 +338,17 @@ impl CanonicalDb {
     ) -> Result<(), String> {
         let write_txn = self.db.begin_write().map_err(to_string)?;
         {
+            let mut state_root_index = write_txn
+                .open_table(STATE_ROOT_INDEX_TABLE)
+                .map_err(to_string)?;
+            state_root_index
+                .insert(state_root.as_array().as_slice(), block_root.as_array().as_slice())
+                .map_err(to_string)?;
+        }
+        {
             let mut state_blob_table = write_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
             state_blob_table
-                .insert(state_root.as_array().as_slice(), state_blob)
+                .insert(block_root.as_array().as_slice(), state_blob)
                 .map_err(to_string)?;
         }
         {
@@ -387,10 +419,32 @@ impl CanonicalDb {
         self.with_blob(SIGNED_BLOCK_BLOB_TABLE, root, f)
     }
 
-    /// Writes a state blob (already LEANSTRG-wrapped) keyed by state root.
+    /// Writes a state-root lookup row: `state_root -> block_root`.
+    pub(super) fn persist_state_root_mapping(
+        &self,
+        state_root: Bytes32,
+        block_root: Bytes32,
+    ) -> Result<(), String> {
+        let write_txn = self.db.begin_write().map_err(to_string)?;
+        {
+            let mut table = write_txn
+                .open_table(STATE_ROOT_INDEX_TABLE)
+                .map_err(to_string)?;
+            table
+                .insert(state_root.as_array().as_slice(), block_root.as_array().as_slice())
+                .map_err(to_string)?;
+        }
+        write_txn.commit().map_err(to_string)
+    }
+
+    /// Writes a state blob (already LEANSTRG-wrapped) keyed by block root.
     /// Used by [`FileStore::put_state`] for individual state persistence.
-    pub(super) fn persist_state_blob(&self, root: Bytes32, encoded: &[u8]) -> Result<(), String> {
-        self.persist_blob(STATE_BLOB_TABLE, root, encoded)
+    pub(super) fn persist_state_blob(
+        &self,
+        block_root: Bytes32,
+        encoded: &[u8],
+    ) -> Result<(), String> {
+        self.persist_blob(STATE_BLOB_TABLE, block_root, encoded)
     }
 
     /// Writes a block blob (already LEANSTRG-wrapped) keyed by block root.
@@ -401,18 +455,18 @@ impl CanonicalDb {
 
     /// Removes blob rows that are no longer referenced by canonical/pending roots.
     ///
-    /// `keep_state_roots` is used for state blobs and `keep_block_roots` for
+    /// `keep_state_block_roots` is used for state blobs and `keep_block_roots` for
     /// block + signed block blobs.
     pub(super) fn gc_unreferenced_blobs(
         &self,
-        keep_state_roots: &RapidHashSet<Bytes32>,
+        keep_state_block_roots: &RapidHashSet<Bytes32>,
         keep_block_roots: &RapidHashSet<Bytes32>,
     ) -> Result<BlobGcReport, String> {
         let write_txn = self.db.begin_write().map_err(to_string)?;
         let report = {
             let mut state_blob_table = write_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
-            let removed_state_blobs =
-                gc_blob_table(&mut state_blob_table, keep_state_roots).map_err(to_string)?;
+            let removed_state_blobs = gc_blob_table(&mut state_blob_table, keep_state_block_roots)
+                .map_err(to_string)?;
 
             let mut block_blob_table = write_txn.open_table(BLOCK_BLOB_TABLE).map_err(to_string)?;
             let removed_block_blobs =

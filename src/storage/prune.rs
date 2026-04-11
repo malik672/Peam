@@ -74,17 +74,22 @@ impl FileStore {
         self.index_dirty = true;
         self.flush_canonical()?;
 
-        let mut keep_state_roots = RapidHashSet::<Bytes32>::default();
-        keep_state_roots.extend(self.state_by_slot.values().copied());
+        let mut keep_state_block_roots = RapidHashSet::<Bytes32>::default();
+        for state_root in self.state_by_slot.values().copied() {
+            if let Some(block_root) = self.state_root_to_block_root.get(&state_root).copied() {
+                keep_state_block_roots.insert(block_root);
+            }
+        }
         let mut keep_block_roots = RapidHashSet::<Bytes32>::default();
         keep_block_roots.extend(self.block_by_slot.values().copied());
         keep_block_roots.extend(pinned.iter().flatten().copied());
+        keep_state_block_roots.extend(pinned.iter().flatten().copied());
         self.pending_blocks
-            .extend_referenced_roots(&mut keep_block_roots, &mut keep_state_roots);
+            .extend_referenced_roots(&mut keep_block_roots, &mut keep_state_block_roots);
 
         let gc = self
             .canonical_db
-            .gc_unreferenced_blobs(&keep_state_roots, &keep_block_roots)?;
+            .gc_unreferenced_blobs(&keep_state_block_roots, &keep_block_roots)?;
         report.removed_state_blobs = gc.removed_state_blobs;
         report.removed_block_blobs = gc.removed_block_blobs;
         report.removed_signed_blocks = gc.removed_signed_block_blobs;
