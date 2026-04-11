@@ -113,6 +113,17 @@ impl PendingSlotCache {
         }
     }
 
+    /// Returns a snapshot of entries with `slot <= upper_inclusive`.
+    #[inline]
+    pub(super) fn entries_leq(&self, upper_inclusive: u64) -> Vec<PendingEntry> {
+        self.entries
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|entry| entry.slot <= upper_inclusive)
+            .collect()
+    }
+
     /// Retains only entries for which `keep(slot, block_root, state_root)` returns `true`.
     #[allow(dead_code)]
     pub(super) fn retain<F>(&mut self, mut keep: F)
@@ -147,10 +158,20 @@ impl PendingSlotCache {
     pub(super) fn extend_referenced_roots(
         &self,
         block_roots: &mut rapidhash::RapidHashSet<Bytes32>,
-        state_roots: &mut rapidhash::RapidHashSet<Bytes32>,
+        state_block_roots: &mut rapidhash::RapidHashSet<Bytes32>,
     ) {
         for entry in self.entries.iter().flatten() {
             block_roots.insert(entry.block_root);
+            state_block_roots.insert(entry.block_root);
+        }
+    }
+
+    /// Extends a retention set with the state roots of all buffered pending entries.
+    pub(super) fn extend_referenced_state_roots(
+        &self,
+        state_roots: &mut rapidhash::RapidHashSet<Bytes32>,
+    ) {
+        for entry in self.entries.iter().flatten() {
             state_roots.insert(entry.state_root);
         }
     }

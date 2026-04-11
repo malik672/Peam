@@ -123,7 +123,8 @@ pub(super) fn decode_blob_offset(expected_kind: u8, bytes: &[u8]) -> Option<usiz
 ///
 /// If the file does not exist it is created with the current version. If it
 /// exists with a different version an error is returned, indicating that the
-/// data directory was written by an incompatible binary.
+/// data directory was written by an incompatible binary and must be migrated or
+/// recreated before startup can continue.
 ///
 /// # Errors
 ///
@@ -138,7 +139,7 @@ pub(super) fn ensure_schema_version(root: &Path) -> Result<(), String> {
     let value = fs::read_to_string(schema_path).map_err(|err| err.to_string())?;
     if value.trim() != SCHEMA_VERSION {
         return Err(format!(
-            "unsupported storage schema version {}, expected {}",
+            "unsupported storage schema version {}, expected {}; this binary cannot open older data directories in place, so migrate the store or recreate the data directory",
             value.trim(),
             SCHEMA_VERSION
         ));

@@ -19,9 +19,9 @@
 //!
 //! | Method | Warm (in-memory) | Cold (redb) |
 //! |--------|------------------|-------------|
-//! | `get_state(root)` | — | redb read txn → decode blob → SSZ decode |
+//! | `get_state(root)` | — | state-root lookup → block-root blob decode |
 //! | `get_block(root)` | — | redb read txn → decode blob → SSZ decode |
-//! | `get_state_by_slot(slot)` | pending cache hit | slot index → root → cold path |
+//! | `get_state_by_slot(slot)` | pending cache hit | slot index → state-root lookup → cold path |
 //! | `get_block_by_slot(slot)` | pending cache hit | slot index → root → cold path |
 //!
 //! By-root reads always go to disk (no in-memory blob cache). By-slot reads
@@ -61,6 +61,8 @@ pub struct FileStore {
     pub(super) canonical_db: CanonicalDb,
     /// Canonical finalized slot->state-root index.
     pub(super) state_by_slot: RapidHashMap<u64, Bytes32>,
+    /// Secondary lookup from state root to the owning block root.
+    pub(super) state_root_to_block_root: RapidHashMap<Bytes32, Bytes32>,
     /// Canonical finalized slot->block-root index.
     pub(super) block_by_slot: RapidHashMap<u64, Bytes32>,
     /// Pending (non-finalized) slot->block-root cache.
@@ -225,6 +227,7 @@ impl FileStore {
             root,
             canonical_db,
             state_by_slot: RapidHashMap::default(),
+            state_root_to_block_root: RapidHashMap::default(),
             block_by_slot: RapidHashMap::default(),
             pending_blocks: PendingSlotCache::new(PENDING_WINDOW_CAP),
             head: None,
@@ -264,16 +267,23 @@ impl FileStore {
         self.pending_blocks.len()
     }
 
-    /// Cold-path state read: zero-copy from redb mmap → validate header →
-    /// SSZ decode. No intermediate heap allocation.
+    /// Cold-path state read by block root: zero-copy from redb mmap → validate
+    /// header → SSZ decode. No intermediate heap allocation.
     #[inline]
-    fn load_state_by_root(&self, root: &Bytes32) -> Option<State> {
+    fn load_state_by_block_root(&self, root: &Bytes32) -> Option<State> {
         self.canonical_db
             .with_state_blob(*root, |bytes| {
                 let off = decode_blob_offset(BLOB_KIND_STATE, bytes)?;
                 decode_state_safe(&bytes[off..])
             })
             .ok()?
+    }
+
+    /// State lookup that accepts either a state root or a block root.
+    #[inline]
+    fn load_state_by_identifier(&self, root: &Bytes32) -> Option<State> {
+        let block_root = self.state_root_to_block_root.get(root).copied().unwrap_or(*root);
+        self.load_state_by_block_root(&block_root)
     }
 
     /// Cold-path block read. Same zero-copy pipeline.
@@ -320,12 +330,22 @@ impl FileStore {
     /// Flushes canonical indexes + metadata to canonical DB if dirty.
     #[inline]
     pub(super) fn flush_canonical(&mut self) -> Result<(), String> {
+        self.flush_canonical_with_state_root_index(true)
+    }
+
+    #[inline]
+    pub(super) fn flush_canonical_with_state_root_index(
+        &mut self,
+        rewrite_state_root_index: bool,
+    ) -> Result<(), String> {
         if !self.index_dirty && !self.meta_dirty {
             return Ok(());
         }
         self.canonical_db.persist_snapshot(
             &self.state_by_slot,
             &self.block_by_slot,
+            &self.state_root_to_block_root,
+            rewrite_state_root_index,
             self.head,
             self.finalized,
             self.finalized_slot,
@@ -371,6 +391,19 @@ impl FileStore {
     fn load_from_disk(&mut self) -> Result<(), String> {
         self.load_state_index()?;
         self.load_block_index()?;
+        match self.canonical_db.load_state_root_index() {
+            Ok(index) => {
+                self.state_root_to_block_root = index;
+            }
+            Err(err) => {
+                warn!(
+                    %err,
+                    "failed to load state-root index; continuing with an empty mapping may require state reindexing and can reduce blob-retention accuracy until rebuilt"
+                );
+                self.state_root_to_block_root.clear();
+                self.recovery.skipped_corrupt += 1;
+            }
+        }
         self.load_meta()?;
         if self.finalized_slot.is_none() {
             self.finalized_slot = self
@@ -416,11 +449,11 @@ impl FileStore {
         self.meta_dirty = true;
     }
 
-    /// Writes a state blob to `canonical.redb`.
+    /// Writes a state blob to `canonical.redb`, keyed by block root.
     #[inline]
-    fn persist_state(&self, root: Bytes32, state: &State) -> Result<(), String> {
+    fn persist_state(&self, block_root: Bytes32, state: &State) -> Result<(), String> {
         let encoded = encode_blob(BLOB_KIND_STATE, &state.encode_ssz());
-        self.canonical_db.persist_state_blob(root, &encoded)
+        self.canonical_db.persist_state_blob(block_root, &encoded)
     }
 
     /// Writes a block blob to `canonical.redb`.
@@ -465,14 +498,22 @@ impl FileStore {
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
-
-        if update_head {
-            self.head = Some(root);
-            self.justified = Some(meta_justified.root);
-            self.finalized = Some(meta_finalized.root);
-            self.finalized_slot = Some(meta_finalized.slot.0.0);
-            self.set_meta_dirty();
-        }
+        let next_head = if update_head { Some(root) } else { self.head };
+        let next_justified = if update_head {
+            Some(meta_justified.root)
+        } else {
+            self.justified
+        };
+        let next_finalized = if update_head {
+            Some(meta_finalized.root)
+        } else {
+            self.finalized
+        };
+        let next_finalized_slot = if update_head {
+            Some(meta_finalized.slot.0.0)
+        } else {
+            self.finalized_slot
+        };
 
         let counter = PERSIST_LOGS.get_or_init(|| AtomicUsize::new(0));
         if counter.fetch_add(1, Ordering::Relaxed) < 64 {
@@ -481,19 +522,19 @@ impl FileStore {
                 block_slot = slot,
                 parent_root = ?block.parent_root,
                 state_root = ?state_root,
-                head_root = ?self.head,
-                justified_root = ?self.justified,
-                finalized_root = ?self.finalized,
-                finalized_slot = self.finalized_slot.unwrap_or(0),
+                head_root = ?next_head,
+                justified_root = ?next_justified,
+                finalized_root = ?next_finalized,
+                finalized_slot = next_finalized_slot.unwrap_or(0),
                 state_slot = persisted_state.slot.0.0,
                 latest_header_slot = persisted_state.latest_block_header.slot.0.0,
                 "persisted signed block bundle"
             );
         }
 
-        let fin_slot = meta_finalized.slot.0.0;
-        let block_canonical = self.index_block_slot(slot, root, state_root);
-        self.index_state_slot(slot, state_root);
+        let fin_slot = next_finalized_slot.unwrap_or(0);
+        let block_canonical = !matches!(next_finalized_slot, Some(finalized_slot) if slot > finalized_slot);
+        let pending_promotions = self.pending_blocks.entries_leq(fin_slot);
 
         let mut state_upserts = Vec::new();
         let mut block_upserts = Vec::new();
@@ -501,15 +542,10 @@ impl FileStore {
         if block_canonical {
             block_upserts.push((slot, root));
         }
-        let block_by_slot = &mut self.block_by_slot;
-        let state_by_slot = &mut self.state_by_slot;
-        let pending = &mut self.pending_blocks;
-        pending.drain_leq_with(fin_slot, |value| {
-            block_by_slot.insert(value.slot, value.block_root);
-            state_by_slot.insert(value.slot, value.state_root);
+        for value in &pending_promotions {
             state_upserts.push((value.slot, value.state_root));
             block_upserts.push((value.slot, value.block_root));
-        });
+        }
 
         self.canonical_db.persist_signed_block_bundle(
             root,
@@ -519,11 +555,29 @@ impl FileStore {
             &state_blob,
             &state_upserts,
             &block_upserts,
-            self.head,
-            self.finalized,
-            self.finalized_slot,
-            self.justified,
+            next_head,
+            next_finalized,
+            next_finalized_slot,
+            next_justified,
         )?;
+
+        self.state_root_to_block_root.insert(state_root, root);
+        if update_head {
+            self.head = next_head;
+            self.justified = next_justified;
+            self.finalized = next_finalized;
+            self.finalized_slot = next_finalized_slot;
+        }
+        if block_canonical {
+            self.block_by_slot.insert(slot, root);
+        } else {
+            self.pending_blocks.insert(slot, root, state_root);
+        }
+        self.state_by_slot.insert(slot, state_root);
+        self.pending_blocks.drain_leq_with(fin_slot, |value| {
+            self.block_by_slot.insert(value.slot, value.block_root);
+            self.state_by_slot.insert(value.slot, value.state_root);
+        });
         self.index_dirty = false;
         self.meta_dirty = false;
         Ok(())
@@ -536,11 +590,16 @@ impl FileStore {
         metrics: Option<&crate::metrics::MetricsRegistry>,
     ) -> Result<State, String> {
         let parent_root = signed.message.block.parent_root;
-        let parent_block = self
-            .load_block_by_root(&parent_root)
-            .ok_or_else(|| "block parent root unknown in store".to_string())?;
+        let parent_exists = self
+            .canonical_db
+            .with_block_blob(parent_root, |_| Some(()))
+            .map_err(|err| err.to_string())?
+            .is_some();
+        if !parent_exists {
+            return Err("block parent root unknown in store".to_string());
+        }
         let mut parent_state = self
-            .load_state_by_root(&parent_block.state_root)
+            .load_state_by_block_root(&parent_root)
             .ok_or_else(|| "parent state root missing in store".to_string())?;
         if let Some(metrics) = metrics {
             parent_state.process_signed_block_with_metrics(signed, metrics)?;
@@ -572,7 +631,7 @@ impl FileStore {
             );
             return;
         };
-        let Some(parent_state) = self.load_state_by_root(&parent_block.state_root) else {
+        let Some(parent_state) = self.load_state_by_block_root(&parent_root) else {
             warn!(
                 block_root = ?root,
                 block_slot = block.slot.0.0,
@@ -896,16 +955,28 @@ impl Drop for FileStore {
 impl Store for FileStore {
     #[inline]
     fn get_state(&self, root: &Bytes32) -> Option<State> {
-        self.load_state_by_root(root)
+        self.load_state_by_identifier(root)
     }
 
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
         let slot = state.slot.0.0;
+        // Standalone `put_state` callers only provide a single root identity,
+        // so preserve that behavior by using the supplied root as the blob key
+        // and secondary lookup target.
+        let block_root = root;
         // Blob write must succeed before canonical indexes can reference this root.
-        if self.persist_state(root, &state).is_err() {
+        if self.persist_state(block_root, &state).is_err() {
             return;
         }
+        if self
+            .canonical_db
+            .persist_state_root_mapping(root, block_root)
+            .is_err()
+        {
+            return;
+        }
+        self.state_root_to_block_root.insert(root, block_root);
         self.index_state_slot(slot, root);
     }
 
@@ -933,9 +1004,9 @@ impl Store for FileStore {
     ///
     /// All three blobs (block, signed block, post-state) plus index/meta
     /// deltas are written in a single redb write transaction. If the
-    /// transaction commits, in-memory dirty flags are cleared. If it fails,
-    /// in-memory state is ahead of disk (recovered on next `flush_canonical`
-    /// or `Drop`).
+    /// transaction commits, the corresponding in-memory indexes and resolver
+    /// entries are published. If it fails, neither the durable nor the live
+    /// view is advanced.
     #[inline]
     fn put_signed_block(
         &mut self,
@@ -949,10 +1020,10 @@ impl Store for FileStore {
     /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
     fn get_state_by_slot(&self, slot: u64) -> Option<State> {
         if let Some(entry) = self.pending_blocks.get(slot) {
-            return self.load_state_by_root(&entry.state_root);
+            return self.load_state_by_block_root(&entry.block_root);
         }
         let root = self.state_by_slot.get(&slot).copied()?;
-        self.load_state_by_root(&root)
+        self.load_state_by_identifier(&root)
     }
 
     /// By-slot block read: pending window (`O(1)`) → canonical index → cold path.
