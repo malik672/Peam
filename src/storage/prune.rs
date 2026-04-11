@@ -1,6 +1,6 @@
 use super::*;
 use rapidhash::RapidHashSet;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Statistics returned by [`FileStore::prune`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -75,9 +75,17 @@ impl FileStore {
         self.flush_canonical()?;
 
         let mut keep_state_block_roots = RapidHashSet::<Bytes32>::default();
+        let mut missing_state_root_mappings = 0usize;
         for state_root in self.state_by_slot.values().copied() {
             if let Some(block_root) = self.state_root_to_block_root.get(&state_root).copied() {
                 keep_state_block_roots.insert(block_root);
+            } else {
+                // Standalone `put_state` callers key state blobs directly by the
+                // provided root, so keep that root too. If the missing mapping
+                // belongs to migrated/imported state, we treat prune
+                // conservatively below and retain all state blobs for this pass.
+                keep_state_block_roots.insert(state_root);
+                missing_state_root_mappings += 1;
             }
         }
         let mut keep_block_roots = RapidHashSet::<Bytes32>::default();
@@ -86,6 +94,14 @@ impl FileStore {
         keep_state_block_roots.extend(pinned.iter().flatten().copied());
         self.pending_blocks
             .extend_referenced_roots(&mut keep_block_roots, &mut keep_state_block_roots);
+
+        if missing_state_root_mappings > 0 {
+            warn!(
+                missing_state_root_mappings,
+                "state-root mapping is incomplete; skipping state-blob garbage collection for this prune pass to avoid deleting retained state"
+            );
+            keep_state_block_roots.extend(self.canonical_db.load_state_blob_roots()?);
+        }
 
         let gc = self
             .canonical_db

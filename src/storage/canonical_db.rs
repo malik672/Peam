@@ -173,6 +173,18 @@ impl CanonicalDb {
         Ok(out)
     }
 
+    /// Loads every state-blob key currently present in canonical storage.
+    pub(super) fn load_state_blob_roots(&self) -> Result<RapidHashSet<Bytes32>, String> {
+        let read_txn = self.db.begin_read().map_err(to_string)?;
+        let table = read_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
+        let mut out = RapidHashSet::default();
+        for row in table.iter().map_err(to_string)? {
+            let (root, _) = row.map_err(to_string)?;
+            out.insert(bytes_to_root(root.value())?);
+        }
+        Ok(out)
+    }
+
     /// Generic slot-index loader. Opens a read txn, iterates every row in the
     /// B-tree, and builds a `slot → Bytes32` hashmap. Cost is proportional
     /// to the number of canonical rows (one B-tree scan).

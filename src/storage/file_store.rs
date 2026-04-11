@@ -385,7 +385,11 @@ impl FileStore {
             Ok(index) => {
                 self.state_root_to_block_root = index;
             }
-            Err(_) => {
+            Err(err) => {
+                warn!(
+                    %err,
+                    "failed to load state-root index; continuing with an empty mapping may require state reindexing and can reduce blob-retention accuracy until rebuilt"
+                );
                 self.state_root_to_block_root.clear();
                 self.recovery.skipped_corrupt += 1;
             }
