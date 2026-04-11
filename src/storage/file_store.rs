@@ -336,6 +336,7 @@ impl FileStore {
         self.canonical_db.persist_snapshot(
             &self.state_by_slot,
             &self.block_by_slot,
+            &self.state_root_to_block_root,
             self.head,
             self.finalized,
             self.finalized_slot,

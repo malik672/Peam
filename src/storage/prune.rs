@@ -58,6 +58,13 @@ impl FileStore {
             false
         });
 
+        let mut live_state_roots = RapidHashSet::<Bytes32>::default();
+        live_state_roots.extend(self.state_by_slot.values().copied());
+        self.pending_blocks
+            .extend_referenced_state_roots(&mut live_state_roots);
+        self.state_root_to_block_root
+            .retain(|state_root, _| live_state_roots.contains(state_root));
+
         // Canonical block index prune.
         self.block_by_slot.retain(|slot, root| {
             if *slot >= prune_before {

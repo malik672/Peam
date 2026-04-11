@@ -154,4 +154,14 @@ impl PendingSlotCache {
             state_block_roots.insert(entry.block_root);
         }
     }
+
+    /// Extends a retention set with the state roots of all buffered pending entries.
+    pub(super) fn extend_referenced_state_roots(
+        &self,
+        state_roots: &mut rapidhash::RapidHashSet<Bytes32>,
+    ) {
+        for entry in self.entries.iter().flatten() {
+            state_roots.insert(entry.state_root);
+        }
+    }
 }

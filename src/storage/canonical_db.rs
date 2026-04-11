@@ -289,6 +289,7 @@ impl CanonicalDb {
         &self,
         state_index: &RapidHashMap<u64, Bytes32>,
         block_index: &RapidHashMap<u64, Bytes32>,
+        state_root_index: &RapidHashMap<Bytes32, Bytes32>,
         head: Option<Bytes32>,
         finalized: Option<Bytes32>,
         finalized_slot: Option<u64>,
@@ -310,6 +311,17 @@ impl CanonicalDb {
             for (slot, root) in block_index {
                 block_table
                     .insert(*slot, root.as_array().as_slice())
+                    .map_err(to_string)?;
+            }
+        }
+        {
+            let mut state_root_table = write_txn
+                .open_table(STATE_ROOT_INDEX_TABLE)
+                .map_err(to_string)?;
+            clear_bytes_table(&mut state_root_table)?;
+            for (state_root, block_root) in state_root_index {
+                state_root_table
+                    .insert(state_root.as_array().as_slice(), block_root.as_array().as_slice())
                     .map_err(to_string)?;
             }
         }
@@ -624,4 +636,12 @@ fn gc_blob_table(
         let _ = table.remove(root.as_slice()).map_err(to_string)?;
     }
     Ok(to_delete.len())
+}
+
+/// Removes every key/value row from a bytes-keyed table.
+fn clear_bytes_table(
+    table: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+) -> Result<(), String> {
+    while table.pop_first().map_err(to_string)?.is_some() {}
+    Ok(())
 }
