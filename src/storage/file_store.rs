@@ -330,6 +330,14 @@ impl FileStore {
     /// Flushes canonical indexes + metadata to canonical DB if dirty.
     #[inline]
     pub(super) fn flush_canonical(&mut self) -> Result<(), String> {
+        self.flush_canonical_with_state_root_index(true)
+    }
+
+    #[inline]
+    pub(super) fn flush_canonical_with_state_root_index(
+        &mut self,
+        rewrite_state_root_index: bool,
+    ) -> Result<(), String> {
         if !self.index_dirty && !self.meta_dirty {
             return Ok(());
         }
@@ -337,6 +345,7 @@ impl FileStore {
             &self.state_by_slot,
             &self.block_by_slot,
             &self.state_root_to_block_root,
+            rewrite_state_root_index,
             self.head,
             self.finalized,
             self.finalized_slot,

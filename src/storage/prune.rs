@@ -62,8 +62,19 @@ impl FileStore {
         live_state_roots.extend(self.state_by_slot.values().copied());
         self.pending_blocks
             .extend_referenced_state_roots(&mut live_state_roots);
-        self.state_root_to_block_root
-            .retain(|state_root, _| live_state_roots.contains(state_root));
+        let missing_state_root_mappings = live_state_roots
+            .iter()
+            .filter(|state_root| !self.state_root_to_block_root.contains_key(*state_root))
+            .count();
+        if missing_state_root_mappings == 0 {
+            self.state_root_to_block_root
+                .retain(|state_root, _| live_state_roots.contains(state_root));
+        } else {
+            warn!(
+                missing_state_root_mappings,
+                "state-root mapping is incomplete; skipping state-root index rewrite for this prune pass to preserve existing lookups"
+            );
+        }
 
         // Canonical block index prune.
         self.block_by_slot.retain(|slot, root| {
@@ -79,10 +90,9 @@ impl FileStore {
         });
 
         self.index_dirty = true;
-        self.flush_canonical()?;
+        self.flush_canonical_with_state_root_index(missing_state_root_mappings == 0)?;
 
         let mut keep_state_block_roots = RapidHashSet::<Bytes32>::default();
-        let mut missing_state_root_mappings = 0usize;
         for state_root in self.state_by_slot.values().copied() {
             if let Some(block_root) = self.state_root_to_block_root.get(&state_root).copied() {
                 keep_state_block_roots.insert(block_root);
@@ -92,7 +102,6 @@ impl FileStore {
                 // belongs to migrated/imported state, we treat prune
                 // conservatively below and retain all state blobs for this pass.
                 keep_state_block_roots.insert(state_root);
-                missing_state_root_mappings += 1;
             }
         }
         let mut keep_block_roots = RapidHashSet::<Bytes32>::default();

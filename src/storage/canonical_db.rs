@@ -290,6 +290,7 @@ impl CanonicalDb {
         state_index: &RapidHashMap<u64, Bytes32>,
         block_index: &RapidHashMap<u64, Bytes32>,
         state_root_index: &RapidHashMap<Bytes32, Bytes32>,
+        rewrite_state_root_index: bool,
         head: Option<Bytes32>,
         finalized: Option<Bytes32>,
         finalized_slot: Option<u64>,
@@ -314,7 +315,7 @@ impl CanonicalDb {
                     .map_err(to_string)?;
             }
         }
-        {
+        if rewrite_state_root_index {
             let mut state_root_table = write_txn
                 .open_table(STATE_ROOT_INDEX_TABLE)
                 .map_err(to_string)?;
