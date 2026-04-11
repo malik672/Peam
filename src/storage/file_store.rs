@@ -922,7 +922,10 @@ impl Store for FileStore {
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
         let slot = state.slot.0.0;
-        let block_root = Bytes32::from(state.latest_block_header.hash_tree_root());
+        // Standalone `put_state` callers only provide a single root identity,
+        // so preserve that behavior by using the supplied root as the blob key
+        // and secondary lookup target.
+        let block_root = root;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_state(block_root, &state).is_err() {
             return;
