@@ -113,6 +113,17 @@ impl PendingSlotCache {
         }
     }
 
+    /// Returns a snapshot of entries with `slot <= upper_inclusive`.
+    #[inline]
+    pub(super) fn entries_leq(&self, upper_inclusive: u64) -> Vec<PendingEntry> {
+        self.entries
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|entry| entry.slot <= upper_inclusive)
+            .collect()
+    }
+
     /// Retains only entries for which `keep(slot, block_root, state_root)` returns `true`.
     #[allow(dead_code)]
     pub(super) fn retain<F>(&mut self, mut keep: F)

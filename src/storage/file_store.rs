@@ -489,15 +489,22 @@ impl FileStore {
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
-        self.state_root_to_block_root.insert(state_root, root);
-
-        if update_head {
-            self.head = Some(root);
-            self.justified = Some(meta_justified.root);
-            self.finalized = Some(meta_finalized.root);
-            self.finalized_slot = Some(meta_finalized.slot.0.0);
-            self.set_meta_dirty();
-        }
+        let next_head = if update_head { Some(root) } else { self.head };
+        let next_justified = if update_head {
+            Some(meta_justified.root)
+        } else {
+            self.justified
+        };
+        let next_finalized = if update_head {
+            Some(meta_finalized.root)
+        } else {
+            self.finalized
+        };
+        let next_finalized_slot = if update_head {
+            Some(meta_finalized.slot.0.0)
+        } else {
+            self.finalized_slot
+        };
 
         let counter = PERSIST_LOGS.get_or_init(|| AtomicUsize::new(0));
         if counter.fetch_add(1, Ordering::Relaxed) < 64 {
@@ -506,19 +513,19 @@ impl FileStore {
                 block_slot = slot,
                 parent_root = ?block.parent_root,
                 state_root = ?state_root,
-                head_root = ?self.head,
-                justified_root = ?self.justified,
-                finalized_root = ?self.finalized,
-                finalized_slot = self.finalized_slot.unwrap_or(0),
+                head_root = ?next_head,
+                justified_root = ?next_justified,
+                finalized_root = ?next_finalized,
+                finalized_slot = next_finalized_slot.unwrap_or(0),
                 state_slot = persisted_state.slot.0.0,
                 latest_header_slot = persisted_state.latest_block_header.slot.0.0,
                 "persisted signed block bundle"
             );
         }
 
-        let fin_slot = meta_finalized.slot.0.0;
-        let block_canonical = self.index_block_slot(slot, root, state_root);
-        self.index_state_slot(slot, state_root);
+        let fin_slot = next_finalized_slot.unwrap_or(0);
+        let block_canonical = !matches!(next_finalized_slot, Some(finalized_slot) if slot > finalized_slot);
+        let pending_promotions = self.pending_blocks.entries_leq(fin_slot);
 
         let mut state_upserts = Vec::new();
         let mut block_upserts = Vec::new();
@@ -526,15 +533,10 @@ impl FileStore {
         if block_canonical {
             block_upserts.push((slot, root));
         }
-        let block_by_slot = &mut self.block_by_slot;
-        let state_by_slot = &mut self.state_by_slot;
-        let pending = &mut self.pending_blocks;
-        pending.drain_leq_with(fin_slot, |value| {
-            block_by_slot.insert(value.slot, value.block_root);
-            state_by_slot.insert(value.slot, value.state_root);
+        for value in &pending_promotions {
             state_upserts.push((value.slot, value.state_root));
             block_upserts.push((value.slot, value.block_root));
-        });
+        }
 
         self.canonical_db.persist_signed_block_bundle(
             root,
@@ -544,11 +546,29 @@ impl FileStore {
             &state_blob,
             &state_upserts,
             &block_upserts,
-            self.head,
-            self.finalized,
-            self.finalized_slot,
-            self.justified,
+            next_head,
+            next_finalized,
+            next_finalized_slot,
+            next_justified,
         )?;
+
+        self.state_root_to_block_root.insert(state_root, root);
+        if update_head {
+            self.head = next_head;
+            self.justified = next_justified;
+            self.finalized = next_finalized;
+            self.finalized_slot = next_finalized_slot;
+        }
+        if block_canonical {
+            self.block_by_slot.insert(slot, root);
+        } else {
+            self.pending_blocks.insert(slot, root, state_root);
+        }
+        self.state_by_slot.insert(slot, state_root);
+        self.pending_blocks.drain_leq_with(fin_slot, |value| {
+            self.block_by_slot.insert(value.slot, value.block_root);
+            self.state_by_slot.insert(value.slot, value.state_root);
+        });
         self.index_dirty = false;
         self.meta_dirty = false;
         Ok(())
@@ -970,9 +990,9 @@ impl Store for FileStore {
     ///
     /// All three blobs (block, signed block, post-state) plus index/meta
     /// deltas are written in a single redb write transaction. If the
-    /// transaction commits, in-memory dirty flags are cleared. If it fails,
-    /// in-memory state is ahead of disk (recovered on next `flush_canonical`
-    /// or `Drop`).
+    /// transaction commits, the corresponding in-memory indexes and resolver
+    /// entries are published. If it fails, neither the durable nor the live
+    /// view is advanced.
     #[inline]
     fn put_signed_block(
         &mut self,
