@@ -80,14 +80,11 @@ pub(super) fn import_backfill_chain(
     } else {
         match store_guard.get_block(&parent_root) {
             Some(parent_block) => {
-                if let Some(parent_state) = store_guard
-                    .get_state(&parent_root)
-                    .or_else(|| store_guard.get_state(&parent_block.state_root))
-                {
+                if let Some(parent_state) = store_guard.get_state(&parent_root) {
                     parent_state
                 } else {
                     warn!(
-                        "sync import fallback: parent state missing state_root={:?} parent_block={parent_root:?}, using anchor state",
+                        "sync import fallback: parent state missing root={:?} parent_block={parent_root:?}, using anchor state",
                         parent_block.state_root
                     );
                     sync_anchor_state.clone()
