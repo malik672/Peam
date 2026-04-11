@@ -85,3 +85,23 @@ fn prune_removes_unreferenced_state_and_block_blobs() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn pending_state_lookup_preserves_standalone_put_state_behavior() {
+    let dir = temp_store_dir("pending_standalone_state");
+    let mut store = FileStore::open(&dir).expect("open store");
+
+    let state_root = root_from_u64(10_001);
+    let block_root = root_from_u64(20_001);
+    let slot = 1;
+
+    store.put_state(state_root, dummy_state(slot));
+    store.put_block(block_root, dummy_block(slot));
+
+    let state = store
+        .get_state_by_slot(slot)
+        .expect("pending by-slot state should remain readable");
+    assert_eq!(state.slot.0.0, slot);
+
+    let _ = std::fs::remove_dir_all(dir);
+}

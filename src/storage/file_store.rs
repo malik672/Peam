@@ -1053,7 +1053,9 @@ impl Store for FileStore {
     /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
     fn get_state_by_slot(&self, slot: u64) -> Option<State> {
         if let Some(entry) = self.pending_blocks.get(slot) {
-            return self.load_state_by_block_root(&entry.block_root);
+            return self
+                .load_state_by_block_root(&entry.block_root)
+                .or_else(|| self.load_state_by_identifier(&entry.block_root));
         }
         let root = self.state_by_slot.get(&slot).copied()?;
         self.load_state_by_block_root(&root)
