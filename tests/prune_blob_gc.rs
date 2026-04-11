@@ -52,8 +52,9 @@ fn prune_removes_unreferenced_state_and_block_blobs() {
     let mut store = FileStore::open(&dir).expect("open store");
 
     for slot in 0..rows {
-        store.put_state(root_from_u64(slot + 10_000), dummy_state(slot));
-        store.put_block(root_from_u64(slot + 20_000), dummy_block(slot));
+        let block_root = root_from_u64(slot + 20_000);
+        store.put_state(block_root, dummy_state(slot));
+        store.put_block(block_root, dummy_block(slot));
     }
 
     let report = store
@@ -67,21 +68,36 @@ fn prune_removes_unreferenced_state_and_block_blobs() {
     assert_eq!(report.removed_signed_blocks, 0);
 
     // Old blobs should be gone from root lookup.
-    assert!(store.get_state(&root_from_u64(10_000)).is_none());
     assert!(store.get_block(&root_from_u64(20_000)).is_none());
+    assert!(store.get_state(&root_from_u64(20_000)).is_none());
 
     // Recent roots should still be available.
     let newest_slot = rows - 1;
-    assert!(
-        store
-            .get_state(&root_from_u64(newest_slot + 10_000))
-            .is_some()
-    );
+    assert!(store.get_state(&root_from_u64(newest_slot + 20_000)).is_some());
     assert!(
         store
             .get_block(&root_from_u64(newest_slot + 20_000))
             .is_some()
     );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn pending_state_lookup_uses_block_root_contract() {
+    let dir = temp_store_dir("pending_block_root_state");
+    let mut store = FileStore::open(&dir).expect("open store");
+
+    let block_root = root_from_u64(20_001);
+    let slot = 1;
+
+    store.put_state(block_root, dummy_state(slot));
+    store.put_block(block_root, dummy_block(slot));
+
+    let state = store
+        .get_state_by_slot(slot)
+        .expect("pending by-slot state should be block-root keyed");
+    assert_eq!(state.slot.0.0, slot);
 
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -24,6 +24,7 @@
 
 use rapidhash::RapidHashMap;
 use tracing::warn;
+use peam_ssz::ssz::HashTreeRoot;
 
 use crate::containers::block::{Block, SignedBlockWithAttestation};
 use crate::containers::checkpoint::Checkpoint;
@@ -49,7 +50,7 @@ const PENDING_WINDOW_CAP: usize = 2_048;
 /// Schema version file name.
 const SCHEMA_FILE: &str = "schema_version";
 /// Current on-disk schema version string.
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 /// Magic bytes at the start of every blob file.
 const BLOB_MAGIC: &[u8; 8] = b"LEANSTRG";
 /// Blob format version byte.
@@ -83,9 +84,16 @@ pub struct RecoveryReport {
 /// Canonical lookup is slot-driven (`get_*_by_slot`). Root-driven lookups
 /// (`get_*`) also reach non-canonical fork data in [`FileStore`].
 pub trait Store {
-    /// Returns a decoded state for `root`, or `None` if not found/decoding fails.
+    /// Returns a decoded state for the owning block root `root`, or `None` if
+    /// not found/decoding fails.
+    ///
+    /// Implementations may preserve compatibility with state-root lookup, but
+    /// the intended storage contract is block-root-first.
     fn get_state(&self, root: &Bytes32) -> Option<State>;
-    /// Inserts or replaces the state keyed by `root`.
+    ///
+    /// `root` should be the owning block root for this post-state. Implementations
+    /// may preserve limited compatibility with older callers that pass a state
+    /// root here, but the intended storage contract is block-root-first.
     fn put_state(&mut self, root: Bytes32, state: State);
     /// Returns a decoded block for `root`, or `None` if not found/decoding fails.
     fn get_block(&self, root: &Bytes32) -> Option<Block>;
@@ -145,6 +153,7 @@ pub trait Store {
 #[derive(Default)]
 pub struct MemoryStore {
     states: RapidHashMap<Bytes32, State>,
+    state_root_to_block_root: RapidHashMap<Bytes32, Bytes32>,
     blocks: RapidHashMap<Bytes32, Block>,
     signed_blocks: RapidHashMap<Bytes32, SignedBlockWithAttestation>,
     state_by_slot: RapidHashMap<u64, Bytes32>,
@@ -165,12 +174,17 @@ impl MemoryStore {
 /// [`Store`] implementation for [`MemoryStore`].
 impl Store for MemoryStore {
     fn get_state(&self, root: &Bytes32) -> Option<State> {
-        self.states.get(root).cloned()
+        let block_root = self.state_root_to_block_root.get(root).copied().unwrap_or(*root);
+        self.states.get(&block_root).cloned()
     }
 
     fn put_state(&mut self, root: Bytes32, state: State) {
-        self.state_by_slot.insert(state.slot.0.0, root);
-        self.states.insert(root, state);
+        let slot = state.slot.0.0;
+        let block_root = root;
+        let state_root = Bytes32::from(state.hash_tree_root());
+        self.state_by_slot.insert(slot, block_root);
+        self.state_root_to_block_root.insert(state_root, block_root);
+        self.states.insert(block_root, state);
     }
 
     fn get_block(&self, root: &Bytes32) -> Option<Block> {
@@ -195,6 +209,12 @@ impl Store for MemoryStore {
         // we clone here, inevitable right ?
         state.process_signed_block(&signed)?;
         let block = signed.message.block.clone();
+        let slot = block.slot.0.0;
+        let post_state = state.clone();
+        let state_root = Bytes32::from(post_state.hash_tree_root());
+        self.state_by_slot.insert(slot, root);
+        self.state_root_to_block_root.insert(state_root, root);
+        self.states.insert(root, post_state);
         self.block_by_slot.insert(block.slot.0.0, root);
         self.blocks.insert(root, block);
         self.signed_blocks.insert(root, signed);
@@ -267,5 +287,42 @@ impl Store for MemoryStore {
 
     fn set_justified(&mut self, root: Bytes32) {
         self.justified = Some(root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MemoryStore, Store};
+    use crate::containers::state::{State, Validators};
+    use crate::slot::Slot;
+    use crate::types::bytes::Bytes32;
+    use crate::types::uint::Uint64;
+    use peam_ssz::ssz::HashTreeRoot;
+
+    fn root_from_u64(v: u64) -> Bytes32 {
+        let mut out = [0u8; 32];
+        out[0..8].copy_from_slice(&v.to_le_bytes());
+        Bytes32::from(out)
+    }
+
+    fn dummy_state(slot: u64) -> State {
+        let mut state =
+            State::generate_genesis(Uint64(0), Validators::new(vec![]).expect("validators"));
+        state.slot = Slot(Uint64(slot));
+        state
+    }
+
+    #[test]
+    fn memory_store_put_state_is_block_root_keyed_with_state_root_compatibility() {
+        let mut store = MemoryStore::new();
+        let block_root = root_from_u64(42);
+        let state = dummy_state(7);
+        let state_root = Bytes32::from(state.hash_tree_root());
+
+        store.put_state(block_root, state.clone());
+
+        assert_eq!(store.get_state(&block_root), Some(state.clone()));
+        assert_eq!(store.get_state(&state_root), Some(state.clone()));
+        assert_eq!(store.get_state_by_slot(7), Some(state));
     }
 }

@@ -298,7 +298,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                     // Use the block's exact post-state for fork choice, not
                     // the live state — the replay fallback may have diverged.
                     let fc_state = store_guard
-                        .get_state(&signed.message.block.state_root)
+                        .get_state(&root)
                         .unwrap_or_else(|| state_guard.clone());
                     let mut fc = fork_choice.write().expect("fork choice lock");
                     if fc.is_none() {

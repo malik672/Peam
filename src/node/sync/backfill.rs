@@ -80,7 +80,7 @@ pub(super) fn import_backfill_chain(
     } else {
         match store_guard.get_block(&parent_root) {
             Some(parent_block) => {
-                if let Some(parent_state) = store_guard.get_state(&parent_block.state_root) {
+                if let Some(parent_state) = store_guard.get_state(&parent_root) {
                     parent_state
                 } else {
                     warn!(

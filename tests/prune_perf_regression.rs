@@ -60,8 +60,9 @@ fn measure_prune_ms(rows: u64) -> f64 {
         let dir = temp_store_dir("prune_regression");
         let mut store = FileStore::open(&dir).expect("open store");
         for slot in 0..rows {
-            store.put_state(root_from_u64(slot + 10_000), dummy_state(slot));
-            store.put_block(root_from_u64(slot + 20_000), dummy_block(slot));
+            let block_root = root_from_u64(slot + 20_000);
+            store.put_state(block_root, dummy_state(slot));
+            store.put_block(block_root, dummy_block(slot));
         }
 
         let start = Instant::now();

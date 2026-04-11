@@ -6,8 +6,7 @@
 //! - No heap growth during steady-state operation.
 //!
 //! The cache is addressed by `slot % capacity` and stores the original slot
-//! alongside `(block_root, state_root)` so wraparound collisions are detected
-//! safely.
+//! alongside `block_root` so wraparound collisions are detected safely.
 
 use crate::types::bytes::Bytes32;
 
@@ -21,8 +20,6 @@ pub(super) struct PendingEntry {
     pub(super) slot: u64,
     /// Block root stored for this slot.
     pub(super) block_root: Bytes32,
-    /// State root stored for this slot.
-    pub(super) state_root: Bytes32,
 }
 
 /// Fixed-capacity slot-indexed pending cache.
@@ -67,18 +64,13 @@ impl PendingSlotCache {
         &mut self,
         slot: u64,
         block_root: Bytes32,
-        state_root: Bytes32,
     ) -> Option<PendingEntry> {
         let idx = self.index(slot);
         let prev = self.entries[idx];
         if prev.is_none() {
             self.count += 1;
         }
-        self.entries[idx] = Some(PendingEntry {
-            slot,
-            block_root,
-            state_root,
-        });
+        self.entries[idx] = Some(PendingEntry { slot, block_root });
         prev
     }
 
@@ -124,15 +116,15 @@ impl PendingSlotCache {
             .collect()
     }
 
-    /// Retains only entries for which `keep(slot, block_root, state_root)` returns `true`.
+    /// Retains only entries for which `keep(slot, block_root)` returns `true`.
     #[allow(dead_code)]
     pub(super) fn retain<F>(&mut self, mut keep: F)
     where
-        F: FnMut(u64, Bytes32, Bytes32) -> bool,
+        F: FnMut(u64, Bytes32) -> bool,
     {
         for entry in self.entries.iter_mut() {
             if let Some(value) = *entry {
-                if !keep(value.slot, value.block_root, value.state_root) {
+                if !keep(value.slot, value.block_root) {
                     *entry = None;
                     self.count -= 1;
                 }
@@ -163,16 +155,6 @@ impl PendingSlotCache {
         for entry in self.entries.iter().flatten() {
             block_roots.insert(entry.block_root);
             state_block_roots.insert(entry.block_root);
-        }
-    }
-
-    /// Extends a retention set with the state roots of all buffered pending entries.
-    pub(super) fn extend_referenced_state_roots(
-        &self,
-        state_roots: &mut rapidhash::RapidHashSet<Bytes32>,
-    ) {
-        for entry in self.entries.iter().flatten() {
-            state_roots.insert(entry.state_root);
         }
     }
 }

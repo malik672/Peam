@@ -19,9 +19,9 @@
 //!
 //! | Method | Warm (in-memory) | Cold (redb) |
 //! |--------|------------------|-------------|
-//! | `get_state(root)` | — | state-root lookup → block-root blob decode |
+//! | `get_state(root)` | — | identifier compatibility lookup → block-root blob decode |
 //! | `get_block(root)` | — | redb read txn → decode blob → SSZ decode |
-//! | `get_state_by_slot(slot)` | pending cache hit | slot index → state-root lookup → cold path |
+//! | `get_state_by_slot(slot)` | pending cache hit | slot index → block-root decode |
 //! | `get_block_by_slot(slot)` | pending cache hit | slot index → root → cold path |
 //!
 //! By-root reads always go to disk (no in-memory blob cache). By-slot reads
@@ -50,7 +50,7 @@ use crate::ssz::{HashTreeRoot, SszEncode};
 /// A disk-backed [`Store`] with canonical+pending slot indexes as truth.
 ///
 /// Index model:
-/// - `state_by_slot` / `block_by_slot`: canonical slot indexes.
+/// - `state_by_slot` / `block_by_slot`: canonical slot indexes keyed by block root.
 /// - `pending_blocks`: hot non-finalized block slot index (in-memory only).
 ///
 /// Object reads by root are decoded on demand from `canonical.redb`.
@@ -59,7 +59,7 @@ pub struct FileStore {
     pub(super) root: PathBuf,
     /// Canonical index + fork-choice metadata database.
     pub(super) canonical_db: CanonicalDb,
-    /// Canonical finalized slot->state-root index.
+    /// Canonical finalized slot->block-root index used for state lookup.
     pub(super) state_by_slot: RapidHashMap<u64, Bytes32>,
     /// Secondary lookup from state root to the owning block root.
     pub(super) state_root_to_block_root: RapidHashMap<Bytes32, Bytes32>,
@@ -279,7 +279,10 @@ impl FileStore {
             .ok()?
     }
 
-    /// State lookup that accepts either a state root or a block root.
+    /// Compatibility lookup that accepts either a state root or a block root.
+    ///
+    /// The primary storage identity is block-root keyed. State-root lookup is
+    /// retained only to support older callers and external compatibility paths.
     #[inline]
     fn load_state_by_identifier(&self, root: &Bytes32) -> Option<State> {
         let block_root = self.state_root_to_block_root.get(root).copied().unwrap_or(*root);
@@ -316,7 +319,7 @@ impl FileStore {
         let pending = &mut self.pending_blocks;
         pending.drain_leq_with(finalized_slot, |value| {
             block_by_slot.insert(value.slot, value.block_root);
-            state_by_slot.insert(value.slot, value.state_root);
+            state_by_slot.insert(value.slot, value.block_root);
         });
     }
 
@@ -356,7 +359,7 @@ impl FileStore {
         Ok(())
     }
 
-    /// Records a state root in the canonical slot index and marks dirty.
+    /// Records a block root in the canonical state slot index and marks dirty.
     #[inline]
     fn index_state_slot(&mut self, slot: u64, root: Bytes32) {
         self.state_by_slot.insert(slot, root);
@@ -368,10 +371,10 @@ impl FileStore {
     /// Returns `true` if routed to canonical (slot ≤ finalized), `false` if
     /// buffered in the pending window (slot > finalized).
     #[inline]
-    fn index_block_slot(&mut self, slot: u64, root: Bytes32, state_root: Bytes32) -> bool {
+    fn index_block_slot(&mut self, slot: u64, root: Bytes32) -> bool {
         match self.finalized_slot {
             Some(finalized_slot) if slot > finalized_slot => {
-                self.pending_blocks.insert(slot, root, state_root);
+                self.pending_blocks.insert(slot, root);
                 false
             }
             _ => {
@@ -420,6 +423,29 @@ impl FileStore {
     #[inline]
     pub(super) fn pinned_roots(&self) -> [Option<Bytes32>; 3] {
         [self.head, self.justified, self.finalized]
+    }
+
+    /// Rebuilds the compatibility lookup from the currently live block roots.
+    ///
+    /// Canonical slot indexes and the pending window are block-root-native, so
+    /// this path is only needed to preserve `get_state(state_root)` callers.
+    pub(super) fn rebuild_live_state_root_index(&self) -> RapidHashMap<Bytes32, Bytes32> {
+        let mut live_block_roots = rapidhash::RapidHashSet::<Bytes32>::default();
+        live_block_roots.extend(self.state_by_slot.values().copied());
+        live_block_roots.extend(self.pending_blocks.roots());
+        live_block_roots.extend(self.pinned_roots().iter().flatten().copied());
+
+        let mut live_index = RapidHashMap::default();
+        for block_root in live_block_roots {
+            if let Some(block) = self.load_block_by_root(&block_root) {
+                live_index.insert(block.state_root, block_root);
+            } else if self.load_state_by_block_root(&block_root).is_some() {
+                // Standalone `put_state` stores use the provided root as both
+                // the blob key and the compatibility lookup key.
+                live_index.insert(block_root, block_root);
+            }
+        }
+        live_index
     }
 
     /// Loads fork-choice metadata (`head`, `finalized`, `justified`) from canonical DB.
@@ -495,6 +521,17 @@ impl FileStore {
         let block = signed.message.block.clone();
         let slot = block.slot.0.0;
         let state_root = block.state_root;
+        let adjusted_state = if persisted_state.latest_justified == meta_justified
+            && persisted_state.latest_finalized == meta_finalized
+        {
+            None
+        } else {
+            let mut state = persisted_state.clone();
+            state.latest_justified = meta_justified;
+            state.latest_finalized = meta_finalized;
+            Some(state)
+        };
+        let persisted_state = adjusted_state.as_ref().unwrap_or(persisted_state);
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
@@ -538,12 +575,12 @@ impl FileStore {
 
         let mut state_upserts = Vec::new();
         let mut block_upserts = Vec::new();
-        state_upserts.push((slot, state_root));
+        state_upserts.push((slot, root));
         if block_canonical {
             block_upserts.push((slot, root));
         }
         for value in &pending_promotions {
-            state_upserts.push((value.slot, value.state_root));
+            state_upserts.push((value.slot, value.block_root));
             block_upserts.push((value.slot, value.block_root));
         }
 
@@ -571,12 +608,12 @@ impl FileStore {
         if block_canonical {
             self.block_by_slot.insert(slot, root);
         } else {
-            self.pending_blocks.insert(slot, root, state_root);
+            self.pending_blocks.insert(slot, root);
         }
-        self.state_by_slot.insert(slot, state_root);
+        self.state_by_slot.insert(slot, root);
         self.pending_blocks.drain_leq_with(fin_slot, |value| {
             self.block_by_slot.insert(value.slot, value.block_root);
-            self.state_by_slot.insert(value.slot, value.state_root);
+            self.state_by_slot.insert(value.slot, value.block_root);
         });
         self.index_dirty = false;
         self.meta_dirty = false;
@@ -961,23 +998,22 @@ impl Store for FileStore {
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
         let slot = state.slot.0.0;
-        // Standalone `put_state` callers only provide a single root identity,
-        // so preserve that behavior by using the supplied root as the blob key
-        // and secondary lookup target.
+        // `put_state` is keyed by the owning block root.
         let block_root = root;
+        let state_root = Bytes32::from(state.hash_tree_root());
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_state(block_root, &state).is_err() {
             return;
         }
         if self
             .canonical_db
-            .persist_state_root_mapping(root, block_root)
+            .persist_state_root_mapping(state_root, block_root)
             .is_err()
         {
             return;
         }
-        self.state_root_to_block_root.insert(root, block_root);
-        self.index_state_slot(slot, root);
+        self.state_root_to_block_root.insert(state_root, block_root);
+        self.index_state_slot(slot, block_root);
     }
 
     #[inline]
@@ -992,12 +1028,11 @@ impl Store for FileStore {
     #[inline]
     fn put_block(&mut self, root: Bytes32, block: Block) {
         let slot = block.slot.0.0;
-        let state_root = block.state_root;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_block(root, &block).is_err() {
             return;
         }
-        self.index_block_slot(slot, root, state_root);
+        self.index_block_slot(slot, root);
     }
 
     /// Hot write path: state transition → encode → index → atomic persist.
@@ -1023,7 +1058,7 @@ impl Store for FileStore {
             return self.load_state_by_block_root(&entry.block_root);
         }
         let root = self.state_by_slot.get(&slot).copied()?;
-        self.load_state_by_identifier(&root)
+        self.load_state_by_block_root(&root)
     }
 
     /// By-slot block read: pending window (`O(1)`) → canonical index → cold path.
