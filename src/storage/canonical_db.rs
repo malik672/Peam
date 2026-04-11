@@ -9,7 +9,7 @@
 //! ┌────────────────────────────┬──────────────┬───────────────────────────┐
 //! │ Table                      │ Key          │ Value                     │
 //! ├────────────────────────────┼──────────────┼───────────────────────────┤
-//! │ canonical_state_slot       │ u64 (slot)   │ [u8] (Bytes32 root)       │
+//! │ canonical_state_slot       │ u64 (slot)   │ [u8] (Bytes32 block root) │
 //! │ canonical_block_slot       │ u64 (slot)   │ [u8] (Bytes32 root)       │
 //! │ canonical_meta             │ &str (key)   │ [u8] (Bytes32 root)       │
 //! │ canonical_state_root_index │ [u8]         │ [u8] (block root)         │
@@ -19,7 +19,7 @@
 //! └────────────────────────────┴──────────────┴───────────────────────────┘
 //! ```
 //!
-//! Slot tables map `slot → root` (canonical index). `canonical_state_root_index`
+//! Slot tables map `slot → block_root` (canonical index). `canonical_state_root_index`
 //! maps `state_root → block_root`. Blob tables map `root → envelope` (the
 //! actual serialized data). Meta stores three
 //! string-keyed roots: `"head"`, `"finalized"`, `"justified"`, plus
@@ -39,7 +39,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 use super::Bytes32;
 
-/// Canonical state slot index: `slot → Bytes32 state root`.
+/// Canonical state slot index: `slot → Bytes32 block root`.
 const STATE_SLOT_TABLE: TableDefinition<'static, u64, &'static [u8]> =
     TableDefinition::new("canonical_state_slot");
 /// Canonical block slot index: `slot → Bytes32 block root`.
@@ -169,18 +169,6 @@ impl CanonicalDb {
                 bytes_to_root(state_root.value())?,
                 bytes_to_root(block_root.value())?,
             );
-        }
-        Ok(out)
-    }
-
-    /// Loads every state-blob key currently present in canonical storage.
-    pub(super) fn load_state_blob_roots(&self) -> Result<RapidHashSet<Bytes32>, String> {
-        let read_txn = self.db.begin_read().map_err(to_string)?;
-        let table = read_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
-        let mut out = RapidHashSet::default();
-        for row in table.iter().map_err(to_string)? {
-            let (root, _) = row.map_err(to_string)?;
-            out.insert(bytes_to_root(root.value())?);
         }
         Ok(out)
     }
@@ -341,7 +329,7 @@ impl CanonicalDb {
     /// Unlike [`persist_snapshot`] this does **not** clear-and-rewrite the
     /// slot tables. Instead it:
     /// 1. Inserts the three blobs (state, block, signed block) by root.
-    /// 2. Upserts only the changed slot→root rows (`state_upserts`,
+    /// 2. Upserts only the changed slot→block-root rows (`state_upserts`,
     ///    `block_upserts`) — the new block plus any promoted pending entries.
     /// 3. Upserts metadata (head, finalized, justified).
     ///

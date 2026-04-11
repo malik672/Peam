@@ -49,7 +49,7 @@ const PENDING_WINDOW_CAP: usize = 2_048;
 /// Schema version file name.
 const SCHEMA_FILE: &str = "schema_version";
 /// Current on-disk schema version string.
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 /// Magic bytes at the start of every blob file.
 const BLOB_MAGIC: &[u8; 8] = b"LEANSTRG";
 /// Blob format version byte.

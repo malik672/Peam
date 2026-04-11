@@ -13,7 +13,7 @@ pub struct ForkChoiceMeta {
 /// Batched index/meta updates to apply atomically in a backend.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexBatch {
-    pub state_upserts: Vec<(u64, Bytes32)>,
+    pub state_block_upserts: Vec<(u64, Bytes32)>,
     pub block_upserts: Vec<(u64, Bytes32)>,
     pub state_deletes: Vec<u64>,
     pub block_deletes: Vec<u64>,
@@ -24,9 +24,9 @@ pub struct IndexBatch {
 ///
 /// This is the abstraction point for a custom ClickHouse-style LSM backend.
 pub trait IndexStore {
-    fn get_state_root_by_slot(&self, slot: u64) -> Option<Bytes32>;
+    fn get_state_block_root_by_slot(&self, slot: u64) -> Option<Bytes32>;
     fn get_block_root_by_slot(&self, slot: u64) -> Option<Bytes32>;
-    fn iter_state_slots_lt(&self, upper_exclusive: u64) -> Vec<(u64, Bytes32)>;
+    fn iter_state_block_slots_lt(&self, upper_exclusive: u64) -> Vec<(u64, Bytes32)>;
     fn iter_block_slots_lt(&self, upper_exclusive: u64) -> Vec<(u64, Bytes32)>;
     fn get_meta(&self) -> ForkChoiceMeta;
     fn apply_batch(&mut self, batch: IndexBatch) -> Result<(), String>;
@@ -35,7 +35,7 @@ pub trait IndexStore {
 /// In-memory reference implementation of [`IndexStore`].
 #[derive(Default)]
 pub struct MemoryIndexStore {
-    state_by_slot: BTreeMap<u64, Bytes32>,
+    state_block_by_slot: BTreeMap<u64, Bytes32>,
     block_by_slot: BTreeMap<u64, Bytes32>,
     meta: ForkChoiceMeta,
 }
@@ -47,16 +47,16 @@ impl MemoryIndexStore {
 }
 
 impl IndexStore for MemoryIndexStore {
-    fn get_state_root_by_slot(&self, slot: u64) -> Option<Bytes32> {
-        self.state_by_slot.get(&slot).copied()
+    fn get_state_block_root_by_slot(&self, slot: u64) -> Option<Bytes32> {
+        self.state_block_by_slot.get(&slot).copied()
     }
 
     fn get_block_root_by_slot(&self, slot: u64) -> Option<Bytes32> {
         self.block_by_slot.get(&slot).copied()
     }
 
-    fn iter_state_slots_lt(&self, upper_exclusive: u64) -> Vec<(u64, Bytes32)> {
-        self.state_by_slot
+    fn iter_state_block_slots_lt(&self, upper_exclusive: u64) -> Vec<(u64, Bytes32)> {
+        self.state_block_by_slot
             .range(..upper_exclusive)
             .map(|(slot, root)| (*slot, *root))
             .collect()
@@ -74,14 +74,14 @@ impl IndexStore for MemoryIndexStore {
     }
 
     fn apply_batch(&mut self, batch: IndexBatch) -> Result<(), String> {
-        for (slot, root) in batch.state_upserts {
-            self.state_by_slot.insert(slot, root);
+        for (slot, root) in batch.state_block_upserts {
+            self.state_block_by_slot.insert(slot, root);
         }
         for (slot, root) in batch.block_upserts {
             self.block_by_slot.insert(slot, root);
         }
         for slot in batch.state_deletes {
-            self.state_by_slot.remove(&slot);
+            self.state_block_by_slot.remove(&slot);
         }
         for slot in batch.block_deletes {
             self.block_by_slot.remove(&slot);
@@ -105,7 +105,7 @@ mod tests {
     fn batch_upsert_delete_and_meta_roundtrip() {
         let mut store = MemoryIndexStore::new();
         let batch = IndexBatch {
-            state_upserts: vec![(10, root(1)), (20, root(2))],
+            state_block_upserts: vec![(10, root(1)), (20, root(2))],
             block_upserts: vec![(10, root(3)), (30, root(4))],
             state_deletes: vec![],
             block_deletes: vec![],
@@ -117,7 +117,7 @@ mod tests {
         };
         store.apply_batch(batch).expect("apply batch");
 
-        assert_eq!(store.get_state_root_by_slot(10), Some(root(1)));
+        assert_eq!(store.get_state_block_root_by_slot(10), Some(root(1)));
         assert_eq!(store.get_block_root_by_slot(30), Some(root(4)));
         assert_eq!(
             store.get_meta(),
@@ -129,14 +129,14 @@ mod tests {
         );
 
         let delete_batch = IndexBatch {
-            state_upserts: vec![],
+            state_block_upserts: vec![],
             block_upserts: vec![],
             state_deletes: vec![10],
             block_deletes: vec![30],
             meta: None,
         };
         store.apply_batch(delete_batch).expect("apply delete batch");
-        assert_eq!(store.get_state_root_by_slot(10), None);
+        assert_eq!(store.get_state_block_root_by_slot(10), None);
         assert_eq!(store.get_block_root_by_slot(30), None);
     }
 
@@ -145,7 +145,7 @@ mod tests {
         let mut store = MemoryIndexStore::new();
         store
             .apply_batch(IndexBatch {
-                state_upserts: vec![(4, root(4)), (1, root(1)), (3, root(3))],
+                state_block_upserts: vec![(4, root(4)), (1, root(1)), (3, root(3))],
                 block_upserts: vec![(6, root(6)), (2, root(2))],
                 state_deletes: vec![],
                 block_deletes: vec![],
@@ -154,7 +154,7 @@ mod tests {
             .expect("apply batch");
 
         assert_eq!(
-            store.iter_state_slots_lt(4),
+            store.iter_state_block_slots_lt(4),
             vec![(1, root(1)), (3, root(3))]
         );
         assert_eq!(
