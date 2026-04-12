@@ -403,17 +403,6 @@ impl FileStore {
         let block = signed.message.block.clone();
         let slot = block.slot.0 .0;
         let state_root = block.state_root;
-        let adjusted_state = if persisted_state.latest_justified == meta_justified
-            && persisted_state.latest_finalized == meta_finalized
-        {
-            None
-        } else {
-            let mut state = persisted_state.clone();
-            state.latest_justified = meta_justified;
-            state.latest_finalized = meta_finalized;
-            Some(state)
-        };
-        let persisted_state = adjusted_state.as_ref().unwrap_or(persisted_state);
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
         let state_blob = encode_blob(BLOB_KIND_STATE, &persisted_state.encode_ssz());
@@ -647,17 +636,18 @@ impl FileStore {
     ) -> Result<(), String> {
         let pre_import_slot = state.slot;
         let replayed = self.replay_signed_block_from_parent(&signed, None)?;
-        *state = replayed;
-        if state.slot < pre_import_slot {
+        if replayed.slot < pre_import_slot {
             return Err("imported block would regress local state slot".to_string());
         }
         self.persist_signed_block_bundle_from_state(
             root,
             &signed,
-            state,
-            state.latest_justified,
-            state.latest_finalized,
-        )
+            &replayed,
+            replayed.latest_justified,
+            replayed.latest_finalized,
+        )?;
+        *state = replayed;
+        Ok(())
     }
 
     #[inline]
