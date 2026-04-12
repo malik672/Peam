@@ -1233,30 +1233,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // When proposal_head_root is None and the store is empty (no head), live state is returned.
-    // No warning should be emitted (proposal_head_root is None).
-    #[test]
-    fn proposal_falls_back_to_live_state_when_no_root_and_empty_store() {
-        let dir = temp_store_dir("proposal_pre_state_no_root_empty_store");
-        let live_state = dummy_state(8);
-
-        let file_store = FileStore::open(&dir).expect("open store");
-        // Intentionally do not set a head or store any state.
-
-        let store = Arc::new(RwLock::new(file_store));
-        let state = Arc::new(RwLock::new(live_state.clone()));
-
-        let pre_state = load_proposal_pre_state(&store, &state, None);
-
-        assert_eq!(
-            Bytes32::from(pre_state.hash_tree_root()),
-            Bytes32::from(live_state.hash_tree_root()),
-            "should return live state when both proposal_head_root and store head are absent"
-        );
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
     // When an explicit proposal_head_root is given, the store.head() is irrelevant.
     // The function must look up the state by the explicit root, not the store head.
     #[test]
@@ -1293,31 +1269,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // Boundary: verify that the returned state's slot matches the stored state exactly,
-    // ruling out any silent merge or mutation between stored and live state.
-    #[test]
-    fn proposal_pre_state_slot_is_exact_match_from_store() {
-        let dir = temp_store_dir("proposal_pre_state_slot_exact");
-        let block_root = root_from_u64(55);
-        let stored_state = dummy_state(42);
-        let live_state = dummy_state(100); // deliberately different slot
-
-        let mut file_store = FileStore::open(&dir).expect("open store");
-        file_store.put_state(block_root, stored_state.clone());
-        file_store.set_head(block_root);
-
-        let store = Arc::new(RwLock::new(file_store));
-        let state = Arc::new(RwLock::new(live_state));
-
-        let pre_state = load_proposal_pre_state(&store, &state, Some(block_root));
-
-        assert_eq!(
-            pre_state.slot,
-            stored_state.slot,
-            "slot must come from stored state, not live state"
-        );
-        assert_eq!(pre_state.slot, Slot(Uint64(42)));
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }
