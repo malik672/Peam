@@ -702,8 +702,7 @@ impl FileStore {
                 return Err("post_state root does not match block.state_root".to_string());
             }
 
-            *state = post_state;
-            let exact_post_state = state.clone();
+            let exact_post_state = post_state;
             let meta_finalized =
                 if exact_post_state.latest_finalized.slot < pre_import_finalized.slot {
                     pre_import_finalized
@@ -716,15 +715,17 @@ impl FileStore {
                 } else {
                     exact_post_state.latest_justified
                 };
-            state.latest_finalized = meta_finalized;
-            state.latest_justified = meta_justified;
             self.persist_signed_block_bundle_from_state(
                 root,
                 signed,
                 &exact_post_state,
                 meta_justified,
                 meta_finalized,
-            )
+            )?;
+            *state = exact_post_state;
+            state.latest_finalized = meta_finalized;
+            state.latest_justified = meta_justified;
+            Ok(())
         })();
         metrics
             .block_import_end_to_end_time
