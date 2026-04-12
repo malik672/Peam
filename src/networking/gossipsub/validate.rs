@@ -17,6 +17,7 @@ use crate::containers::attestation::{
 };
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::networking::gossipsub::context::GossipContext;
+use crate::logfmt::short_checkpoint;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::types::bitlist::BitList;
 
@@ -219,16 +220,13 @@ fn validate_attestation_data_with_context(
     if !knows_head || !knows_source || !knows_target {
         tracing::info!(
             attestation_slot = ?msg.slot,
-            head_slot = ?msg.head.slot,
-            source_slot = ?msg.source.slot,
-            target_slot = ?msg.target.slot,
-            head_root = ?msg.head.root,
-            source_root = ?msg.source.root,
-            target_root = ?msg.target.root,
+            head = %short_checkpoint(&msg.head),
+            source = %short_checkpoint(&msg.source),
+            target = %short_checkpoint(&msg.target),
             knows_head,
             knows_source,
             knows_target,
-            "peam attestation ignored due to unknown roots"
+            "attestation ignored: unknown roots"
         );
         return ValidationResult::Ignore(UNKNOWN_CHAIN_ROOTS_IGNORE_REASON.to_string());
     }

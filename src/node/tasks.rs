@@ -22,6 +22,7 @@ use crate::containers::gossip::{GossipAttestation, GossipBlock};
 use crate::containers::state::State;
 use crate::containers::validator::ValidatorIndex;
 use crate::fork_choice::ForkChoiceStore;
+use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
 use crate::networking::P2pCommand;
 use crate::slot::{
@@ -328,11 +329,10 @@ pub(super) fn spawn_signed_attestation_task(
             info!(
                 slot,
                 validator_id = local_validator_index,
-                target_slot = signed.message.target.slot.0.0,
-                target_root = ?signed.message.target.root,
-                source_slot = signed.message.source.slot.0.0,
-                source_root = ?signed.message.source.root,
-                "published attestation"
+                head = %short_checkpoint(&signed.message.head),
+                target = %short_checkpoint(&signed.message.target),
+                source = %short_checkpoint(&signed.message.source),
+                "attestation published"
             );
             if is_aggregator {
                 pending_individual_attestations
@@ -506,12 +506,11 @@ pub(super) fn spawn_attestation_aggregation_task(
                     .await;
                 info!(
                     slot = attestation.data.slot.0.0,
-                    target_slot = attestation.data.target.slot.0.0,
-                    target_root = ?attestation.data.target.root,
-                    source_slot = attestation.data.source.slot.0.0,
-                    source_root = ?attestation.data.source.root,
+                    head = %short_checkpoint(&attestation.data.head),
+                    target = %short_checkpoint(&attestation.data.target),
+                    source = %short_checkpoint(&attestation.data.source),
                     participants_len_bits = attestation.aggregation_bits.len,
-                    "published aggregated attestation"
+                    "attestation aggregate published"
                 );
             }
         }
@@ -713,7 +712,7 @@ fn build_block_attestation_payload(
             slot,
             finalized_slot,
             stale_dropped,
-            "dropping stale pending block attestations before proposal"
+            "proposal dropped stale pending attestations"
         );
     }
 
@@ -1092,7 +1091,8 @@ pub(super) fn spawn_block_production_task(
                                 && let Err(err) = fc.on_block(signed.clone(), state_guard.clone())
                             {
                                 warn!(
-                                    "fork_choice on_block failed for locally produced block: {err}"
+                                    err = %err,
+                                    "local block fork-choice update failed"
                                 );
                             }
                             Ok(())
@@ -1117,10 +1117,28 @@ pub(super) fn spawn_block_production_task(
                             if attempt == 0 {
                                 continue;
                             }
-                            warn!("failed to import locally produced block after retry: {err}");
+                            warn!(
+                                slot = signed.message.block.slot.0.0,
+                                block = %short_slot_root(
+                                    signed.message.block.slot.0.0,
+                                    &Bytes32::from(signed.message.block.hash_tree_root())
+                                ),
+                                parent = %short_root(&signed.message.block.parent_root),
+                                err = %err,
+                                "local block import failed after retry"
+                            );
                             break;
                         }
-                        warn!("failed to import locally produced block: {err}");
+                        warn!(
+                            slot = signed.message.block.slot.0.0,
+                            block = %short_slot_root(
+                                signed.message.block.slot.0.0,
+                                &Bytes32::from(signed.message.block.hash_tree_root())
+                            ),
+                            parent = %short_root(&signed.message.block.parent_root),
+                            err = %err,
+                            "local block import failed"
+                        );
                         break;
                     }
                 }
@@ -1132,11 +1150,10 @@ pub(super) fn spawn_block_production_task(
 
             let root = Bytes32::from(signed.message.block.hash_tree_root());
             info!(
-                root = ?root,
-                slot = signed.message.block.slot.0.0,
-                parent_root = ?signed.message.block.parent_root,
+                block = %short_slot_root(signed.message.block.slot.0.0, &root),
+                parent = %short_root(&signed.message.block.parent_root),
                 attestation_count = signed.message.block.body.attestations.len(),
-                "local block produced and imported"
+                "local block imported"
             );
 
             let payload = GossipBlock { block: signed }.encode_ssz();
