@@ -551,13 +551,13 @@ expected {:?}, got {:?}",
             "Loaded validator secret keys"
         );
         info!("\n{PEAM_ASCII_BANNER}");
-        info!("node starting");
-        info!("data_dir={}", self.data_dir_display());
-        info!("store_dir={}", self.store_dir_display());
-        info!("genesis_time={}", self.config.genesis_time.0);
         let state_root = self.state.read().expect("state lock").hash_tree_root();
-        info!("state_root={:?}", state_root);
         info!(
+            node_id = %self.metrics_node_name,
+            data_dir = %self.data_dir_display(),
+            store_dir = %self.store_dir_display(),
+            genesis_time = self.config.genesis_time.0,
+            state_root = ?state_root,
             sync_mode = "blocks_by_root_backfill",
             streaming_sync = false,
             checkpoint_sync = self.settings.checkpoint_sync_url.is_some(),
@@ -567,7 +567,7 @@ expected {:?}, got {:?}",
             metrics_port = self.settings.metrics_port,
             http_address = %self.settings.http_address,
             http_port = self.settings.http_port,
-            "startup runtime summary"
+            "node startup summary"
         );
 
         // Default to PQ verification for gossip signatures when validator keys exist.
