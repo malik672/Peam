@@ -30,7 +30,7 @@ use crate::slot::{
     interval_index_from_unix_millis, slot_index_from_unix_millis, unix_now_millis,
 };
 use crate::ssz::{HashTreeRoot, SszEncode};
-use crate::storage::FileStore;
+use crate::storage::{FileStore, Store};
 use crate::types::bitlist::BitList;
 use crate::types::bytes::{ByteList, Bytes32, Bytes52};
 use crate::types::collections::SszList;
@@ -897,6 +897,32 @@ fn produce_block_with_signatures(
 }
 
 #[inline]
+fn load_proposal_pre_state(
+    store: &Arc<RwLock<FileStore>>,
+    state: &Arc<RwLock<State>>,
+    proposal_head_root: Option<Bytes32>,
+) -> State {
+    let stored_pre_state = {
+        let store_guard = store.read().expect("store lock");
+        let head_root = proposal_head_root.or_else(|| store_guard.head());
+        head_root.and_then(|root| store_guard.get_state(&root).map(|state| (root, state)))
+    };
+
+    if let Some((_, stored_state)) = stored_pre_state {
+        return stored_state;
+    }
+
+    if let Some(head_root) = proposal_head_root {
+        warn!(
+            proposal_head_root = ?head_root,
+            "proposal fallback: head state missing in store, using live state snapshot"
+        );
+    }
+
+    state.read().expect("state lock").clone()
+}
+
+#[inline]
 fn requeue_block_attestations(
     pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
     attestations: &[Attestation],
@@ -985,8 +1011,9 @@ pub(super) fn spawn_block_production_task(
 
             let mut imported_block: Option<SignedBlockWithAttestation> = None;
             for attempt in 0..2 {
-                let pre_state = state.read().expect("state lock").clone();
                 let fork_choice_snapshot = fork_choice.read().expect("fork choice lock").clone();
+                let proposal_head_root = fork_choice_snapshot.as_ref().map(|fc| fc.head());
+                let pre_state = load_proposal_pre_state(&store, &state, proposal_head_root);
                 let Some((signed, post_state)) = produce_block_with_signatures(
                     &pre_state,
                     slot,
@@ -1079,4 +1106,101 @@ pub(super) fn spawn_block_production_task(
                 .await;
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_proposal_pre_state;
+    use crate::containers::checkpoint::Checkpoint;
+    use crate::containers::state::{State, Validators};
+    use crate::slot::Slot;
+    use crate::storage::{FileStore, Store};
+    use crate::types::bytes::Bytes32;
+    use crate::types::uint::Uint64;
+    use peam_ssz::ssz::HashTreeRoot;
+    use std::path::PathBuf;
+    use std::sync::{Arc, RwLock};
+
+    fn temp_store_dir(tag: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("peam_tasks_{tag}_{stamp}"))
+    }
+
+    fn root_from_u64(v: u64) -> Bytes32 {
+        let mut out = [0u8; 32];
+        out[0..8].copy_from_slice(&v.to_le_bytes());
+        Bytes32::from(out)
+    }
+
+    fn dummy_state(slot: u64) -> State {
+        let mut state =
+            State::generate_genesis(Uint64(0), Validators::new(vec![]).expect("validators"));
+        state.slot = Slot(Uint64(slot));
+        state
+    }
+
+    #[test]
+    fn proposal_uses_stored_head_state_before_live_snapshot() {
+        let dir = temp_store_dir("proposal_pre_state_prefers_store");
+        let block_root = root_from_u64(42);
+
+        let mut exact_state = dummy_state(7);
+        exact_state.latest_block_header.slot = Slot(Uint64(7));
+        exact_state.latest_justified = Checkpoint {
+            slot: Slot(Uint64(5)),
+            root: root_from_u64(5),
+        };
+
+        let mut drifted_live_state = exact_state.clone();
+        drifted_live_state.latest_justified = Checkpoint {
+            slot: Slot(Uint64(6)),
+            root: root_from_u64(6),
+        };
+        drifted_live_state.latest_finalized = Checkpoint {
+            slot: Slot(Uint64(4)),
+            root: root_from_u64(4),
+        };
+
+        let mut file_store = FileStore::open(&dir).expect("open store");
+        file_store.put_state(block_root, exact_state.clone());
+        file_store.set_head(block_root);
+
+        let store = Arc::new(RwLock::new(file_store));
+        let state = Arc::new(RwLock::new(drifted_live_state));
+
+        let pre_state = load_proposal_pre_state(&store, &state, Some(block_root));
+
+        assert_eq!(
+            Bytes32::from(pre_state.hash_tree_root()),
+            Bytes32::from(exact_state.hash_tree_root())
+        );
+        assert_eq!(pre_state.latest_justified, exact_state.latest_justified);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposal_falls_back_to_live_state_when_store_head_state_is_missing() {
+        let dir = temp_store_dir("proposal_pre_state_fallback");
+        let block_root = root_from_u64(7);
+        let live_state = dummy_state(3);
+
+        let mut file_store = FileStore::open(&dir).expect("open store");
+        file_store.set_head(block_root);
+
+        let store = Arc::new(RwLock::new(file_store));
+        let state = Arc::new(RwLock::new(live_state.clone()));
+
+        let pre_state = load_proposal_pre_state(&store, &state, Some(block_root));
+
+        assert_eq!(
+            Bytes32::from(pre_state.hash_tree_root()),
+            Bytes32::from(live_state.hash_tree_root())
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
