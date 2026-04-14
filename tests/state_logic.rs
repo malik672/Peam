@@ -1265,9 +1265,12 @@ fn state_transition_processes_slots_then_block() {
 #[test]
 #[ignore = "expensive pq verifier path; run explicitly when exercising malformed aggregate proof handling"]
 fn pq_verifier_rejects_placeholder_aggregate_proof_for_block_attestation() {
-    let (pubkey, secret_key) = pq::key_gen_for_devnet_validator(0).expect("keygen");
+    let (pubkey, secret_key) =
+        pq::key_gen_for_devnet_validator_with_role(0, pq::DevnetValidatorKeyRole::Attestation)
+            .expect("keygen");
     let validator = Validator {
-        pubkey,
+        attestation_pubkey: pubkey,
+        proposal_pubkey: pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };

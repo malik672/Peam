@@ -47,17 +47,6 @@ pub fn setup_aggregate_verifier() {
     xmss_aggregation_setup_verifier();
 }
 
-/// Deterministically derives a validator keypair for a devnet validator index.
-///
-/// This is used for local-devnet key material so every client can derive the
-/// same validator registry without external key distribution.
-#[inline]
-pub fn key_gen_for_devnet_validator(
-    validator_index: usize,
-) -> Result<(Bytes52, LeanSigSecretKey), String> {
-    key_gen_for_devnet_validator_with_role(validator_index, DevnetValidatorKeyRole::Attestation)
-}
-
 /// Deterministically derives a role-specific validator keypair for local devnets.
 #[inline]
 pub fn key_gen_for_devnet_validator_with_role(

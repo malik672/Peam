@@ -82,7 +82,7 @@ pub fn verify_checkpoint_state(state: &State, expected_genesis: &State) -> Resul
             || validator.proposal_pubkey != expected.proposal_pubkey
         {
             return Err(format!(
-                "checkpoint validator pubkey mismatch at index {idx}"
+                "checkpoint validator key mismatch at index {idx}"
             ));
         }
         if validator.index.0.0 != idx as u64 {

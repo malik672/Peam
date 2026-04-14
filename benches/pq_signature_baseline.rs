@@ -3,6 +3,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use rayon::prelude::*;
 
 use peam::crypto::pq;
+use peam::crypto::pq::DevnetValidatorKeyRole;
 
 fn sign_aggregate_parallel(
     public_keys: &[peam::types::bytes::Bytes52],
@@ -33,11 +34,21 @@ fn bench_pq_signature_baseline(c: &mut Criterion) {
     pq::setup_aggregate_prover();
     pq::setup_aggregate_verifier();
 
-    let (pk0, sk0) = pq::key_gen_for_devnet_validator(0).expect("key0");
-    let (pk1, sk1) = pq::key_gen_for_devnet_validator(1).expect("key1");
-    let (pk2, sk2) = pq::key_gen_for_devnet_validator(2).expect("key2");
-    let (pk3, sk3) = pq::key_gen_for_devnet_validator(3).expect("key3");
-    let (pk4, sk4) = pq::key_gen_for_devnet_validator(4).expect("key4");
+    let (pk0, sk0) =
+        pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("key0");
+    let (pk1, sk1) =
+        pq::key_gen_for_devnet_validator_with_role(1, DevnetValidatorKeyRole::Attestation)
+            .expect("key1");
+    let (pk2, sk2) =
+        pq::key_gen_for_devnet_validator_with_role(2, DevnetValidatorKeyRole::Attestation)
+            .expect("key2");
+    let (pk3, sk3) =
+        pq::key_gen_for_devnet_validator_with_role(3, DevnetValidatorKeyRole::Attestation)
+            .expect("key3");
+    let (pk4, sk4) =
+        pq::key_gen_for_devnet_validator_with_role(4, DevnetValidatorKeyRole::Attestation)
+            .expect("key4");
 
     let message = [0x42u8; 32];
     let sig0 = pq::sign_message(&sk0, 1, &message).expect("sig0");

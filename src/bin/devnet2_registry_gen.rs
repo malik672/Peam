@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use leansig::serialization::Serializable;
-use peam::crypto::pq::key_gen_for_devnet_validator;
+use peam::crypto::pq::{DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role};
 
 const DEFAULT_VALIDATORS: usize = 3;
 const DEFAULT_NODE_MAP: &str = "peam_0:0,peer1_0:1,peer2_0:2";
@@ -12,8 +12,10 @@ const DEFAULT_ATTESTATION_SUBNETS: u64 = 1;
 
 #[derive(Clone)]
 struct ValidatorMaterial {
-    pubkey_hex_no_prefix: String,
-    privkey_file: String,
+    attestation_pubkey_hex_no_prefix: String,
+    proposal_pubkey_hex_no_prefix: String,
+    attestation_privkey_file: String,
+    proposal_privkey_file: String,
 }
 
 fn print_usage() {
@@ -204,7 +206,6 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut pubkeys = Vec::with_capacity(validator_count);
     let mut validator_material = Vec::with_capacity(validator_count);
     let mut manifest_lines = Vec::with_capacity(validator_count * 3 + 8);
     manifest_lines.push("key_scheme: SIGTopLevelTargetSumLifetime32Dim64Base8".to_string());
@@ -217,38 +218,66 @@ fn main() {
     manifest_lines.push("validators:".to_string());
 
     for idx in 0..validator_count {
-        let (pubkey, secret_key) = key_gen_for_devnet_validator(idx).unwrap_or_else(|err| {
-            eprintln!("failed to derive validator {idx}: {err}");
+        let (attestation_pubkey, attestation_secret_key) =
+            key_gen_for_devnet_validator_with_role(idx, DevnetValidatorKeyRole::Attestation)
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to derive attestation key for validator {idx}: {err}");
+                    std::process::exit(1);
+                });
+        let (proposal_pubkey, proposal_secret_key) =
+            key_gen_for_devnet_validator_with_role(idx, DevnetValidatorKeyRole::Proposal)
+                .unwrap_or_else(|err| {
+                    eprintln!("failed to derive proposal key for validator {idx}: {err}");
+                    std::process::exit(1);
+                });
+
+        let attestation_pubkey_hex = hex_encode(attestation_pubkey.as_ref());
+        let proposal_pubkey_hex = hex_encode(proposal_pubkey.as_ref());
+
+        let attestation_sk_bytes = attestation_secret_key.to_bytes();
+        let attestation_sk_filename = format!("validator_{idx}_attestation_sk.ssz");
+        let attestation_sk_path = hash_sig_dir.join(&attestation_sk_filename);
+        fs::write(&attestation_sk_path, &attestation_sk_bytes).unwrap_or_else(|err| {
+            eprintln!("failed writing {}: {err}", attestation_sk_path.display());
             std::process::exit(1);
         });
 
-        let pubkey_hex = hex_encode(pubkey.as_ref());
-        pubkeys.push(pubkey_hex.clone());
-
-        let sk_bytes = secret_key.to_bytes();
-        let sk_filename = format!("validator_{idx}_sk.ssz");
-        let sk_path = hash_sig_dir.join(&sk_filename);
-        fs::write(&sk_path, &sk_bytes).unwrap_or_else(|err| {
-            eprintln!("failed writing {}: {err}", sk_path.display());
+        let attestation_pk_bytes = attestation_pubkey.as_array();
+        let attestation_pk_filename = format!("validator_{idx}_attestation_pk.ssz");
+        let attestation_pk_path = hash_sig_dir.join(&attestation_pk_filename);
+        fs::write(&attestation_pk_path, attestation_pk_bytes).unwrap_or_else(|err| {
+            eprintln!("failed writing {}: {err}", attestation_pk_path.display());
             std::process::exit(1);
         });
 
-        let pk_bytes = pubkey.as_array();
-        let pk_filename = format!("validator_{idx}_pk.ssz");
-        let pk_path = hash_sig_dir.join(&pk_filename);
-        fs::write(&pk_path, pk_bytes).unwrap_or_else(|err| {
-            eprintln!("failed writing {}: {err}", pk_path.display());
+        let proposal_sk_bytes = proposal_secret_key.to_bytes();
+        let proposal_sk_filename = format!("validator_{idx}_proposal_sk.ssz");
+        let proposal_sk_path = hash_sig_dir.join(&proposal_sk_filename);
+        fs::write(&proposal_sk_path, &proposal_sk_bytes).unwrap_or_else(|err| {
+            eprintln!("failed writing {}: {err}", proposal_sk_path.display());
+            std::process::exit(1);
+        });
+
+        let proposal_pk_bytes = proposal_pubkey.as_array();
+        let proposal_pk_filename = format!("validator_{idx}_proposal_pk.ssz");
+        let proposal_pk_path = hash_sig_dir.join(&proposal_pk_filename);
+        fs::write(&proposal_pk_path, proposal_pk_bytes).unwrap_or_else(|err| {
+            eprintln!("failed writing {}: {err}", proposal_pk_path.display());
             std::process::exit(1);
         });
 
         validator_material.push(ValidatorMaterial {
-            pubkey_hex_no_prefix: pubkey_hex.trim_start_matches("0x").to_string(),
-            privkey_file: sk_filename.clone(),
+            attestation_pubkey_hex_no_prefix: attestation_pubkey_hex.trim_start_matches("0x").to_string(),
+            proposal_pubkey_hex_no_prefix: proposal_pubkey_hex.trim_start_matches("0x").to_string(),
+            attestation_privkey_file: attestation_sk_filename.clone(),
+            proposal_privkey_file: proposal_sk_filename.clone(),
         });
 
         manifest_lines.push(format!("- index: {idx}"));
-        manifest_lines.push(format!("  pubkey_hex: {pubkey_hex}"));
-        manifest_lines.push(format!("  privkey_file: {sk_filename}"));
+        manifest_lines.push(format!("  attestation_pubkey_hex: {attestation_pubkey_hex}"));
+        manifest_lines.push(format!("  proposal_pubkey_hex: {proposal_pubkey_hex}"));
+        manifest_lines.push(format!("  attestation_privkey_file: {attestation_sk_filename}"));
+        manifest_lines.push(format!("  proposal_privkey_file: {proposal_sk_filename}"));
     }
 
     let manifest_path = hash_sig_dir.join("validator-keys-manifest.yaml");
@@ -257,12 +286,19 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut config_lines = Vec::with_capacity(pubkeys.len() + 3);
+    let mut config_lines = Vec::with_capacity(validator_material.len() * 3 + 3);
     config_lines.push(format!("GENESIS_TIME: {genesis_time}"));
     config_lines.push(format!("NUM_VALIDATORS: {validator_count}"));
     config_lines.push("GENESIS_VALIDATORS:".to_string());
-    for pk in &pubkeys {
-        config_lines.push(format!("- {pk}"));
+    for material in &validator_material {
+        config_lines.push(format!(
+            "- attestation_pubkey: \"0x{}\"",
+            material.attestation_pubkey_hex_no_prefix
+        ));
+        config_lines.push(format!(
+            "  proposal_pubkey: \"0x{}\"",
+            material.proposal_pubkey_hex_no_prefix
+        ));
     }
     let config_path = out_dir.join("config.yaml");
     fs::write(&config_path, config_lines.join("\n") + "\n").unwrap_or_else(|err| {
@@ -296,8 +332,22 @@ fn main() {
                 std::process::exit(1);
             });
             annotated_lines.push(format!("  - index: {idx}"));
-            annotated_lines.push(format!("    pubkey_hex: {}", material.pubkey_hex_no_prefix));
-            annotated_lines.push(format!("    privkey_file: {}", material.privkey_file));
+            annotated_lines.push(format!(
+                "    attestation_pubkey_hex: {}",
+                material.attestation_pubkey_hex_no_prefix
+            ));
+            annotated_lines.push(format!(
+                "    proposal_pubkey_hex: {}",
+                material.proposal_pubkey_hex_no_prefix
+            ));
+            annotated_lines.push(format!(
+                "    attestation_privkey_file: {}",
+                material.attestation_privkey_file
+            ));
+            annotated_lines.push(format!(
+                "    proposal_privkey_file: {}",
+                material.proposal_privkey_file
+            ));
         }
     }
     let annotated_validators_path = out_dir.join("annotated_validators.yaml");
