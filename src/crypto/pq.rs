@@ -31,6 +31,12 @@ pub type LeanSigSecretKey = <LeanSigScheme as SignatureScheme>::SecretKey;
 /// Narrow per-key active signing interval used for local devnet key material.
 const DEVNET_KEY_ACTIVE_EPOCHS: usize = 8;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DevnetValidatorKeyRole {
+    Attestation,
+    Proposal,
+}
+
 /// Pre-computes aggregation proving artifacts.
 pub fn setup_aggregate_prover() {
     xmss_aggregation_setup_prover();
@@ -49,9 +55,21 @@ pub fn setup_aggregate_verifier() {
 pub fn key_gen_for_devnet_validator(
     validator_index: usize,
 ) -> Result<(Bytes52, LeanSigSecretKey), String> {
+    key_gen_for_devnet_validator_with_role(validator_index, DevnetValidatorKeyRole::Attestation)
+}
+
+/// Deterministically derives a role-specific validator keypair for local devnets.
+#[inline]
+pub fn key_gen_for_devnet_validator_with_role(
+    validator_index: usize,
+    role: DevnetValidatorKeyRole,
+) -> Result<(Bytes52, LeanSigSecretKey), String> {
     let mut seed = [0u8; 32];
-    seed[0..8]
-        .copy_from_slice(&(0x4456_4E45_5431_0000u64 ^ (validator_index as u64)).to_le_bytes());
+    let role_tag = match role {
+        DevnetValidatorKeyRole::Attestation => 0x4456_4E45_5431_0000u64,
+        DevnetValidatorKeyRole::Proposal => 0x4456_4E45_5431_5052u64,
+    };
+    seed[0..8].copy_from_slice(&(role_tag ^ (validator_index as u64)).to_le_bytes());
     let mut rng = StdRng::from_seed(seed);
     let (pk, sk) =
         <LeanSigScheme as SignatureScheme>::key_gen(&mut rng, 0, DEVNET_KEY_ACTIVE_EPOCHS);

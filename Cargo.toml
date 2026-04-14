@@ -34,6 +34,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 criterion = "0.5"
+rayon = "1"
 serde_json = "1"
 ssz_types = { git = "https://github.com/sigp/ssz_types.git", rev = "5dc2d521ed31f8e38b0065a80bf98af55aac06f8" }
 ssz = { package = "ethereum_ssz", version = "0.10.1" }

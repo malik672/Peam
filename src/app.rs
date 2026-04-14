@@ -966,8 +966,16 @@ pub fn build_genesis_with_validator_count(
 
 /// Builds a genesis state from a lean-spec `config.yaml` file.
 ///
-/// Parses `GENESIS_TIME` and `GENESIS_VALIDATORS` (hex-encoded 52-byte pubkeys)
-/// from the YAML config. This is the canonical genesis used by all clients.
+/// Parses `GENESIS_TIME` and `GENESIS_VALIDATORS` from the YAML config.
+///
+/// `GENESIS_VALIDATORS` accepts either:
+/// - the devnet4 structured shape:
+///   - `attestation_pubkey`
+///   - `proposal_pubkey`
+/// - or the legacy single-pubkey string list, which is treated as
+///   attestation/proposal pubkey duplication for compatibility.
+///
+/// This is the canonical genesis used by all clients.
 pub fn build_genesis_from_config_yaml(path: &Path) -> Result<State, String> {
     build_genesis_from_config_yaml_with_override(path, None)
 }
@@ -997,25 +1005,41 @@ pub fn build_genesis_from_config_yaml_with_override(
     }
     let mut validators = Vec::with_capacity(validators_yaml.len());
     for (i, entry) in validators_yaml.iter().enumerate() {
-        let hex_str = entry
-            .as_str()
-            .ok_or_else(|| format!("GENESIS_VALIDATORS[{i}] is not a string"))?;
-        let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-        let pk_bytes: Vec<u8> = (0..hex_str.len())
-            .step_by(2)
-            .map(|j| {
-                u8::from_str_radix(&hex_str[j..j + 2], 16)
-                    .map_err(|err| format!("GENESIS_VALIDATORS[{i}] bad hex: {err}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if pk_bytes.len() != 52 {
+        let (attestation_pubkey, proposal_pubkey) = if let Some(hex_str) = entry.as_str() {
+            let pubkey = parse_genesis_validator_pubkey(path, i, "pubkey", hex_str)?;
+            (pubkey, pubkey)
+        } else if let Some(map) = entry.as_mapping() {
+            let attestation = map
+                .get(serde_yaml::Value::from("attestation_pubkey"))
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "GENESIS_VALIDATORS[{i}] missing attestation_pubkey in {}",
+                        path.display()
+                    )
+                })?;
+            let proposal = map
+                .get(serde_yaml::Value::from("proposal_pubkey"))
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "GENESIS_VALIDATORS[{i}] missing proposal_pubkey in {}",
+                        path.display()
+                    )
+                })?;
+            (
+                parse_genesis_validator_pubkey(path, i, "attestation_pubkey", attestation)?,
+                parse_genesis_validator_pubkey(path, i, "proposal_pubkey", proposal)?,
+            )
+        } else {
             return Err(format!(
-                "GENESIS_VALIDATORS[{i}] expected 52 bytes, got {}",
-                pk_bytes.len()
+                "GENESIS_VALIDATORS[{i}] must be a string or mapping in {}",
+                path.display()
             ));
-        }
+        };
         validators.push(Validator {
-            pubkey: Bytes52::from_slice(&pk_bytes),
+            attestation_pubkey,
+            proposal_pubkey,
             index: ValidatorIndex(Uint64(i as u64)),
             balance: Uint64(0),
         });
@@ -1032,17 +1056,25 @@ fn build_devnet_validators(validator_count: usize) -> Validators {
     // - each slot in [0, validator_count) is written exactly once below.
     unsafe { validators.set_len(validator_count) };
     for i in 0..validator_count {
-        let mut pubkey = [0u8; 52];
-        // Deterministic placeholder key material for local devnet topology.
-        pubkey[0] = 0xD1;
-        pubkey[1] = i as u8;
+        let (attestation_pubkey, _) =
+            crate::crypto::pq::key_gen_for_devnet_validator_with_role(
+                i,
+                crate::crypto::pq::DevnetValidatorKeyRole::Attestation,
+            )
+            .expect("derive devnet attestation key");
+        let (proposal_pubkey, _) = crate::crypto::pq::key_gen_for_devnet_validator_with_role(
+            i,
+            crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
+        )
+        .expect("derive devnet proposal key");
         // SAFETY: `i < validator_count`, so index is in-bounds of initialized len.
         unsafe {
             write_at(
                 &mut validators,
                 i,
                 Validator {
-                    pubkey: Bytes52::from(pubkey),
+                    attestation_pubkey,
+                    proposal_pubkey,
                     index: ValidatorIndex(Uint64(i as u64)),
                     balance: Uint64(0),
                 },
@@ -1050,4 +1082,30 @@ fn build_devnet_validators(validator_count: usize) -> Validators {
         };
     }
     Validators::new(validators).expect("devnet validator set")
+}
+
+#[inline]
+fn parse_genesis_validator_pubkey(
+    path: &Path,
+    index: usize,
+    field: &str,
+    hex_str: &str,
+) -> Result<Bytes52, String> {
+    let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let pk_bytes: Vec<u8> = (0..hex_str.len())
+        .step_by(2)
+        .map(|j| {
+            u8::from_str_radix(&hex_str[j..j + 2], 16).map_err(|err| {
+                format!("GENESIS_VALIDATORS[{index}].{field} bad hex in {}: {err}", path.display())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if pk_bytes.len() != 52 {
+        return Err(format!(
+            "GENESIS_VALIDATORS[{index}].{field} expected 52 bytes in {}, got {}",
+            path.display(),
+            pk_bytes.len()
+        ));
+    }
+    Ok(Bytes52::from_slice(&pk_bytes))
 }

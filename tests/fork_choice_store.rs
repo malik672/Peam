@@ -112,7 +112,8 @@ fn build_signed_block(
 #[test]
 fn fork_choice_updates_head_on_new_block() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -132,7 +133,8 @@ fn fork_choice_updates_head_on_new_block() {
 #[test]
 fn fork_choice_uses_votes_to_pick_head() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -175,7 +177,8 @@ fn fork_choice_uses_votes_to_pick_head() {
 #[test]
 fn proposal_head_applies_pending_votes_before_returning_head() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -217,7 +220,8 @@ fn proposal_head_applies_pending_votes_before_returning_head() {
 #[test]
 fn node_proposal_helper_drains_pending_and_returns_head() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -262,17 +266,20 @@ fn node_proposal_helper_drains_pending_and_returns_head() {
 fn safe_target_advances_after_supermajority_votes() {
     let validators = Validators::new(vec![
         Validator {
-            pubkey: Bytes52::from([0x01u8; 52]),
+            attestation_pubkey: Bytes52::from([0x01u8; 52]),
+            proposal_pubkey: Bytes52::from([0x01u8; 52]),
             index: ValidatorIndex(Uint64(0)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x02u8; 52]),
+            attestation_pubkey: Bytes52::from([0x02u8; 52]),
+            proposal_pubkey: Bytes52::from([0x02u8; 52]),
             index: ValidatorIndex(Uint64(1)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x03u8; 52]),
+            attestation_pubkey: Bytes52::from([0x03u8; 52]),
+            proposal_pubkey: Bytes52::from([0x03u8; 52]),
             index: ValidatorIndex(Uint64(2)),
             balance: Uint64(0),
         },
@@ -311,7 +318,8 @@ fn safe_target_advances_after_supermajority_votes() {
 #[test]
 fn reorg_vote_shift_changes_head() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -380,7 +388,8 @@ fn reorg_vote_shift_changes_head() {
 #[test]
 fn head_slot_and_validator_count_getters() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -403,12 +412,14 @@ fn head_slot_and_validator_count_getters() {
 fn finalized_advance_prunes_old_fork_choice_history() {
     let validators = Validators::new(vec![
         Validator {
-            pubkey: Bytes52::from([0x01u8; 52]),
+            attestation_pubkey: Bytes52::from([0x01u8; 52]),
+            proposal_pubkey: Bytes52::from([0x01u8; 52]),
             index: ValidatorIndex(Uint64(0)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x02u8; 52]),
+            attestation_pubkey: Bytes52::from([0x02u8; 52]),
+            proposal_pubkey: Bytes52::from([0x02u8; 52]),
             index: ValidatorIndex(Uint64(1)),
             balance: Uint64(0),
         },

@@ -309,6 +309,41 @@ fn parses_genesis_yaml_as_config_with_default_node_settings() {
 }
 
 #[test]
+fn parses_structured_devnet4_genesis_yaml() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_genesis_yaml_devnet4_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("config.yaml");
+    fs::write(
+        &config_path,
+        "GENESIS_TIME: 42\nGENESIS_VALIDATORS:\n  - attestation_pubkey: \"0xd1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n    proposal_pubkey: \"0xd2020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n",
+    )
+    .expect("write genesis yaml");
+
+    let (config, settings) = load_node_settings(&config_path).expect("parse genesis yaml");
+    assert_eq!(config.genesis_time.0, 42);
+    assert_eq!(settings.metrics_port, 8080);
+    assert!(settings.http_api);
+
+    let state = peam::app::build_genesis_from_config_yaml(&config_path).expect("build genesis");
+    let validator = state.validators.get(0).expect("validator");
+    assert_eq!(
+        validator.attestation_pubkey,
+        peam::types::bytes::Bytes52::from_slice(&[0xd1, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    );
+    assert_eq!(
+        validator.proposal_pubkey,
+        peam::types::bytes::Bytes52::from_slice(&[0xd2, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn resolves_local_validator_index_from_node_name() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

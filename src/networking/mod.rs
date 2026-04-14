@@ -44,7 +44,7 @@ pub use reqresp_handler::{NoopReqRespHandler, ReqRespHandler, StoreReqRespHandle
 pub use reqresp_messages::{LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol};
 pub use validate::{
     GossipSignatureVerifier, GossipValidatorKind, NoopGossipVerifier, SimpleGossipVerifier,
-    validate_gossip, verifier_from_validators,
+    validate_gossip, verifier_from_pubkeys, verifier_from_validators,
 };
 
 /// The fully-assembled networking runtime.

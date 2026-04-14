@@ -27,7 +27,8 @@ fn compute_state_root_for_block(state: &State, block: &Block) -> Bytes32 {
 
 fn dummy_signed_block() -> SignedBlockWithAttestation {
     let v = peam::containers::validator::Validator {
-        pubkey: peam::types::bytes::Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: peam::types::bytes::Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: peam::types::bytes::Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
