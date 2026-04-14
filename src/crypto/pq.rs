@@ -37,6 +37,17 @@ pub enum DevnetValidatorKeyRole {
     Proposal,
 }
 
+#[inline]
+fn devnet_validator_seed(validator_index: usize, role: DevnetValidatorKeyRole) -> [u8; 32] {
+    let mut seed = [0u8; 32];
+    let role_tag = match role {
+        DevnetValidatorKeyRole::Attestation => 0x4456_4E45_5431_0000u64,
+        DevnetValidatorKeyRole::Proposal => 0x4456_4E45_5431_5052u64,
+    };
+    seed[0..8].copy_from_slice(&(role_tag ^ (validator_index as u64)).to_le_bytes());
+    seed
+}
+
 /// Pre-computes aggregation proving artifacts.
 pub fn setup_aggregate_prover() {
     xmss_aggregation_setup_prover();
@@ -53,12 +64,7 @@ pub fn key_gen_for_devnet_validator_with_role(
     validator_index: usize,
     role: DevnetValidatorKeyRole,
 ) -> Result<(Bytes52, LeanSigSecretKey), String> {
-    let mut seed = [0u8; 32];
-    let role_tag = match role {
-        DevnetValidatorKeyRole::Attestation => 0x4456_4E45_5431_0000u64,
-        DevnetValidatorKeyRole::Proposal => 0x4456_4E45_5431_5052u64,
-    };
-    seed[0..8].copy_from_slice(&(role_tag ^ (validator_index as u64)).to_le_bytes());
+    let seed = devnet_validator_seed(validator_index, role);
     let mut rng = StdRng::from_seed(seed);
     let (pk, sk) =
         <LeanSigScheme as SignatureScheme>::key_gen(&mut rng, 0, DEVNET_KEY_ACTIVE_EPOCHS);
@@ -279,4 +285,21 @@ pub fn verify_aggregate_signature(
         .collect::<Result<Vec<_>, _>>()?;
     xmss_verify_aggregated_signatures(&pub_keys, message, &aggregate, epoch)
         .map_err(|err| format!("failed to verify aggregated signatures: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DevnetValidatorKeyRole, devnet_validator_seed};
+
+    #[test]
+    fn devnet_role_seeds_are_distinct_and_stable() {
+        let attestation = devnet_validator_seed(0, DevnetValidatorKeyRole::Attestation);
+        let proposal = devnet_validator_seed(0, DevnetValidatorKeyRole::Proposal);
+
+        assert_ne!(attestation, proposal);
+        assert_eq!(attestation[..8], [0, 0, 49, 84, 69, 78, 86, 68]);
+        assert_eq!(proposal[..8], [82, 80, 49, 84, 69, 78, 86, 68]);
+        assert!(attestation[8..].iter().all(|byte| *byte == 0));
+        assert!(proposal[8..].iter().all(|byte| *byte == 0));
+    }
 }

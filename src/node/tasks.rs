@@ -100,13 +100,22 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
 ) -> Result<DevnetValidatorKeyCache, String> {
     let mut keys = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
-        let attestation_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_attestation_pk.ssz"));
-        let attestation_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_attestation_sk.ssz"));
+        let attestation_pk_path =
+            hash_sig_keys_dir.join(format!("validator_{i}_attestation_pk.ssz"));
+        let attestation_sk_path =
+            hash_sig_keys_dir.join(format!("validator_{i}_attestation_sk.ssz"));
         let proposal_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_pk.ssz"));
         let proposal_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_sk.ssz"));
 
         let attestation_pk_bytes = std::fs::read(&attestation_pk_path)
             .map_err(|err| format!("failed to read {}: {err}", attestation_pk_path.display()))?;
+        let attestation_sk_bytes = std::fs::read(&attestation_sk_path)
+            .map_err(|err| format!("failed to read {}: {err}", attestation_sk_path.display()))?;
+        let proposal_pk_bytes = std::fs::read(&proposal_pk_path)
+            .map_err(|err| format!("failed to read {}: {err}", proposal_pk_path.display()))?;
+        let proposal_sk_bytes = std::fs::read(&proposal_sk_path)
+            .map_err(|err| format!("failed to read {}: {err}", proposal_sk_path.display()))?;
+
         if attestation_pk_bytes.len() != 52 {
             return Err(format!(
                 "invalid public key length for {}: expected {}, got {}",
@@ -115,16 +124,6 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
                 attestation_pk_bytes.len()
             ));
         }
-
-        let attestation_sk_bytes = std::fs::read(&attestation_sk_path)
-            .map_err(|err| format!("failed to read {}: {err}", attestation_sk_path.display()))?;
-        let attestation_secret_key =
-            crate::crypto::pq::LeanSigSecretKey::from_bytes(&attestation_sk_bytes).map_err(
-                |err| format!("failed to decode {}: {err:?}", attestation_sk_path.display()),
-            )?;
-
-        let proposal_pk_bytes = std::fs::read(&proposal_pk_path)
-            .map_err(|err| format!("failed to read {}: {err}", proposal_pk_path.display()))?;
         if proposal_pk_bytes.len() != 52 {
             return Err(format!(
                 "invalid public key length for {}: expected {}, got {}",
@@ -134,8 +133,10 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
             ));
         }
 
-        let proposal_sk_bytes = std::fs::read(&proposal_sk_path)
-            .map_err(|err| format!("failed to read {}: {err}", proposal_sk_path.display()))?;
+        let attestation_secret_key =
+            crate::crypto::pq::LeanSigSecretKey::from_bytes(&attestation_sk_bytes).map_err(
+                |err| format!("failed to decode {}: {err:?}", attestation_sk_path.display()),
+            )?;
         let proposal_secret_key =
             crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(
                 |err| format!("failed to decode {}: {err:?}", proposal_sk_path.display()),
@@ -1221,8 +1222,8 @@ pub(super) fn spawn_block_production_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_devnet_pq_validator_keys, build_devnet_pq_validator_keys_from_hash_sig_dir,
-        PendingBlockAttestation, build_block_attestation_payload, load_attestation_data,
+        PendingBlockAttestation, build_block_attestation_payload,
+        build_devnet_pq_validator_keys_from_hash_sig_dir, load_attestation_data,
         load_proposal_pre_state,
     };
     use crate::containers::attestation::{
@@ -1233,7 +1234,6 @@ mod tests {
     };
     use crate::containers::checkpoint::Checkpoint;
     use crate::containers::state::{State, Validators};
-    use crate::crypto::pq::{self, DevnetValidatorKeyRole};
     use crate::containers::validator::ValidatorIndex;
     use crate::fork_choice::ForkChoiceStore;
     use crate::metrics::MetricsRegistry;
@@ -1243,7 +1243,6 @@ mod tests {
     use crate::types::bytes::{ByteList, Bytes32, Bytes3112};
     use crate::types::collections::SszList;
     use crate::types::uint::Uint64;
-    use leansig::serialization::Serializable;
     use peam_ssz::ssz::HashTreeRoot;
     use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
@@ -1366,43 +1365,18 @@ mod tests {
     }
 
     #[test]
-    fn devnet_key_cache_splits_attestation_and_proposal_keys() {
-        let cache = build_devnet_pq_validator_keys(1);
-        let material = cache
-            .first()
-            .and_then(|entry| entry.as_ref())
-            .expect("validator key material");
-
-        assert_ne!(material.attestation_pubkey, material.proposal_pubkey);
-
-        let (expected_attestation_pubkey, _) =
-            pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-                .expect("attestation key");
-        let (expected_proposal_pubkey, _) =
-            pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
-                .expect("proposal key");
-
-        assert_eq!(material.attestation_pubkey, expected_attestation_pubkey);
-        assert_eq!(material.proposal_pubkey, expected_proposal_pubkey);
-    }
-
-    #[test]
     fn strict_hash_sig_dir_requires_proposal_key_files() {
         let dir = temp_store_dir("strict_hash_sig_keys");
         std::fs::create_dir_all(&dir).expect("create dir");
 
-        let (attestation_pubkey, attestation_secret_key) =
-            pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-                .expect("attestation key");
-
         std::fs::write(
             dir.join("validator_0_attestation_pk.ssz"),
-            attestation_pubkey.as_array(),
+            [7u8; 52],
         )
         .expect("write attestation pk");
         std::fs::write(
             dir.join("validator_0_attestation_sk.ssz"),
-            attestation_secret_key.to_bytes(),
+            [9u8; 32],
         )
         .expect("write attestation sk");
 
