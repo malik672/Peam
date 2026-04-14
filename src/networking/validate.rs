@@ -450,65 +450,80 @@ mod tests {
 
     #[test]
     fn simple_verifier_uses_proposal_pubkeys_for_block_signatures() {
-        let (attestation_pubkey, attestation_signature) = {
-            pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-                .map(|(pubkey, secret_key)| {
-                    let bits = BitList::new(vec![true]).expect("bits");
-                    let proposer_attestation = Attestation {
-                        aggregation_bits: bits,
-                        data: sample_attestation_data(4),
-                    };
-                    let message_root = proposer_attestation.data.hash_tree_root();
-                    let signature = pq::sign_message(&secret_key, 4, &message_root)
-                        .expect("attestation signature");
-                    (pubkey, signature)
-                })
-                .expect("attestation key")
-        };
-        let (proposal_pubkey, proposal_signature) = {
-            pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
-                .map(|(pubkey, secret_key)| {
-                    let bits = BitList::new(vec![true]).expect("bits");
-                    let proposer_attestation = Attestation {
-                        aggregation_bits: bits,
-                        data: sample_attestation_data(4),
-                    };
-                    let message_root = proposer_attestation.data.hash_tree_root();
-                    let signature =
-                        pq::sign_message(&secret_key, 4, &message_root).expect("proposal signature");
-                    (pubkey, signature)
-                })
-                .expect("proposal key")
-        };
+        std::thread::Builder::new()
+            .name("proposal-pubkey-verifier-test".to_string())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let (attestation_pubkey, attestation_signature) = {
+                    pq::key_gen_for_devnet_validator_with_role(
+                        0,
+                        DevnetValidatorKeyRole::Attestation,
+                    )
+                    .map(|(pubkey, secret_key)| {
+                        let bits = BitList::new(vec![true]).expect("bits");
+                        let proposer_attestation = Attestation {
+                            aggregation_bits: bits,
+                            data: sample_attestation_data(4),
+                        };
+                        let message_root = proposer_attestation.data.hash_tree_root();
+                        let signature = pq::sign_message(&secret_key, 4, &message_root)
+                            .expect("attestation signature");
+                        (pubkey, signature)
+                    })
+                    .expect("attestation key")
+                };
+                let (proposal_pubkey, proposal_signature) = {
+                    pq::key_gen_for_devnet_validator_with_role(
+                        0,
+                        DevnetValidatorKeyRole::Proposal,
+                    )
+                    .map(|(pubkey, secret_key)| {
+                        let bits = BitList::new(vec![true]).expect("bits");
+                        let proposer_attestation = Attestation {
+                            aggregation_bits: bits,
+                            data: sample_attestation_data(4),
+                        };
+                        let message_root = proposer_attestation.data.hash_tree_root();
+                        let signature = pq::sign_message(&secret_key, 4, &message_root)
+                            .expect("proposal signature");
+                        (pubkey, signature)
+                    })
+                    .expect("proposal key")
+                };
 
-        let verifier = SimpleGossipVerifier::new(vec![attestation_pubkey], vec![proposal_pubkey]);
-        let bits = BitList::new(vec![true]).expect("bits");
-        let proposer_attestation = Attestation {
-            aggregation_bits: bits,
-            data: sample_attestation_data(4),
-        };
-        let message = BlockWithAttestation {
-            block: Block {
-                slot: Slot(Uint64(4)),
-                proposer_index: ValidatorIndex(Uint64(0)),
-                parent_root: Bytes32::zero(),
-                state_root: Bytes32::zero(),
-                body: BlockBody {
-                    attestations: SszList::new(vec![]).expect("attestations"),
-                },
-            },
-            proposer_attestation: proposer_attestation.clone(),
-        };
+                let verifier =
+                    SimpleGossipVerifier::new(vec![attestation_pubkey], vec![proposal_pubkey]);
+                let bits = BitList::new(vec![true]).expect("bits");
+                let proposer_attestation = Attestation {
+                    aggregation_bits: bits,
+                    data: sample_attestation_data(4),
+                };
+                let message = BlockWithAttestation {
+                    block: Block {
+                        slot: Slot(Uint64(4)),
+                        proposer_index: ValidatorIndex(Uint64(0)),
+                        parent_root: Bytes32::zero(),
+                        state_root: Bytes32::zero(),
+                        body: BlockBody {
+                            attestations: SszList::new(vec![]).expect("attestations"),
+                        },
+                    },
+                    proposer_attestation: proposer_attestation.clone(),
+                };
 
-        assert!(verifier.verify_block_signature(
-            ValidatorIndex(Uint64(0)),
-            &message,
-            &proposal_signature
-        ));
-        assert!(!verifier.verify_block_signature(
-            ValidatorIndex(Uint64(0)),
-            &message,
-            &attestation_signature
-        ));
+                assert!(verifier.verify_block_signature(
+                    ValidatorIndex(Uint64(0)),
+                    &message,
+                    &proposal_signature
+                ));
+                assert!(!verifier.verify_block_signature(
+                    ValidatorIndex(Uint64(0)),
+                    &message,
+                    &attestation_signature
+                ));
+            })
+            .expect("spawn verifier test thread")
+            .join()
+            .expect("join verifier test thread");
     }
 }
