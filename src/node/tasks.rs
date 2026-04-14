@@ -49,9 +49,7 @@ pub struct PendingBlockAttestation {
 pub(super) struct DevnetValidatorKeyMaterial {
     pub attestation_pubkey: Bytes52,
     pub attestation_secret_key: Arc<crate::crypto::pq::LeanSigSecretKey>,
-    #[allow(dead_code)]
     pub proposal_pubkey: Bytes52,
-    #[allow(dead_code)]
     pub proposal_secret_key: Arc<crate::crypto::pq::LeanSigSecretKey>,
 }
 
@@ -654,10 +652,19 @@ fn aggregate_signed_attestations(
         let mut participants = Vec::with_capacity(group.entries.len());
         let mut public_keys = Vec::with_capacity(group.entries.len());
         let mut signatures = Vec::with_capacity(group.entries.len());
-        for (idx, pubkey, signature) in group.entries {
-            participants.push(idx);
-            public_keys.push(pubkey);
-            signatures.push(signature);
+        // SAFETY:
+        // - all three vectors are allocated with capacity `group.entries.len()`.
+        // - each slot is written exactly once before the corresponding length is increased.
+        unsafe {
+            for (slot, (idx, pubkey, signature)) in group.entries.into_iter().enumerate() {
+                crate::unsafe_vec::write_at(&mut participants, slot, idx);
+                crate::unsafe_vec::write_at(&mut public_keys, slot, pubkey);
+                crate::unsafe_vec::write_at(&mut signatures, slot, signature);
+                let initialized_len = slot.unchecked_add(1);
+                participants.set_len(initialized_len);
+                public_keys.set_len(initialized_len);
+                signatures.set_len(initialized_len);
+            }
         }
         let Some(max_idx) = participants.iter().copied().max() else {
             continue;

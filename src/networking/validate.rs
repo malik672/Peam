@@ -23,6 +23,7 @@ use crate::crypto;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::{Bytes52, Bytes3112};
+use crate::unsafe_vec::write_at;
 use tracing::warn;
 
 /// Discriminant for selecting the gossip validator to run on a topic.
@@ -352,15 +353,26 @@ pub fn verifier_from_validators(validators: &[Validator]) -> Arc<dyn GossipSigna
     if validators.is_empty() {
         return Arc::new(NoopGossipVerifier);
     }
-    let pubkeys = validators
-        .iter()
-        .map(|validator| validator.attestation_pubkey)
-        .collect::<Vec<_>>();
-    let proposal_pubkeys = validators
-        .iter()
-        .map(|validator| validator.proposal_pubkey)
-        .collect::<Vec<_>>();
-    Arc::new(SimpleGossipVerifier::new(pubkeys, proposal_pubkeys))
+    let len = validators.len();
+    let mut attestation_pubkeys = Vec::with_capacity(len);
+    let mut proposal_pubkeys = Vec::with_capacity(len);
+    // SAFETY:
+    // - both vectors are allocated with capacity `len`.
+    // - the loop writes each slot in `0..len` exactly once.
+    // - lengths are increased only after the corresponding slots are initialized.
+    unsafe {
+        for (idx, validator) in validators.iter().enumerate() {
+            write_at(&mut attestation_pubkeys, idx, validator.attestation_pubkey);
+            write_at(&mut proposal_pubkeys, idx, validator.proposal_pubkey);
+            let initialized_len = idx.unchecked_add(1);
+            attestation_pubkeys.set_len(initialized_len);
+            proposal_pubkeys.set_len(initialized_len);
+        }
+    }
+    Arc::new(SimpleGossipVerifier::new(
+        attestation_pubkeys,
+        proposal_pubkeys,
+    ))
 }
 
 #[cfg(test)]
