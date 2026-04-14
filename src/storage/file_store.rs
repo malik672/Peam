@@ -46,6 +46,7 @@ use super::canonical_db::CanonicalDb;
 use super::pending::PendingSlotCache;
 use super::*;
 use crate::containers::checkpoint::Checkpoint;
+use crate::logfmt::{short_opt_root_or_dash, short_root, short_slot_root};
 use crate::ssz::{HashTreeRoot, SszEncode};
 
 /// A disk-backed [`Store`] with canonical+pending slot indexes as truth.
@@ -426,17 +427,16 @@ impl FileStore {
         let counter = PERSIST_LOGS.get_or_init(|| AtomicUsize::new(0));
         if counter.fetch_add(1, Ordering::Relaxed) < 64 {
             tracing::info!(
-                block_root = ?root,
-                block_slot = slot,
-                parent_root = ?block.parent_root,
-                state_root = ?state_root,
-                head_root = ?next_head,
-                justified_root = ?next_justified,
-                finalized_root = ?next_finalized,
+                block = %short_slot_root(slot, &root),
+                parent = %short_root(&block.parent_root),
+                state = %short_root(&state_root),
+                head = %short_opt_root_or_dash(next_head),
+                justified = %short_opt_root_or_dash(next_justified),
+                finalized = %short_opt_root_or_dash(next_finalized),
                 finalized_slot = next_finalized_slot.unwrap_or(0),
                 state_slot = persisted_state.slot.0.0,
                 latest_header_slot = persisted_state.latest_block_header.slot.0.0,
-                "persisted signed block bundle"
+                "signed block bundle persisted"
             );
         }
 

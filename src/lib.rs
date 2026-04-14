@@ -15,6 +15,7 @@ pub mod checkpoint_sync;
 pub mod containers;
 pub mod crypto;
 pub mod fork_choice;
+pub mod logfmt;
 pub mod metrics;
 pub mod networking;
 pub mod node;

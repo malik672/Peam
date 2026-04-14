@@ -32,6 +32,7 @@ use crate::containers::config::Config;
 use crate::containers::state_metrics::{NoopTransitionMetricsSink, TransitionMetricsSink};
 use crate::containers::validator::Validator;
 use crate::crypto::pq;
+use crate::logfmt::{short_opt_root_or_dash, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
 use crate::slot::{self, Slot};
 use crate::ssz::hash::merkleize;
@@ -419,28 +420,29 @@ impl State {
         if computed_root != block.state_root {
             warn!(
                 block_slot = block.slot.0.0,
-                block_parent = ?block.parent_root,
-                block_state_root = ?block.state_root,
-                computed_state_root = ?computed_root,
+                block_parent = %short_root(&block.parent_root),
+                block_state_root = %short_root(&block.state_root),
+                computed_state_root = %short_root(&computed_root),
                 pre_slot,
                 pre_header_slot,
-                pre_header_root = ?pre_header_root,
+                pre_header_root = %short_root(&pre_header_root),
                 pre_justified_slot = pre_justified.slot.0.0,
-                pre_justified_root = ?pre_justified.root,
+                pre_justified_root = %short_root(&pre_justified.root),
                 pre_finalized_slot = pre_finalized.slot.0.0,
-                pre_finalized_root = ?pre_finalized.root,
-                post_slots_root = ?post_slots_root,
-                post_header_root = ?post_header_root,
-                post_attestations_root = ?post_attestations_root,
+                pre_finalized_root = %short_root(&pre_finalized.root),
+                post_slots_root = %short_opt_root_or_dash(post_slots_root),
+                post_header_root = %short_opt_root_or_dash(post_header_root),
+                post_attestations_root = %short_opt_root_or_dash(post_attestations_root),
                 post_slot = self.slot.0.0,
                 post_header_slot = self.latest_block_header.slot.0.0,
-                post_header_root = ?Bytes32::from(self.latest_block_header.hash_tree_root()),
+                post_header_root_live =
+                    %short_root(&Bytes32::from(self.latest_block_header.hash_tree_root())),
                 post_justified_slot = self.latest_justified.slot.0.0,
-                post_justified_root = ?self.latest_justified.root,
+                post_justified_root = %short_root(&self.latest_justified.root),
                 post_finalized_slot = self.latest_finalized.slot.0.0,
-                post_finalized_root = ?self.latest_finalized.root,
+                post_finalized_root = %short_root(&self.latest_finalized.root),
                 body_attestations = att_count,
-                "state transition state-root mismatch trace"
+                "state-root mismatch"
             );
             return Err("block state root does not match computed state root".to_string());
         } else {
@@ -451,13 +453,14 @@ impl State {
             || self.latest_finalized.slot > pre_finalized.slot
         {
             info!(
-                block_slot = block.slot.0.0,
-                block_root = ?Bytes32::from(block.hash_tree_root()),
+                block = %short_slot_root(block.slot.0.0, &Bytes32::from(block.hash_tree_root())),
                 pre_justified_slot = pre_justified.slot.0.0,
                 post_justified_slot = self.latest_justified.slot.0.0,
                 pre_finalized_slot = pre_finalized.slot.0.0,
                 post_finalized_slot = self.latest_finalized.slot.0.0,
-                "consensus checkpoints advanced"
+                justified = %short_root(&self.latest_justified.root),
+                finalized = %short_root(&self.latest_finalized.root),
+                "checkpoints advanced"
             );
         }
 

@@ -10,6 +10,7 @@ use crate::containers::attestation::{Attestation, SignedAttestation, VALIDATOR_R
 use crate::containers::block::SignedBlockWithAttestation;
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
+use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
 use crate::networking::GossipContext;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
@@ -307,18 +308,25 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                                 *fc = Some(new_fc);
                             }
                             Err(err) => {
-                                warn!("fork choice init failed root={root:?} err={err}");
+                                warn!(
+                                    block = %short_slot_root(signed.message.block.slot.0.0, &root),
+                                    err = %err,
+                                    "gossip block fork-choice init failed"
+                                );
                             }
                         }
                     } else if let Some(fc) = fc.as_mut() {
                         if let Err(err) = fc.on_block(signed.clone(), fc_state) {
-                            warn!("fork choice on_block failed root={root:?} err={err}");
+                            warn!(
+                                block = %short_slot_root(signed.message.block.slot.0.0, &root),
+                                err = %err,
+                                "gossip block fork-choice update failed"
+                            );
                         }
                     }
                     info!(
-                        root = ?root,
-                        slot = signed.message.block.slot.0.0,
-                        parent_root = ?signed.message.block.parent_root,
+                        block = %short_slot_root(signed.message.block.slot.0.0, &root),
+                        parent = %short_root(&signed.message.block.parent_root),
                         "gossip block imported"
                     );
                     enqueue_proposer_attestation_from_signed_block(pending_attestations, &signed);
@@ -327,7 +335,12 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
                         .observe_duration(block_start);
                 }
                 Err(err) => {
-                    warn!("block import failed root={root:?} err={err}");
+                    warn!(
+                        block = %short_slot_root(signed.message.block.slot.0.0, &root),
+                        parent = %short_root(&signed.message.block.parent_root),
+                        err = %err,
+                        "gossip block import failed"
+                    );
                 }
             }
         }
@@ -359,12 +372,11 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
             }
             info!(
                 slot = att.data.slot.0.0,
-                target_slot = att.data.target.slot.0.0,
-                target_root = ?att.data.target.root,
-                source_slot = att.data.source.slot.0.0,
-                source_root = ?att.data.source.root,
+                head = %short_checkpoint(&att.data.head),
+                target = %short_checkpoint(&att.data.target),
+                source = %short_checkpoint(&att.data.source),
                 participants_len_bits = att.proof.participants.len,
-                "gossip aggregated attestation received"
+                "gossip attestation aggregate received"
             );
             let pending = Attestation {
                 aggregation_bits: att.proof.participants.clone(),
