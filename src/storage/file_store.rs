@@ -946,7 +946,8 @@ mod tests {
 
     fn single_validator_state() -> State {
         let validators = Validators::new(vec![Validator {
-            pubkey: Bytes52::from([0u8; 52]),
+            attestation_pubkey: Bytes52::from([0u8; 52]),
+            proposal_pubkey: Bytes52::from([1u8; 52]),
             index: ValidatorIndex(Uint64(0)),
             balance: Uint64(0),
         }])

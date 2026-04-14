@@ -77,6 +77,13 @@ pub type JustifiedSlots = BitList<HISTORICAL_ROOTS_LIMIT>;
 /// attestations.
 pub type JustificationValidators = BitList<JUSTIFICATION_VALIDATORS_LIMIT>;
 
+#[inline]
+fn proposer_pubkey_for(validators: &[Validator], proposer_idx: usize) -> Option<crate::types::bytes::Bytes52> {
+    validators
+        .get(proposer_idx)
+        .map(|validator| validator.proposal_pubkey)
+}
+
 /// `HashTreeRoot(BlockBody { attestations: [] })` — the body root used in the genesis
 /// block header.
 ///
@@ -944,7 +951,7 @@ impl SignatureVerifier for PqSignatureVerifier {
                     let validator = validators
                         .get(idx)
                         .ok_or_else(|| "validator index out of range".to_string())?;
-                    public_keys.push(validator.pubkey);
+                    public_keys.push(validator.attestation_pubkey);
                     remaining &= remaining - 1;
                 }
             }
@@ -964,12 +971,11 @@ impl SignatureVerifier for PqSignatureVerifier {
 
         let proposer_attestation = &signed.message.proposer_attestation;
         let proposer_idx = block.proposer_index.0.0 as usize;
-        let proposer = validators
-            .get(proposer_idx)
+        let proposer_pubkey = proposer_pubkey_for(validators, proposer_idx)
             .ok_or_else(|| "proposer index out of range".to_string())?;
         let proposer_message = proposer_attestation.data.hash_tree_root();
         pq::verify_signature(
-            &proposer.pubkey,
+            &proposer_pubkey,
             proposer_attestation.data.slot.0.0 as u32,
             &proposer_message,
             &signed.signature.proposer_signature,

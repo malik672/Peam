@@ -23,6 +23,7 @@ use crate::crypto;
 use crate::ssz::HashTreeRoot;
 use crate::types::bitlist::BitList;
 use crate::types::bytes::{Bytes52, Bytes3112};
+use crate::unsafe_vec::write_at;
 use tracing::warn;
 
 /// Discriminant for selecting the gossip validator to run on a topic.
@@ -99,7 +100,8 @@ impl GossipSignatureVerifier for NoopGossipVerifier {
 /// Performs real PQ signature verification via `crypto::pq`. Initialises the
 /// aggregate verifier on construction via [`crypto::pq::setup_aggregate_verifier`].
 pub struct SimpleGossipVerifier {
-    pubkeys: Vec<Bytes52>,
+    attestation_pubkeys: Vec<Bytes52>,
+    proposal_pubkeys: Vec<Bytes52>,
 }
 
 impl SimpleGossipVerifier {
@@ -107,9 +109,17 @@ impl SimpleGossipVerifier {
     ///
     /// Keys must be ordered by validator index. Calls
     /// `setup_aggregate_verifier` to initialise any global verifier state.
-    pub fn new(pubkeys: Vec<Bytes52>) -> Self {
+    pub fn new(attestation_pubkeys: Vec<Bytes52>, proposal_pubkeys: Vec<Bytes52>) -> Self {
+        assert_eq!(
+            attestation_pubkeys.len(),
+            proposal_pubkeys.len(),
+            "attestation/proposal pubkey registries must have the same length"
+        );
         crypto::pq::setup_aggregate_verifier();
-        Self { pubkeys }
+        Self {
+            attestation_pubkeys,
+            proposal_pubkeys,
+        }
     }
 }
 
@@ -123,7 +133,7 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
     ) -> bool {
         let proposer_attestation = &message.proposer_attestation;
         let idx = proposer_index.0.0 as usize;
-        let Some(pubkey) = self.pubkeys.get(idx) else {
+        let Some(pubkey) = self.proposal_pubkeys.get(idx) else {
             return false;
         };
         let root = proposer_attestation.data.hash_tree_root();
@@ -133,7 +143,7 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
 
     fn verify_signed_attestation_signature(&self, attestation: &SignedAttestation) -> bool {
         let idx = attestation.validator_id.0 as usize;
-        let Some(pubkey) = self.pubkeys.get(idx) else {
+        let Some(pubkey) = self.attestation_pubkeys.get(idx) else {
             return false;
         };
         let root = attestation.message.hash_tree_root();
@@ -146,7 +156,8 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
         attestation: &Attestation,
         proof: &AggregatedSignatureProof,
     ) -> bool {
-        let Some(participants) = gather_pubkeys(&self.pubkeys, &attestation.aggregation_bits)
+        let Some(participants) =
+            gather_pubkeys(&self.attestation_pubkeys, &attestation.aggregation_bits)
         else {
             return false;
         };
@@ -343,19 +354,30 @@ pub fn validate_gossip(
     }
 }
 
-/// Constructs the appropriate [`GossipSignatureVerifier`] for `validators`.
-///
-/// Returns a [`NoopGossipVerifier`] if the registry is empty, otherwise a
-/// [`SimpleGossipVerifier`] built from the validators' public keys.
 pub fn verifier_from_validators(validators: &[Validator]) -> Arc<dyn GossipSignatureVerifier> {
     if validators.is_empty() {
         return Arc::new(NoopGossipVerifier);
     }
-    let pubkeys = validators
-        .iter()
-        .map(|validator| validator.pubkey)
-        .collect();
-    Arc::new(SimpleGossipVerifier::new(pubkeys))
+    let len = validators.len();
+    let mut attestation_pubkeys = Vec::with_capacity(len);
+    let mut proposal_pubkeys = Vec::with_capacity(len);
+    // SAFETY:
+    // - both vectors are allocated with capacity `len`.
+    // - the loop writes each slot in `0..len` exactly once.
+    // - lengths are increased only after the corresponding slots are initialized.
+    unsafe {
+        for (idx, validator) in validators.iter().enumerate() {
+            write_at(&mut attestation_pubkeys, idx, validator.attestation_pubkey);
+            write_at(&mut proposal_pubkeys, idx, validator.proposal_pubkey);
+            let initialized_len = idx.unchecked_add(1);
+            attestation_pubkeys.set_len(initialized_len);
+            proposal_pubkeys.set_len(initialized_len);
+        }
+    }
+    Arc::new(SimpleGossipVerifier::new(
+        attestation_pubkeys,
+        proposal_pubkeys,
+    ))
 }
 
 #[cfg(test)]
@@ -364,10 +386,15 @@ mod tests {
     use crate::containers::attestation::{
         AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
     };
+    use crate::containers::block::{Block, BlockBody, BlockWithAttestation};
     use crate::containers::checkpoint::Checkpoint;
+    use crate::containers::validator::ValidatorIndex;
+    use crate::crypto::pq::{self, DevnetValidatorKeyRole};
+    use crate::ssz::HashTreeRoot;
     use crate::slot::Slot;
     use crate::types::bitlist::BitList;
     use crate::types::bytes::{ByteList, Bytes32, Bytes52};
+    use crate::types::collections::SszList;
     use crate::types::uint::Uint64;
 
     fn sample_attestation_data(slot: u64) -> AttestationData {
@@ -386,7 +413,8 @@ mod tests {
     #[test]
     fn simple_verifier_rejects_placeholder_aggregate_proof() {
         let verifier = SimpleGossipVerifier {
-            pubkeys: vec![Bytes52::from([0u8; 52])],
+            attestation_pubkeys: vec![Bytes52::from([0u8; 52])],
+            proposal_pubkeys: vec![Bytes52::from([0u8; 52])],
         };
         let bits = BitList::new(vec![true]).expect("bits");
         let attestation = Attestation {
@@ -404,7 +432,8 @@ mod tests {
     #[test]
     fn simple_verifier_rejects_invalid_non_placeholder_aggregate_proof() {
         let verifier = SimpleGossipVerifier {
-            pubkeys: vec![Bytes52::from([0u8; 52])],
+            attestation_pubkeys: vec![Bytes52::from([0u8; 52])],
+            proposal_pubkeys: vec![Bytes52::from([0u8; 52])],
         };
         let bits = BitList::new(vec![true]).expect("bits");
         let attestation = Attestation {
@@ -417,5 +446,84 @@ mod tests {
         };
 
         assert!(!verifier.verify_attestation_signature(&attestation, &proof));
+    }
+
+    #[test]
+    fn simple_verifier_uses_proposal_pubkeys_for_block_signatures() {
+        std::thread::Builder::new()
+            .name("proposal-pubkey-verifier-test".to_string())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let (attestation_pubkey, attestation_signature) = {
+                    pq::key_gen_for_devnet_validator_with_role(
+                        0,
+                        DevnetValidatorKeyRole::Attestation,
+                    )
+                    .map(|(pubkey, secret_key)| {
+                        let bits = BitList::new(vec![true]).expect("bits");
+                        let proposer_attestation = Attestation {
+                            aggregation_bits: bits,
+                            data: sample_attestation_data(4),
+                        };
+                        let message_root = proposer_attestation.data.hash_tree_root();
+                        let signature = pq::sign_message(&secret_key, 4, &message_root)
+                            .expect("attestation signature");
+                        (pubkey, signature)
+                    })
+                    .expect("attestation key")
+                };
+                let (proposal_pubkey, proposal_signature) = {
+                    pq::key_gen_for_devnet_validator_with_role(
+                        0,
+                        DevnetValidatorKeyRole::Proposal,
+                    )
+                    .map(|(pubkey, secret_key)| {
+                        let bits = BitList::new(vec![true]).expect("bits");
+                        let proposer_attestation = Attestation {
+                            aggregation_bits: bits,
+                            data: sample_attestation_data(4),
+                        };
+                        let message_root = proposer_attestation.data.hash_tree_root();
+                        let signature = pq::sign_message(&secret_key, 4, &message_root)
+                            .expect("proposal signature");
+                        (pubkey, signature)
+                    })
+                    .expect("proposal key")
+                };
+
+                let verifier =
+                    SimpleGossipVerifier::new(vec![attestation_pubkey], vec![proposal_pubkey]);
+                let bits = BitList::new(vec![true]).expect("bits");
+                let proposer_attestation = Attestation {
+                    aggregation_bits: bits,
+                    data: sample_attestation_data(4),
+                };
+                let message = BlockWithAttestation {
+                    block: Block {
+                        slot: Slot(Uint64(4)),
+                        proposer_index: ValidatorIndex(Uint64(0)),
+                        parent_root: Bytes32::zero(),
+                        state_root: Bytes32::zero(),
+                        body: BlockBody {
+                            attestations: SszList::new(vec![]).expect("attestations"),
+                        },
+                    },
+                    proposer_attestation: proposer_attestation.clone(),
+                };
+
+                assert!(verifier.verify_block_signature(
+                    ValidatorIndex(Uint64(0)),
+                    &message,
+                    &proposal_signature
+                ));
+                assert!(!verifier.verify_block_signature(
+                    ValidatorIndex(Uint64(0)),
+                    &message,
+                    &attestation_signature
+                ));
+            })
+            .expect("spawn verifier test thread")
+            .join()
+            .expect("join verifier test thread");
     }
 }

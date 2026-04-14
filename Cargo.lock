@@ -3547,6 +3547,7 @@ dependencies = [
  "peam-ssz",
  "rand 0.9.2",
  "rapidhash 1.4.0",
+ "rayon",
  "redb",
  "serde",
  "serde_json",

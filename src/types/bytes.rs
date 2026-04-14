@@ -61,6 +61,7 @@ impl Bytes3112 {
         Self([0u8; 3112])
     }
 
+    #[inline]
     pub fn from_slice(bytes: &[u8]) -> Self {
         let mut out = [0u8; 3112];
         out.copy_from_slice(&bytes[0..3112]);

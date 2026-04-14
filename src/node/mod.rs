@@ -351,7 +351,7 @@ impl Node {
             filter_keys_against_genesis(&expected_genesis_state, devnet_validator_keys);
         if let Some(first) = expected_genesis_state.validators.first() {
             tracing::info!(
-                first_validator_pubkey = ?first.pubkey,
+                first_validator_pubkey = ?first.attestation_pubkey,
                 "peam startup: first validator pubkey"
             );
         }
@@ -373,11 +373,17 @@ ensure hash-sig-keys are available or use matching derivation for validator {}",
                 validator_key_source, settings.local_validator_index
             ));
         };
-        if local_key.pubkey != expected.pubkey {
+        if local_key.attestation_pubkey != expected.attestation_pubkey
+            || local_key.proposal_pubkey != expected.proposal_pubkey
+        {
             return Err(format!(
-                "local validator pubkey mismatch after filtering (source: {}); \
-expected {:?}, got {:?}",
-                validator_key_source, expected.pubkey, local_key.pubkey
+                "local validator key mismatch after filtering (source: {}); \
+expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}",
+                validator_key_source,
+                expected.attestation_pubkey,
+                expected.proposal_pubkey,
+                local_key.attestation_pubkey,
+                local_key.proposal_pubkey
             ));
         }
         let (metrics_node_name, metrics_client_name) =

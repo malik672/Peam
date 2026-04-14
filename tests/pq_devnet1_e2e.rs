@@ -2,6 +2,7 @@ use peam::containers::attestation::{AttestationData, SignedAttestation};
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::gossip::GossipAttestation;
 use peam::containers::validator::{Validator, ValidatorIndex};
+use peam::crypto::pq::DevnetValidatorKeyRole;
 use peam::crypto::{PQ_ACTIVATION_TIME_EPOCHS, pq};
 use peam::networking::{GossipValidatorKind, validate_gossip, verifier_from_validators};
 use peam::slot::Slot;
@@ -12,9 +13,12 @@ use peam::types::uint::Uint64;
 #[test]
 #[ignore = "expensive pq key generation/signing; run explicitly for devnet-1 validation"]
 fn pq_signed_attestation_validates_through_gossip_pipeline() {
-    let (pubkey, secret_key) = pq::key_gen_for_devnet_validator(0).expect("keygen");
+    let (pubkey, secret_key) =
+        pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("keygen");
     let validators = vec![Validator {
-        pubkey,
+        attestation_pubkey: pubkey,
+        proposal_pubkey: pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     }];
@@ -61,8 +65,12 @@ fn pq_multisig_aggregate_sign_and_verify_roundtrip() {
     pq::setup_aggregate_prover();
     pq::setup_aggregate_verifier();
 
-    let (pk0, sk0) = pq::key_gen_for_devnet_validator(0).expect("k0");
-    let (pk1, sk1) = pq::key_gen_for_devnet_validator(1).expect("k1");
+    let (pk0, sk0) =
+        pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("k0");
+    let (pk1, sk1) =
+        pq::key_gen_for_devnet_validator_with_role(1, DevnetValidatorKeyRole::Attestation)
+            .expect("k1");
 
     let message = [0x5Au8; 32];
     let aggregate = pq::sign_aggregate(&[pk0, pk1], &[&sk0, &sk1], 1, &message).expect("aggregate");

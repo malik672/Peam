@@ -46,7 +46,8 @@ fn process_slots_caches_zeroed_latest_header_state_root() {
 #[test]
 fn process_block_header_updates_latest_header() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -74,7 +75,8 @@ fn process_block_header_updates_latest_header() {
 #[test]
 fn state_root_mismatch_error_does_not_mutate_state() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -202,7 +204,8 @@ fn apply_state_transition_for_test(state: &mut State, block: &Block) -> Result<(
 #[test]
 fn lean_spec_process_first_block_after_genesis() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -222,7 +225,8 @@ fn lean_spec_process_first_block_after_genesis() {
 #[test]
 fn lean_spec_linear_chain_multiple_blocks() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -240,7 +244,8 @@ fn lean_spec_linear_chain_multiple_blocks() {
 #[test]
 fn lean_spec_blocks_with_gaps() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -262,7 +267,8 @@ fn lean_spec_blocks_with_gaps() {
 #[test]
 fn lean_spec_block_at_large_slot_number() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -278,12 +284,14 @@ fn lean_spec_block_at_large_slot_number() {
 #[test]
 fn lean_spec_block_with_invalid_proposer() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x02u8; 52]),
+        attestation_pubkey: Bytes52::from([0x02u8; 52]),
+        proposal_pubkey: Bytes52::from([0x02u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
@@ -300,7 +308,8 @@ fn lean_spec_block_with_invalid_proposer() {
 #[test]
 fn lean_spec_block_with_invalid_parent_root() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -469,12 +478,14 @@ fn signed_block_rejects_too_many_distinct_attestation_data_entries() {
 #[test]
 fn signed_block_proposer_attestation_participant_mismatch() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x02u8; 52]),
+        attestation_pubkey: Bytes52::from([0x02u8; 52]),
+        proposal_pubkey: Bytes52::from([0x02u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
@@ -519,12 +530,14 @@ fn signed_block_proposer_attestation_participant_mismatch() {
 #[test]
 fn signed_block_attestation_proof_participants_mismatch() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x02u8; 52]),
+        attestation_pubkey: Bytes52::from([0x02u8; 52]),
+        proposal_pubkey: Bytes52::from([0x02u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
@@ -602,7 +615,8 @@ fn signed_block_signature_verifier_error() {
     }
 
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -649,7 +663,8 @@ fn signed_block_signature_verifier_error() {
 #[test]
 fn process_block_header_pushes_historical_hashes() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -679,7 +694,8 @@ fn process_block_header_pushes_historical_hashes() {
 #[test]
 fn first_post_genesis_block_seeds_checkpoint_roots_from_parent() {
     let v = Validator {
-        pubkey: Bytes52::from([0x02u8; 52]),
+        attestation_pubkey: Bytes52::from([0x02u8; 52]),
+        proposal_pubkey: Bytes52::from([0x02u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -709,17 +725,20 @@ fn first_post_genesis_block_seeds_checkpoint_roots_from_parent() {
 #[test]
 fn attestations_update_latest_justified() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x02u8; 52]),
+        attestation_pubkey: Bytes52::from([0x02u8; 52]),
+        proposal_pubkey: Bytes52::from([0x02u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
     let v2 = Validator {
-        pubkey: Bytes52::from([0x03u8; 52]),
+        attestation_pubkey: Bytes52::from([0x03u8; 52]),
+        proposal_pubkey: Bytes52::from([0x03u8; 52]),
         index: ValidatorIndex(Uint64(2)),
         balance: Uint64(0),
     };
@@ -812,17 +831,20 @@ fn attestations_with_zero_validators_do_not_justify() {
 #[test]
 fn attestations_accumulate_votes_across_calls_for_justification_and_finalization() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x11u8; 52]),
+        attestation_pubkey: Bytes52::from([0x11u8; 52]),
+        proposal_pubkey: Bytes52::from([0x11u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x22u8; 52]),
+        attestation_pubkey: Bytes52::from([0x22u8; 52]),
+        proposal_pubkey: Bytes52::from([0x22u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
     let v2 = Validator {
-        pubkey: Bytes52::from([0x33u8; 52]),
+        attestation_pubkey: Bytes52::from([0x33u8; 52]),
+        proposal_pubkey: Bytes52::from([0x33u8; 52]),
         index: ValidatorIndex(Uint64(2)),
         balance: Uint64(0),
     };
@@ -937,17 +959,20 @@ fn attestations_accumulate_votes_across_calls_for_justification_and_finalization
 #[test]
 fn attestations_with_mismatched_target_slot_root_are_ignored() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x11u8; 52]),
+        attestation_pubkey: Bytes52::from([0x11u8; 52]),
+        proposal_pubkey: Bytes52::from([0x11u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x22u8; 52]),
+        attestation_pubkey: Bytes52::from([0x22u8; 52]),
+        proposal_pubkey: Bytes52::from([0x22u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
     let v2 = Validator {
-        pubkey: Bytes52::from([0x33u8; 52]),
+        attestation_pubkey: Bytes52::from([0x33u8; 52]),
+        proposal_pubkey: Bytes52::from([0x33u8; 52]),
         index: ValidatorIndex(Uint64(2)),
         balance: Uint64(0),
     };
@@ -1002,17 +1027,20 @@ fn attestations_with_mismatched_target_slot_root_are_ignored() {
 #[test]
 fn finalizes_when_target_is_next_valid_justifiable_slot_not_adjacent_slot() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x41u8; 52]),
+        attestation_pubkey: Bytes52::from([0x41u8; 52]),
+        proposal_pubkey: Bytes52::from([0x41u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x42u8; 52]),
+        attestation_pubkey: Bytes52::from([0x42u8; 52]),
+        proposal_pubkey: Bytes52::from([0x42u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
     let v2 = Validator {
-        pubkey: Bytes52::from([0x43u8; 52]),
+        attestation_pubkey: Bytes52::from([0x43u8; 52]),
+        proposal_pubkey: Bytes52::from([0x43u8; 52]),
         index: ValidatorIndex(Uint64(2)),
         balance: Uint64(0),
     };
@@ -1074,17 +1102,20 @@ fn finalizes_when_target_is_next_valid_justifiable_slot_not_adjacent_slot() {
 #[test]
 fn duplicate_historical_roots_keep_pending_justifications_after_prune() {
     let v0 = Validator {
-        pubkey: Bytes52::from([0x51u8; 52]),
+        attestation_pubkey: Bytes52::from([0x51u8; 52]),
+        proposal_pubkey: Bytes52::from([0x51u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
     let v1 = Validator {
-        pubkey: Bytes52::from([0x52u8; 52]),
+        attestation_pubkey: Bytes52::from([0x52u8; 52]),
+        proposal_pubkey: Bytes52::from([0x52u8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };
     let v2 = Validator {
-        pubkey: Bytes52::from([0x53u8; 52]),
+        attestation_pubkey: Bytes52::from([0x53u8; 52]),
+        proposal_pubkey: Bytes52::from([0x53u8; 52]),
         index: ValidatorIndex(Uint64(2)),
         balance: Uint64(0),
     };
@@ -1158,7 +1189,8 @@ fn duplicate_historical_roots_keep_pending_justifications_after_prune() {
 #[test]
 fn process_block_header_fills_empty_slots_with_zero_hashes() {
     let v = Validator {
-        pubkey: Bytes52::from([0x03u8; 52]),
+        attestation_pubkey: Bytes52::from([0x03u8; 52]),
+        proposal_pubkey: Bytes52::from([0x03u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -1190,7 +1222,8 @@ fn process_block_header_fills_empty_slots_with_zero_hashes() {
 #[test]
 fn historical_block_hashes_count_matches_expected() {
     let v = Validator {
-        pubkey: Bytes52::from([0x04u8; 52]),
+        attestation_pubkey: Bytes52::from([0x04u8; 52]),
+        proposal_pubkey: Bytes52::from([0x04u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -1218,7 +1251,8 @@ fn historical_block_hashes_count_matches_expected() {
 #[test]
 fn process_block_delegates_to_header() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -1253,7 +1287,8 @@ fn process_block_delegates_to_header() {
 #[test]
 fn state_transition_processes_slots_then_block() {
     let v = Validator {
-        pubkey: Bytes52::from([0x01u8; 52]),
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -1297,9 +1332,12 @@ fn state_transition_processes_slots_then_block() {
 #[test]
 #[ignore = "expensive pq verifier path; run explicitly when exercising malformed aggregate proof handling"]
 fn pq_verifier_rejects_placeholder_aggregate_proof_for_block_attestation() {
-    let (pubkey, secret_key) = pq::key_gen_for_devnet_validator(0).expect("keygen");
+    let (pubkey, secret_key) =
+        pq::key_gen_for_devnet_validator_with_role(0, pq::DevnetValidatorKeyRole::Attestation)
+            .expect("keygen");
     let validator = Validator {
-        pubkey,
+        attestation_pubkey: pubkey,
+        proposal_pubkey: pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };

@@ -8,7 +8,7 @@ use peam::containers::checkpoint::Checkpoint;
 use peam::containers::gossip::{GossipAttestation, GossipBlock};
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
-use peam::crypto::pq::{key_gen_for_devnet_validator, sign_message};
+use peam::crypto::pq::{DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, sign_message};
 use peam::metrics::MetricsRegistry;
 use peam::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopicKind};
 use peam::node::handle_gossip_event;
@@ -61,7 +61,9 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
             },
         },
     };
-    let (_, secret_key) = key_gen_for_devnet_validator(0).expect("validator key");
+    let (_, secret_key) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("validator key");
     let proposer_message = proposer_attestation.data.hash_tree_root();
     let proposer_signature = sign_message(
         &secret_key,
@@ -89,9 +91,15 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
 fn gossip_block_updates_fork_choice_head() {
-    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
+    let (attestation_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let v = Validator {
-        pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -136,9 +144,15 @@ fn gossip_block_updates_fork_choice_head() {
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
 fn gossip_attestation_enqueues_for_aggregation_when_aggregator() {
-    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
+    let (attestation_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let v = Validator {
-        pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -226,9 +240,15 @@ fn gossip_attestation_enqueues_for_aggregation_when_aggregator() {
 
 #[test]
 fn gossip_block_enqueues_proposer_attestation_for_future_aggregation() {
-    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
+    let (attestation_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let v = Validator {
-        pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
