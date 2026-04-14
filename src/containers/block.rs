@@ -12,6 +12,8 @@ use crate::unsafe_vec::write_bytes_at;
 
 /// Maximum number of attestations that can appear in a single block body.
 pub const ATTESTATIONS_LIMIT: usize = 4_096;
+/// Maximum number of distinct attestation-data entries that can appear in a block body.
+pub const MAX_ATTESTATIONS_DATA: usize = 16;
 
 /// SSZ list of [`Attestation`]s included in a block body.
 pub type Attestations = SszList<Attestation, ATTESTATIONS_LIMIT>;
@@ -177,6 +179,7 @@ impl SignedBlockWithAttestation {
                 ));
             }
         }
+        validate_attestation_data_limit(&block.body.attestations)?;
         let proposer_attestation = &self.message.proposer_attestation;
         if proposer_attestation.data.slot != block.slot {
             return Err("proposer attestation slot does not match block slot".to_string());
@@ -188,6 +191,35 @@ impl SignedBlockWithAttestation {
         }
         Ok(())
     }
+}
+
+#[inline]
+pub fn validate_attestation_data_limit(attestations: &Attestations) -> Result<(), String> {
+    let mut distinct = Vec::with_capacity(MAX_ATTESTATIONS_DATA);
+    for attestation in attestations.iter() {
+        if !track_distinct_attestation_data(&mut distinct, &attestation.data) {
+            return Err(format!(
+                "block contains more than {} distinct attestation data entries",
+                MAX_ATTESTATIONS_DATA
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[inline]
+pub(crate) fn track_distinct_attestation_data(
+    distinct: &mut Vec<AttestationData>,
+    data: &AttestationData,
+) -> bool {
+    if distinct.iter().any(|existing| existing == data) {
+        return true;
+    }
+    if distinct.len() >= MAX_ATTESTATIONS_DATA {
+        return false;
+    }
+    distinct.push(data.clone());
+    true
 }
 
 /// Return the index of the single set bit in `bits`, or `None` if there are zero

@@ -14,7 +14,8 @@ use crate::containers::attestation::{
     VALIDATOR_REGISTRY_LIMIT,
 };
 use crate::containers::block::{
-    ATTESTATIONS_LIMIT, Block, BlockBody, BlockSignatures, BlockWithAttestation,
+    track_distinct_attestation_data, ATTESTATIONS_LIMIT, Block, BlockBody, BlockSignatures,
+    BlockWithAttestation, MAX_ATTESTATIONS_DATA,
     SignedBlockWithAttestation,
 };
 use crate::containers::checkpoint::Checkpoint;
@@ -689,10 +690,16 @@ fn build_block_attestation_payload(
     let mut proofs = Vec::new();
     let mut unaggregated = Vec::new();
     let mut stale_dropped = 0usize;
+    let mut attestation_data_limit_dropped = 0usize;
+    let mut included_data = Vec::with_capacity(MAX_ATTESTATIONS_DATA);
 
     for entry in drained {
         if entry.attestation.data.target.slot.0.0 < finalized_slot {
             stale_dropped += 1;
+            continue;
+        }
+        if !track_distinct_attestation_data(&mut included_data, &entry.attestation.data) {
+            attestation_data_limit_dropped += 1;
             continue;
         }
         if let Some(proof) = entry.proof {
@@ -715,7 +722,6 @@ fn build_block_attestation_payload(
             "proposal dropped stale pending attestations"
         );
     }
-
     if attestations.len() >= ATTESTATIONS_LIMIT {
         attestations.truncate(ATTESTATIONS_LIMIT);
         proofs.truncate(ATTESTATIONS_LIMIT);
@@ -726,6 +732,10 @@ fn build_block_attestation_payload(
     let aggregated = aggregate_attestations(unaggregated);
 
     for attestation in aggregated.into_iter().take(remaining) {
+        if !track_distinct_attestation_data(&mut included_data, &attestation.data) {
+            attestation_data_limit_dropped += 1;
+            continue;
+        }
         let participants = set_bits(&attestation.aggregation_bits);
         if participants.is_empty() {
             continue;
@@ -794,6 +804,15 @@ fn build_block_attestation_payload(
             proof_data,
         });
         attestations.push(attestation);
+    }
+    if attestation_data_limit_dropped > 0 {
+        warn!(
+            slot,
+            finalized_slot,
+            attestation_data_limit_dropped,
+            max_attestations_data = MAX_ATTESTATIONS_DATA,
+            "proposal dropped pending attestations beyond attestation-data limit"
+        );
     }
 
     (attestations, proofs)
