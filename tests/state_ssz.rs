@@ -9,7 +9,8 @@ use peam::types::uint::Uint64;
 #[test]
 fn state_encode_decode_roundtrip() {
     let v = Validator {
-        pubkey: Bytes52::from([0xAAu8; 52]),
+        attestation_pubkey: Bytes52::from([0xAAu8; 52]),
+        proposal_pubkey: Bytes52::from([0xAAu8; 52]),
         index: ValidatorIndex(Uint64(1)),
         balance: Uint64(0),
     };

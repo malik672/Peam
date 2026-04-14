@@ -69,7 +69,8 @@ fn state_can_be_constructed_with_empty_lists() {
 #[test]
 fn validators_list_accepts_validators() {
     let v = Validator {
-        pubkey: Bytes52::from([0x11u8; 52]),
+        attestation_pubkey: Bytes52::from([0x11u8; 52]),
+        proposal_pubkey: Bytes52::from([0x11u8; 52]),
         index: ValidatorIndex(Uint64(7)),
         balance: Uint64(0),
     };

@@ -47,8 +47,10 @@ pub struct PendingBlockAttestation {
 
 #[derive(Clone)]
 pub(super) struct DevnetValidatorKeyMaterial {
-    pub pubkey: Bytes52,
-    pub secret_key: Arc<crate::crypto::pq::LeanSigSecretKey>,
+    pub attestation_pubkey: Bytes52,
+    pub attestation_secret_key: Arc<crate::crypto::pq::LeanSigSecretKey>,
+    pub proposal_pubkey: Bytes52,
+    pub proposal_secret_key: Arc<crate::crypto::pq::LeanSigSecretKey>,
 }
 
 pub(super) type DevnetValidatorKeyCache = Arc<Vec<Option<DevnetValidatorKeyMaterial>>>;
@@ -57,13 +59,30 @@ pub(super) type DevnetValidatorKeyCache = Arc<Vec<Option<DevnetValidatorKeyMater
 pub(super) fn build_devnet_pq_validator_keys(validator_count: usize) -> DevnetValidatorKeyCache {
     let mut keys = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
-        let material = match crate::crypto::pq::key_gen_for_devnet_validator(i) {
-            Ok((pubkey, secret_key)) => Some(DevnetValidatorKeyMaterial {
-                pubkey,
-                secret_key: Arc::new(secret_key),
-            }),
-            Err(err) => {
+        let material = match (
+            crate::crypto::pq::key_gen_for_devnet_validator_with_role(
+                i,
+                crate::crypto::pq::DevnetValidatorKeyRole::Attestation,
+            ),
+            crate::crypto::pq::key_gen_for_devnet_validator_with_role(
+                i,
+                crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
+            ),
+        ) {
+            (Ok((attestation_pubkey, attestation_secret_key)), Ok((proposal_pubkey, proposal_secret_key))) => {
+                Some(DevnetValidatorKeyMaterial {
+                    attestation_pubkey,
+                    attestation_secret_key: Arc::new(attestation_secret_key),
+                    proposal_pubkey,
+                    proposal_secret_key: Arc::new(proposal_secret_key),
+                })
+            }
+            (Err(err), _) => {
                 warn!("failed to derive devnet validator key {i}: {err}");
+                None
+            }
+            (_, Err(err)) => {
+                warn!("failed to derive devnet proposal key {i}: {err}");
                 None
             }
         };
@@ -79,28 +98,53 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
 ) -> Result<DevnetValidatorKeyCache, String> {
     let mut keys = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
-        let pk_path = hash_sig_keys_dir.join(format!("validator_{i}_pk.ssz"));
-        let sk_path = hash_sig_keys_dir.join(format!("validator_{i}_sk.ssz"));
+        let attestation_pk_path =
+            hash_sig_keys_dir.join(format!("validator_{i}_attestation_pk.ssz"));
+        let attestation_sk_path =
+            hash_sig_keys_dir.join(format!("validator_{i}_attestation_sk.ssz"));
+        let proposal_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_pk.ssz"));
+        let proposal_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_sk.ssz"));
 
-        let pk_bytes = std::fs::read(&pk_path)
-            .map_err(|err| format!("failed to read {}: {err}", pk_path.display()))?;
-        if pk_bytes.len() != 52 {
+        let attestation_pk_bytes = std::fs::read(&attestation_pk_path)
+            .map_err(|err| format!("failed to read {}: {err}", attestation_pk_path.display()))?;
+        let attestation_sk_bytes = std::fs::read(&attestation_sk_path)
+            .map_err(|err| format!("failed to read {}: {err}", attestation_sk_path.display()))?;
+        let proposal_pk_bytes = std::fs::read(&proposal_pk_path)
+            .map_err(|err| format!("failed to read {}: {err}", proposal_pk_path.display()))?;
+        let proposal_sk_bytes = std::fs::read(&proposal_sk_path)
+            .map_err(|err| format!("failed to read {}: {err}", proposal_sk_path.display()))?;
+
+        if attestation_pk_bytes.len() != 52 {
             return Err(format!(
                 "invalid public key length for {}: expected {}, got {}",
-                pk_path.display(),
+                attestation_pk_path.display(),
                 52,
-                pk_bytes.len()
+                attestation_pk_bytes.len()
+            ));
+        }
+        if proposal_pk_bytes.len() != 52 {
+            return Err(format!(
+                "invalid public key length for {}: expected {}, got {}",
+                proposal_pk_path.display(),
+                52,
+                proposal_pk_bytes.len()
             ));
         }
 
-        let sk_bytes = std::fs::read(&sk_path)
-            .map_err(|err| format!("failed to read {}: {err}", sk_path.display()))?;
-        let secret_key = crate::crypto::pq::LeanSigSecretKey::from_bytes(&sk_bytes)
-            .map_err(|err| format!("failed to decode {}: {err:?}", sk_path.display()))?;
+        let attestation_secret_key =
+            crate::crypto::pq::LeanSigSecretKey::from_bytes(&attestation_sk_bytes).map_err(
+                |err| format!("failed to decode {}: {err:?}", attestation_sk_path.display()),
+            )?;
+        let proposal_secret_key =
+            crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(
+                |err| format!("failed to decode {}: {err:?}", proposal_sk_path.display()),
+            )?;
 
         keys.push(Some(DevnetValidatorKeyMaterial {
-            pubkey: Bytes52::from_slice(&pk_bytes),
-            secret_key: Arc::new(secret_key),
+            attestation_pubkey: Bytes52::from_slice(&attestation_pk_bytes),
+            attestation_secret_key: Arc::new(attestation_secret_key),
+            proposal_pubkey: Bytes52::from_slice(&proposal_pk_bytes),
+            proposal_secret_key: Arc::new(proposal_secret_key),
         }));
     }
     Ok(Arc::new(keys))
@@ -206,14 +250,17 @@ pub(super) fn filter_keys_against_genesis(
         let matches = state
             .validators
             .get(i)
-            .map_or(false, |v| v.pubkey == key.pubkey);
+            .map_or(false, |v| {
+                v.attestation_pubkey == key.attestation_pubkey
+                    && v.proposal_pubkey == key.proposal_pubkey
+            });
         if matches {
             filtered.push(Some(key.clone()));
             kept += 1;
         } else {
             tracing::warn!(
                 validator_index = i,
-                "loaded key pubkey does not match genesis state; dropping"
+                "loaded validator keys do not match genesis state; dropping"
             );
             filtered.push(None);
             dropped += 1;
@@ -246,8 +293,8 @@ pub(super) fn spawn_signed_attestation_task(
         warn!("failed to get local signing key from cache");
         return None;
     };
-    let local_pubkey = local_key.pubkey;
-    let local_secret_key = Arc::clone(&local_key.secret_key);
+    let local_pubkey = local_key.attestation_pubkey;
+    let local_secret_key = Arc::clone(&local_key.attestation_secret_key);
 
     {
         let guard = state.read().expect("state lock");
@@ -255,8 +302,8 @@ pub(super) fn spawn_signed_attestation_task(
             warn!("local validator index {local_validator_index} out of range; signing disabled");
             return None;
         };
-        if v.pubkey != local_pubkey {
-            warn!("local validator pubkey mismatch; signing disabled");
+        if v.attestation_pubkey != local_pubkey {
+            warn!("local validator attestation key mismatch; signing disabled");
             return None;
         }
     }
@@ -304,6 +351,7 @@ pub(super) fn spawn_signed_attestation_task(
                 continue;
             }
             let sign_start = Instant::now();
+            // attestation signing
             let signature = match crate::crypto::pq::sign_message(
                 local_secret_key.as_ref(),
                 slot as u32,
@@ -569,7 +617,7 @@ fn aggregate_signed_attestations(
         let message_root = signed.message.hash_tree_root();
         let epoch = signed.message.slot.0.0 as u32;
         if crate::crypto::pq::verify_signature(
-            &key_material.pubkey,
+            &key_material.attestation_pubkey,
             epoch,
             &message_root,
             &signed.signature,
@@ -588,7 +636,7 @@ fn aggregate_signed_attestations(
         }
         entry
             .entries
-            .push((idx, key_material.pubkey, signed.signature));
+            .push((idx, key_material.attestation_pubkey, signed.signature));
     }
 
     let mut out = Vec::new();
@@ -604,10 +652,19 @@ fn aggregate_signed_attestations(
         let mut participants = Vec::with_capacity(group.entries.len());
         let mut public_keys = Vec::with_capacity(group.entries.len());
         let mut signatures = Vec::with_capacity(group.entries.len());
-        for (idx, pubkey, signature) in group.entries {
-            participants.push(idx);
-            public_keys.push(pubkey);
-            signatures.push(signature);
+        // SAFETY:
+        // - all three vectors are allocated with capacity `group.entries.len()`.
+        // - each slot is written exactly once before the corresponding length is increased.
+        unsafe {
+            for (slot, (idx, pubkey, signature)) in group.entries.into_iter().enumerate() {
+                crate::unsafe_vec::write_at(&mut participants, slot, idx);
+                crate::unsafe_vec::write_at(&mut public_keys, slot, pubkey);
+                crate::unsafe_vec::write_at(&mut signatures, slot, signature);
+                let initialized_len = slot.unchecked_add(1);
+                participants.set_len(initialized_len);
+                public_keys.set_len(initialized_len);
+                signatures.set_len(initialized_len);
+            }
         }
         let Some(max_idx) = participants.iter().copied().max() else {
             continue;
@@ -739,14 +796,14 @@ fn build_block_attestation_payload(
                 signable = false;
                 break;
             };
-            let secret_key = key_material.secret_key.as_ref();
+            let secret_key = key_material.attestation_secret_key.as_ref();
             if !secret_key.get_activation_interval().contains(&slot)
                 || !secret_key.get_prepared_interval().contains(&slot)
             {
                 signable = false;
                 break;
             }
-            public_keys.push(key_material.pubkey);
+            public_keys.push(key_material.attestation_pubkey);
             secret_key_refs.push(secret_key);
         }
         if !signable || public_keys.is_empty() {
@@ -804,7 +861,7 @@ fn produce_block_with_signatures(
     pre_state: &State,
     slot: u64,
     local_validator_index: usize,
-    local_secret_key: &crate::crypto::pq::LeanSigSecretKey,
+    proposal_secret_key: &crate::crypto::pq::LeanSigSecretKey,
     fork_choice: Option<&ForkChoiceStore>,
     pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
     devnet_validator_keys: &DevnetValidatorKeyCache,
@@ -894,11 +951,11 @@ fn produce_block_with_signatures(
 
     let proposer_message = proposer_attestation.data.hash_tree_root();
     let epoch = slot;
-    if !local_secret_key.get_activation_interval().contains(&epoch) {
+    if !proposal_secret_key.get_activation_interval().contains(&epoch) {
         warn!("skipping block proposal: key not active at epoch {}", epoch);
         return None;
     }
-    if !local_secret_key.get_prepared_interval().contains(&epoch) {
+    if !proposal_secret_key.get_prepared_interval().contains(&epoch) {
         warn!(
             "skipping block proposal: key not prepared at epoch {}",
             epoch
@@ -906,8 +963,10 @@ fn produce_block_with_signatures(
         return None;
     }
     let proposer_sign_start = Instant::now();
+    // Proposal signing
     let proposer_signature =
-        match crate::crypto::pq::sign_message(local_secret_key, slot as u32, &proposer_message) {
+        match crate::crypto::pq::sign_message(proposal_secret_key, slot as u32, &proposer_message)
+        {
             Ok(sig) => {
                 metrics
                     .pq_proposer_signing_time
@@ -1003,8 +1062,8 @@ pub(super) fn spawn_block_production_task(
         warn!("failed to get local proposer key from cache");
         return None;
     };
-    let local_pubkey = local_key.pubkey;
-    let local_secret_key = Arc::clone(&local_key.secret_key);
+    let local_proposal_pubkey = local_key.proposal_pubkey;
+    let proposal_secret_key = Arc::clone(&local_key.proposal_secret_key);
 
     {
         let guard = state.read().expect("state lock");
@@ -1014,8 +1073,8 @@ pub(super) fn spawn_block_production_task(
             );
             return None;
         };
-        if v.pubkey != local_pubkey {
-            warn!("local validator pubkey mismatch; block production disabled");
+        if v.proposal_pubkey != local_proposal_pubkey {
+            warn!("local validator proposal key mismatch; block production disabled");
             return None;
         }
     }
@@ -1059,7 +1118,7 @@ pub(super) fn spawn_block_production_task(
                     &pre_state,
                     slot,
                     local_validator_index,
-                    local_secret_key.as_ref(),
+                    proposal_secret_key.as_ref(),
                     fork_choice_snapshot.as_ref(),
                     &pending_block_attestations,
                     &devnet_validator_keys,
@@ -1170,7 +1229,8 @@ pub(super) fn spawn_block_production_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingBlockAttestation, build_block_attestation_payload, load_attestation_data,
+        PendingBlockAttestation, build_block_attestation_payload,
+        build_devnet_pq_validator_keys_from_hash_sig_dir, load_attestation_data,
         load_proposal_pre_state,
     };
     use crate::containers::attestation::{
@@ -1180,9 +1240,9 @@ mod tests {
         Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
     };
     use crate::containers::checkpoint::Checkpoint;
+    use crate::containers::state::{State, Validators};
     use crate::containers::validator::ValidatorIndex;
     use crate::fork_choice::ForkChoiceStore;
-    use crate::containers::state::{State, Validators};
     use crate::metrics::MetricsRegistry;
     use crate::slot::Slot;
     use crate::storage::{FileStore, Store};
@@ -1309,6 +1369,31 @@ mod tests {
             participants: attestation.aggregation_bits.clone(),
             proof_data: ByteList::<PROOF_MAX_BYTES>::new(vec![1, 2, 3]).expect("proof bytes"),
         }
+    }
+
+    #[test]
+    fn strict_hash_sig_dir_requires_proposal_key_files() {
+        let dir = temp_store_dir("strict_hash_sig_keys");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        std::fs::write(
+            dir.join("validator_0_attestation_pk.ssz"),
+            [7u8; 52],
+        )
+        .expect("write attestation pk");
+        std::fs::write(
+            dir.join("validator_0_attestation_sk.ssz"),
+            [9u8; 32],
+        )
+        .expect("write attestation sk");
+
+        let err = match build_devnet_pq_validator_keys_from_hash_sig_dir(&dir, 1) {
+            Ok(_) => panic!("missing proposal files must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("validator_0_proposal_pk.ssz"), "{err}");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -14,7 +14,8 @@ fn make_validators(n: usize) -> Validators {
     let mut vals = Vec::with_capacity(n);
     for i in 0..n {
         vals.push(Validator {
-            pubkey: Bytes52::from([i as u8; 52]),
+            attestation_pubkey: Bytes52::from([i as u8; 52]),
+            proposal_pubkey: Bytes52::from([(i as u8).saturating_add(1); 52]),
             index: ValidatorIndex(Uint64(i as u64)),
             balance: Uint64(0),
         });
@@ -72,7 +73,7 @@ fn verify_checkpoint_state_rejects_genesis_time_mismatch() {
 fn verify_checkpoint_state_rejects_validator_pubkey_mismatch() {
     let expected_genesis = base_state(10, 2);
     let mut state = expected_genesis.clone();
-    state.validators.as_mut_slice()[0].pubkey = Bytes52::from([9u8; 52]);
+    state.validators.as_mut_slice()[0].attestation_pubkey = Bytes52::from([9u8; 52]);
 
     let err = verify_checkpoint_state(&state, &expected_genesis).unwrap_err();
     assert!(err.contains("validator pubkey mismatch"), "{err}");

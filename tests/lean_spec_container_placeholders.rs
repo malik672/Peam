@@ -147,17 +147,20 @@ fn lean_spec_attestation_aggregation() {
 fn lean_spec_state_aggregation() {
     let validators: Validators = SszList::new(vec![
         Validator {
-            pubkey: Bytes52::from([0x01u8; 52]),
+            attestation_pubkey: Bytes52::from([0x01u8; 52]),
+            proposal_pubkey: Bytes52::from([0x01u8; 52]),
             index: ValidatorIndex(Uint64(0)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x02u8; 52]),
+            attestation_pubkey: Bytes52::from([0x02u8; 52]),
+            proposal_pubkey: Bytes52::from([0x02u8; 52]),
             index: ValidatorIndex(Uint64(1)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x03u8; 52]),
+            attestation_pubkey: Bytes52::from([0x03u8; 52]),
+            proposal_pubkey: Bytes52::from([0x03u8; 52]),
             index: ValidatorIndex(Uint64(2)),
             balance: Uint64(0),
         },
@@ -246,17 +249,20 @@ fn lean_spec_state_aggregation() {
 fn lean_spec_state_justified_slots() {
     let validators: Validators = SszList::new(vec![
         Validator {
-            pubkey: Bytes52::from([0x01u8; 52]),
+            attestation_pubkey: Bytes52::from([0x01u8; 52]),
+            proposal_pubkey: Bytes52::from([0x01u8; 52]),
             index: ValidatorIndex(Uint64(0)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x02u8; 52]),
+            attestation_pubkey: Bytes52::from([0x02u8; 52]),
+            proposal_pubkey: Bytes52::from([0x02u8; 52]),
             index: ValidatorIndex(Uint64(1)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x03u8; 52]),
+            attestation_pubkey: Bytes52::from([0x03u8; 52]),
+            proposal_pubkey: Bytes52::from([0x03u8; 52]),
             index: ValidatorIndex(Uint64(2)),
             balance: Uint64(0),
         },
@@ -335,17 +341,20 @@ fn lean_spec_state_justified_slots() {
 fn lean_spec_state_process_attestations() {
     let validators: Validators = SszList::new(vec![
         Validator {
-            pubkey: Bytes52::from([0x01u8; 52]),
+            attestation_pubkey: Bytes52::from([0x01u8; 52]),
+            proposal_pubkey: Bytes52::from([0x01u8; 52]),
             index: ValidatorIndex(Uint64(0)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x02u8; 52]),
+            attestation_pubkey: Bytes52::from([0x02u8; 52]),
+            proposal_pubkey: Bytes52::from([0x02u8; 52]),
             index: ValidatorIndex(Uint64(1)),
             balance: Uint64(0),
         },
         Validator {
-            pubkey: Bytes52::from([0x03u8; 52]),
+            attestation_pubkey: Bytes52::from([0x03u8; 52]),
+            proposal_pubkey: Bytes52::from([0x03u8; 52]),
             index: ValidatorIndex(Uint64(2)),
             balance: Uint64(0),
         },

@@ -78,9 +78,11 @@ pub fn verify_checkpoint_state(state: &State, expected_genesis: &State) -> Resul
             .validators
             .get(idx)
             .ok_or_else(|| format!("missing genesis validator {idx}"))?;
-        if validator.pubkey != expected.pubkey {
+        if validator.attestation_pubkey != expected.attestation_pubkey
+            || validator.proposal_pubkey != expected.proposal_pubkey
+        {
             return Err(format!(
-                "checkpoint validator pubkey mismatch at index {idx}"
+                "checkpoint validator key mismatch at index {idx}"
             ));
         }
         if validator.index.0.0 != idx as u64 {

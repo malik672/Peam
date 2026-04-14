@@ -50,25 +50,28 @@ fn checkpoint_hash_tree_root_matches_manual_chunks() {
 
 #[test]
 fn validator_encode_decode_roundtrip() {
-    let mut pubkey_bytes = [0u8; 52];
-    for (i, b) in pubkey_bytes.iter_mut().enumerate() {
+    let mut attestation_pubkey_bytes = [0u8; 52];
+    for (i, b) in attestation_pubkey_bytes.iter_mut().enumerate() {
         *b = i as u8;
     }
-    let pubkey = Bytes52::from(pubkey_bytes);
+    let attestation_pubkey = Bytes52::from(attestation_pubkey_bytes);
+    let proposal_pubkey = Bytes52::from([0xABu8; 52]);
     let index = ValidatorIndex(Uint64(5));
     let balance = Uint64(0);
     let validator = Validator {
-        pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index,
         balance,
     };
 
     let encoded = validator.encode_ssz();
     let mut expected = Vec::new();
-    expected.extend_from_slice(pubkey.as_ref());
+    expected.extend_from_slice(attestation_pubkey.as_ref());
+    expected.extend_from_slice(proposal_pubkey.as_ref());
     expected.extend_from_slice(&5u64.to_le_bytes());
     assert_eq!(encoded, expected);
-    assert_eq!(encoded.len(), 60);
+    assert_eq!(encoded.len(), 112);
 
     let decoded = Validator::decode_ssz_checked(&encoded).expect("decode");
     assert_eq!(decoded, validator);
@@ -76,22 +79,31 @@ fn validator_encode_decode_roundtrip() {
 
 #[test]
 fn validator_hash_tree_root_matches_manual_chunks() {
-    let pubkey = Bytes52::from([0x22u8; 52]);
+    let attestation_pubkey = Bytes52::from([0x22u8; 52]);
+    let proposal_pubkey = Bytes52::from([0x33u8; 52]);
     let index = ValidatorIndex(Uint64(12));
     let balance = Uint64(0);
     let validator = Validator {
-        pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index,
         balance,
     };
 
-    let pk = pubkey.as_array();
-    let chunk0 = Bytes32::from_slice(&pk[0..32]);
-    let chunk1 = chunk_from_bytes(&pk[32..52]);
-    let pubkey_root = hash_nodes(&chunk0, &chunk1);
+    let att = attestation_pubkey.as_array();
+    let att_chunk0 = Bytes32::from_slice(&att[0..32]);
+    let att_chunk1 = chunk_from_bytes(&att[32..52]);
+    let attestation_pubkey_root = hash_nodes(&att_chunk0, &att_chunk1);
+
+    let prop = proposal_pubkey.as_array();
+    let prop_chunk0 = Bytes32::from_slice(&prop[0..32]);
+    let prop_chunk1 = chunk_from_bytes(&prop[32..52]);
+    let proposal_pubkey_root = hash_nodes(&prop_chunk0, &prop_chunk1);
+
+    let pubkeys_root = hash_nodes(&attestation_pubkey_root, &proposal_pubkey_root);
 
     let index_chunk = chunk_from_bytes(&12u64.to_le_bytes());
-    let expected = hash_nodes(&pubkey_root, &index_chunk);
+    let expected = hash_nodes(&pubkeys_root, &index_chunk);
 
     assert_eq!(validator.hash_tree_root(), expected.as_array());
 }

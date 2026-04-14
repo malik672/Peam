@@ -11,7 +11,7 @@ use peam::containers::checkpoint::Checkpoint;
 use peam::containers::req_resp::{BlocksByRootRequest, MAX_BLOCKS_PER_ROOT_REQUEST, Status};
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
-use peam::crypto::pq::{key_gen_for_devnet_validator, sign_message};
+use peam::crypto::pq::{DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, sign_message};
 use peam::networking::gossipsub::context::StateGossipContext;
 use peam::networking::{
     LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent, NetworkEventBus,
@@ -38,9 +38,15 @@ fn empty_state() -> Arc<RwLock<State>> {
 }
 
 fn single_validator_state() -> Arc<RwLock<State>> {
-    let (pubkey, _) = key_gen_for_devnet_validator(0).expect("validator key");
+    let (attestation_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let validators = Validators::new(vec![Validator {
-        pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     }])
@@ -96,7 +102,9 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
         },
     };
 
-    let (_, secret_key) = key_gen_for_devnet_validator(0).expect("validator key");
+    let (_, secret_key) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("validator key");
     let proposer_message = proposer_attestation.data.hash_tree_root();
     let proposer_signature = sign_message(
         &secret_key,

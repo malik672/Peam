@@ -1,23 +1,61 @@
 use criterion::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
+use rayon::prelude::*;
 
 use peam::crypto::pq;
+use peam::crypto::pq::DevnetValidatorKeyRole;
+
+fn sign_aggregate_parallel(
+    public_keys: &[peam::types::bytes::Bytes52],
+    secret_keys: &[&pq::LeanSigSecretKey],
+    epoch: u32,
+    message: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    if public_keys.is_empty() {
+        return Err("aggregate signature participants must be non-empty".to_string());
+    }
+    if public_keys.len() != secret_keys.len() {
+        return Err(format!(
+            "public key count ({}) does not match secret key count ({})",
+            public_keys.len(),
+            secret_keys.len()
+        ));
+    }
+
+    let signatures: Result<Vec<_>, _> = secret_keys
+        .par_iter()
+        .map(|secret_key| pq::sign_message(secret_key, epoch, message))
+        .collect();
+    pq::aggregate_signatures(public_keys, &signatures?, message, epoch)
+}
 
 fn bench_pq_signature_baseline(c: &mut Criterion) {
     let mut group = c.benchmark_group("pq_signature_baseline");
     pq::setup_aggregate_prover();
     pq::setup_aggregate_verifier();
 
-    let (pk0, sk0) = pq::key_gen_for_devnet_validator(0).expect("key0");
-    let (pk1, sk1) = pq::key_gen_for_devnet_validator(1).expect("key1");
-    let (pk2, sk2) = pq::key_gen_for_devnet_validator(2).expect("key2");
-    let (pk3, sk3) = pq::key_gen_for_devnet_validator(3).expect("key3");
-    let (pk4, sk4) = pq::key_gen_for_devnet_validator(4).expect("key4");
+    let (pk0, sk0) =
+        pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
+            .expect("key0");
+    let (pk1, sk1) =
+        pq::key_gen_for_devnet_validator_with_role(1, DevnetValidatorKeyRole::Attestation)
+            .expect("key1");
+    let (pk2, sk2) =
+        pq::key_gen_for_devnet_validator_with_role(2, DevnetValidatorKeyRole::Attestation)
+            .expect("key2");
+    let (pk3, sk3) =
+        pq::key_gen_for_devnet_validator_with_role(3, DevnetValidatorKeyRole::Attestation)
+            .expect("key3");
+    let (pk4, sk4) =
+        pq::key_gen_for_devnet_validator_with_role(4, DevnetValidatorKeyRole::Attestation)
+            .expect("key4");
 
     let message = [0x42u8; 32];
     let sig0 = pq::sign_message(&sk0, 1, &message).expect("sig0");
 
     let agg2 = pq::sign_aggregate(&[pk0, pk1], &[&sk0, &sk1], 1, &message).expect("agg2");
+    let agg4 = pq::sign_aggregate(&[pk0, pk1, pk2, pk3], &[&sk0, &sk1, &sk2, &sk3], 1, &message)
+        .expect("agg4");
     let agg5 = pq::sign_aggregate(
         &[pk0, pk1, pk2, pk3, pk4],
         &[&sk0, &sk1, &sk2, &sk3, &sk4],
@@ -49,6 +87,44 @@ fn bench_pq_signature_baseline(c: &mut Criterion) {
                 1,
             )
             .expect("verify agg2");
+        })
+    });
+
+    group.bench_function("sign_aggregate_multisig_4_sequential", |b| {
+        b.iter(|| {
+            let proof = pq::sign_aggregate(
+                black_box(&[pk0, pk1, pk2, pk3]),
+                black_box(&[&sk0, &sk1, &sk2, &sk3]),
+                1,
+                black_box(&message),
+            )
+            .expect("aggregate sequential");
+            black_box(proof)
+        })
+    });
+
+    group.bench_function("sign_aggregate_multisig_4_outer_parallel", |b| {
+        b.iter(|| {
+            let proof = sign_aggregate_parallel(
+                black_box(&[pk0, pk1, pk2, pk3]),
+                black_box(&[&sk0, &sk1, &sk2, &sk3]),
+                1,
+                black_box(&message),
+            )
+            .expect("aggregate parallel");
+            black_box(proof)
+        })
+    });
+
+    group.bench_function("verify_aggregate_multisig_4", |b| {
+        b.iter(|| {
+            pq::verify_aggregate_signature(
+                black_box(&[pk0, pk1, pk2, pk3]),
+                black_box(&message),
+                black_box(&agg4),
+                1,
+            )
+            .expect("verify agg4");
         })
     });
 

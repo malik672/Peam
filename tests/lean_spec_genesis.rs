@@ -15,7 +15,8 @@ fn make_validators(n: usize) -> Validators {
     unsafe { vals.set_len(n) };
     for i in 0..n {
         let v = Validator {
-            pubkey: Bytes52::from([0u8; 52]),
+            attestation_pubkey: Bytes52::from([0u8; 52]),
+            proposal_pubkey: Bytes52::from([0u8; 52]),
             index: ValidatorIndex(Uint64(i as u64)),
             balance: Uint64(0),
         };
