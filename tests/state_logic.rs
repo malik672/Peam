@@ -1,7 +1,7 @@
 use peam::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
 use peam::containers::block::{
     AttestationSignatures, Attestations, Block, BlockBody, BlockHeader, BlockSignatures,
-    BlockWithAttestation, SignedBlockWithAttestation,
+    BlockWithAttestation, SignedBlockWithAttestation, MAX_ATTESTATIONS_DATA,
 };
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::state::{
@@ -406,6 +406,73 @@ fn signed_block_proposer_attestation_slot_mismatch() {
 
     let err = state.process_signed_block(&signed).unwrap_err();
     assert!(err.contains("proposer attestation slot"));
+}
+
+#[test]
+fn signed_block_rejects_too_many_distinct_attestation_data_entries() {
+    let validators: Validators = SszList::new(vec![]).expect("validators");
+    let mut state = State::generate_genesis(Uint64(0), validators);
+
+    let attestations = (0..=MAX_ATTESTATIONS_DATA)
+        .map(|slot| Attestation {
+            aggregation_bits: BitList::new(vec![true]).expect("participants"),
+            data: AttestationData {
+                slot: Slot(Uint64(slot as u64)),
+                head: Checkpoint {
+                    root: Bytes32::from([slot as u8; 32]),
+                    slot: Slot(Uint64(slot as u64)),
+                },
+                target: Checkpoint {
+                    root: Bytes32::from([slot as u8; 32]),
+                    slot: Slot(Uint64(slot as u64)),
+                },
+                source: Checkpoint {
+                    root: Bytes32::from([slot.saturating_sub(1) as u8; 32]),
+                    slot: Slot(Uint64(slot.saturating_sub(1) as u64)),
+                },
+            },
+        })
+        .collect::<Vec<_>>();
+    let block = build_block_with_attestations_for_slot(&state, 1, 0, attestations.clone());
+    let proofs = attestations
+        .iter()
+        .map(|attestation| AggregatedSignatureProof {
+            participants: attestation.aggregation_bits.clone(),
+            proof_data: ByteList::new(vec![]).expect("proof"),
+        })
+        .collect::<Vec<_>>();
+    let signed = SignedBlockWithAttestation {
+        message: BlockWithAttestation {
+            block,
+            proposer_attestation: Attestation {
+                aggregation_bits: BitList::new(vec![true]).expect("participants"),
+                data: AttestationData {
+                    slot: Slot(Uint64(1)),
+                    head: Checkpoint {
+                        root: Bytes32::zero(),
+                        slot: Slot(Uint64(0)),
+                    },
+                    target: Checkpoint {
+                        root: Bytes32::zero(),
+                        slot: Slot(Uint64(0)),
+                    },
+                    source: Checkpoint {
+                        root: Bytes32::zero(),
+                        slot: Slot(Uint64(0)),
+                    },
+                },
+            },
+        },
+        signature: BlockSignatures {
+            attestation_signatures: SszList::new(proofs).expect("signatures"),
+            proposer_signature: Bytes3112::zero(),
+        },
+    };
+
+    let err = state
+        .process_signed_block_with_verifier(&signed, &NoopSignatureVerifier)
+        .expect_err("too many distinct attestation-data entries should be rejected");
+    assert!(err.contains("distinct attestation data entries"));
 }
 
 #[test]

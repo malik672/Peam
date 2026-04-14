@@ -365,6 +365,7 @@ impl State {
         if expected_root != Bytes32::from(body_root) {
             return Err("block body root does not match header".to_string());
         }
+        crate::containers::block::validate_attestation_data_limit(&body.attestations)?;
         self.process_attestations(&body.attestations)?;
         Ok(())
     }
