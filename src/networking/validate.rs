@@ -110,6 +110,11 @@ impl SimpleGossipVerifier {
     /// Keys must be ordered by validator index. Calls
     /// `setup_aggregate_verifier` to initialise any global verifier state.
     pub fn new(attestation_pubkeys: Vec<Bytes52>, proposal_pubkeys: Vec<Bytes52>) -> Self {
+        assert_eq!(
+            attestation_pubkeys.len(),
+            proposal_pubkeys.len(),
+            "attestation/proposal pubkey registries must have the same length"
+        );
         crypto::pq::setup_aggregate_verifier();
         Self {
             attestation_pubkeys,

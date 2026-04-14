@@ -960,7 +960,7 @@ pub fn build_genesis_with_validator_count(
     if validator_count == 0 {
         return Err("validator_count must be > 0".to_string());
     }
-    let validators = build_devnet_validators(validator_count);
+    let validators = build_devnet_validators(validator_count)?;
     Ok(State::generate_genesis(config.genesis_time, validators))
 }
 
@@ -1042,7 +1042,7 @@ pub fn build_genesis_from_config_yaml_with_override(
 }
 
 #[inline]
-fn build_devnet_validators(validator_count: usize) -> Validators {
+fn build_devnet_validators(validator_count: usize) -> Result<Validators, String> {
     let mut validators = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
         let (attestation_pubkey, _) =
@@ -1050,12 +1050,12 @@ fn build_devnet_validators(validator_count: usize) -> Validators {
                 i,
                 crate::crypto::pq::DevnetValidatorKeyRole::Attestation,
             )
-            .expect("derive devnet attestation key");
+            .map_err(|err| format!("failed to derive devnet attestation key {i}: {err}"))?;
         let (proposal_pubkey, _) = crate::crypto::pq::key_gen_for_devnet_validator_with_role(
             i,
             crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
         )
-        .expect("derive devnet proposal key");
+        .map_err(|err| format!("failed to derive devnet proposal key {i}: {err}"))?;
         // SAFETY:
         // - capacity was pre-allocated to `validator_count`, so writing at `i` is in-bounds.
         // - `len` is only incremented after both fallible key derivations succeed, so the
@@ -1074,7 +1074,7 @@ fn build_devnet_validators(validator_count: usize) -> Validators {
             )
         };
     }
-    Validators::new(validators).expect("devnet validator set")
+    Validators::new(validators).map_err(|err| format!("failed to build devnet validator set: {err}"))
 }
 
 #[inline]
