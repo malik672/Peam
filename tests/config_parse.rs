@@ -293,7 +293,7 @@ fn parses_genesis_yaml_as_config_with_default_node_settings() {
     let config_path = dir.join("config.yaml");
     fs::write(
         &config_path,
-        "GENESIS_TIME: 42\nGENESIS_VALIDATORS:\n  - \"0xd1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n",
+        "GENESIS_TIME: 42\nGENESIS_VALIDATORS:\n  - attestation_pubkey: \"0xd1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n    proposal_pubkey: \"0xd2020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n",
     )
     .expect("write genesis yaml");
 
@@ -304,6 +304,28 @@ fn parses_genesis_yaml_as_config_with_default_node_settings() {
     assert_eq!(settings.http_address, "127.0.0.1");
     assert_eq!(settings.http_port, 8080);
     assert_eq!(settings.listen_addr, "/ip4/0.0.0.0/udp/9000/quic-v1");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rejects_legacy_single_pubkey_genesis_yaml() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("peam_genesis_yaml_legacy_reject_{stamp}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+
+    let config_path = dir.join("config.yaml");
+    fs::write(
+        &config_path,
+        "GENESIS_TIME: 42\nGENESIS_VALIDATORS:\n  - \"0xd1010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"\n",
+    )
+    .expect("write legacy genesis yaml");
+
+    let err = peam::app::build_genesis_from_config_yaml(&config_path).expect_err("legacy genesis must be rejected");
+    assert!(err.contains("must be a mapping"), "{err}");
 
     let _ = fs::remove_dir_all(&dir);
 }

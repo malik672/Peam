@@ -968,12 +968,9 @@ pub fn build_genesis_with_validator_count(
 ///
 /// Parses `GENESIS_TIME` and `GENESIS_VALIDATORS` from the YAML config.
 ///
-/// `GENESIS_VALIDATORS` accepts either:
-/// - the devnet4 structured shape:
-///   - `attestation_pubkey`
-///   - `proposal_pubkey`
-/// - or the legacy single-pubkey string list, which is treated as
-///   attestation/proposal pubkey duplication for compatibility.
+/// `GENESIS_VALIDATORS` must use the devnet4 structured shape:
+/// - `attestation_pubkey`
+/// - `proposal_pubkey`
 ///
 /// This is the canonical genesis used by all clients.
 pub fn build_genesis_from_config_yaml(path: &Path) -> Result<State, String> {
@@ -1005,38 +1002,34 @@ pub fn build_genesis_from_config_yaml_with_override(
     }
     let mut validators = Vec::with_capacity(validators_yaml.len());
     for (i, entry) in validators_yaml.iter().enumerate() {
-        let (attestation_pubkey, proposal_pubkey) = if let Some(hex_str) = entry.as_str() {
-            let pubkey = parse_genesis_validator_pubkey(path, i, "pubkey", hex_str)?;
-            (pubkey, pubkey)
-        } else if let Some(map) = entry.as_mapping() {
-            let attestation = map
-                .get(serde_yaml::Value::from("attestation_pubkey"))
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| {
-                    format!(
-                        "GENESIS_VALIDATORS[{i}] missing attestation_pubkey in {}",
-                        path.display()
-                    )
-                })?;
-            let proposal = map
-                .get(serde_yaml::Value::from("proposal_pubkey"))
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| {
-                    format!(
-                        "GENESIS_VALIDATORS[{i}] missing proposal_pubkey in {}",
-                        path.display()
-                    )
-                })?;
-            (
-                parse_genesis_validator_pubkey(path, i, "attestation_pubkey", attestation)?,
-                parse_genesis_validator_pubkey(path, i, "proposal_pubkey", proposal)?,
-            )
-        } else {
+        let Some(map) = entry.as_mapping() else {
             return Err(format!(
-                "GENESIS_VALIDATORS[{i}] must be a string or mapping in {}",
+                "GENESIS_VALIDATORS[{i}] must be a mapping with attestation_pubkey/proposal_pubkey in {}",
                 path.display()
             ));
         };
+        let attestation = map
+            .get(serde_yaml::Value::from("attestation_pubkey"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "GENESIS_VALIDATORS[{i}] missing attestation_pubkey in {}",
+                    path.display()
+                )
+            })?;
+        let proposal = map
+            .get(serde_yaml::Value::from("proposal_pubkey"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "GENESIS_VALIDATORS[{i}] missing proposal_pubkey in {}",
+                    path.display()
+                )
+            })?;
+        let attestation_pubkey =
+            parse_genesis_validator_pubkey(path, i, "attestation_pubkey", attestation)?;
+        let proposal_pubkey =
+            parse_genesis_validator_pubkey(path, i, "proposal_pubkey", proposal)?;
         validators.push(Validator {
             attestation_pubkey,
             proposal_pubkey,

@@ -102,18 +102,8 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
     for i in 0..validator_count {
         let attestation_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_attestation_pk.ssz"));
         let attestation_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_attestation_sk.ssz"));
-        let legacy_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_pk.ssz"));
-        let legacy_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_sk.ssz"));
         let proposal_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_pk.ssz"));
         let proposal_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_sk.ssz"));
-
-        let (attestation_pk_path, attestation_sk_path) = if attestation_pk_path.is_file()
-            && attestation_sk_path.is_file()
-        {
-            (attestation_pk_path, attestation_sk_path)
-        } else {
-            (legacy_pk_path, legacy_sk_path)
-        };
 
         let attestation_pk_bytes = std::fs::read(&attestation_pk_path)
             .map_err(|err| format!("failed to read {}: {err}", attestation_pk_path.display()))?;
@@ -133,49 +123,29 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
                 |err| format!("failed to decode {}: {err:?}", attestation_sk_path.display()),
             )?;
 
-        let (proposal_pubkey, proposal_secret_key) = if proposal_pk_path.is_file()
-            && proposal_sk_path.is_file()
-        {
-            let proposal_pk_bytes = std::fs::read(&proposal_pk_path)
-                .map_err(|err| format!("failed to read {}: {err}", proposal_pk_path.display()))?;
-            if proposal_pk_bytes.len() != 52 {
-                return Err(format!(
-                    "invalid public key length for {}: expected {}, got {}",
-                    proposal_pk_path.display(),
-                    52,
-                    proposal_pk_bytes.len()
-                ));
-            }
+        let proposal_pk_bytes = std::fs::read(&proposal_pk_path)
+            .map_err(|err| format!("failed to read {}: {err}", proposal_pk_path.display()))?;
+        if proposal_pk_bytes.len() != 52 {
+            return Err(format!(
+                "invalid public key length for {}: expected {}, got {}",
+                proposal_pk_path.display(),
+                52,
+                proposal_pk_bytes.len()
+            ));
+        }
 
-            let proposal_sk_bytes = std::fs::read(&proposal_sk_path)
-                .map_err(|err| format!("failed to read {}: {err}", proposal_sk_path.display()))?;
-            let proposal_secret_key =
-                crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(
-                    |err| format!("failed to decode {}: {err:?}", proposal_sk_path.display()),
-                )?;
-            (
-                Bytes52::from_slice(&proposal_pk_bytes),
-                Arc::new(proposal_secret_key),
-            )
-        } else {
-            warn!(
-                validator_index = i,
-                "proposal key files missing; deriving local devnet proposal key"
-            );
-            let (proposal_pubkey, proposal_secret_key) =
-                crate::crypto::pq::key_gen_for_devnet_validator_with_role(
-                    i,
-                    crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
-                )
-                .map_err(|err| format!("failed to derive proposal key for validator {i}: {err}"))?;
-            (proposal_pubkey, Arc::new(proposal_secret_key))
-        };
+        let proposal_sk_bytes = std::fs::read(&proposal_sk_path)
+            .map_err(|err| format!("failed to read {}: {err}", proposal_sk_path.display()))?;
+        let proposal_secret_key =
+            crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(
+                |err| format!("failed to decode {}: {err:?}", proposal_sk_path.display()),
+            )?;
 
         keys.push(Some(DevnetValidatorKeyMaterial {
             attestation_pubkey: Bytes52::from_slice(&attestation_pk_bytes),
             attestation_secret_key: Arc::new(attestation_secret_key),
-            proposal_pubkey,
-            proposal_secret_key,
+            proposal_pubkey: Bytes52::from_slice(&proposal_pk_bytes),
+            proposal_secret_key: Arc::new(proposal_secret_key),
         }));
     }
     Ok(Arc::new(keys))
@@ -281,14 +251,17 @@ pub(super) fn filter_keys_against_genesis(
         let matches = state
             .validators
             .get(i)
-            .map_or(false, |v| v.attestation_pubkey == key.attestation_pubkey);
+            .map_or(false, |v| {
+                v.attestation_pubkey == key.attestation_pubkey
+                    && v.proposal_pubkey == key.proposal_pubkey
+            });
         if matches {
             filtered.push(Some(key.clone()));
             kept += 1;
         } else {
             tracing::warn!(
                 validator_index = i,
-                "loaded key pubkey does not match genesis state; dropping"
+                "loaded validator keys do not match genesis state; dropping"
             );
             filtered.push(None);
             dropped += 1;
@@ -331,7 +304,7 @@ pub(super) fn spawn_signed_attestation_task(
             return None;
         };
         if v.attestation_pubkey != local_pubkey {
-            warn!("local validator pubkey mismatch; signing disabled");
+            warn!("local validator attestation key mismatch; signing disabled");
             return None;
         }
     }
@@ -1093,7 +1066,7 @@ pub(super) fn spawn_block_production_task(
             return None;
         };
         if v.attestation_pubkey != local_pubkey {
-            warn!("local validator pubkey mismatch; block production disabled");
+            warn!("local validator attestation key mismatch; block production disabled");
             return None;
         }
     }
@@ -1414,37 +1387,30 @@ mod tests {
     }
 
     #[test]
-    fn legacy_hash_sig_files_fill_attestation_key_and_derive_proposal_key() {
-        let dir = temp_store_dir("legacy_hash_sig_keys");
+    fn strict_hash_sig_dir_requires_proposal_key_files() {
+        let dir = temp_store_dir("strict_hash_sig_keys");
         std::fs::create_dir_all(&dir).expect("create dir");
 
         let (attestation_pubkey, attestation_secret_key) =
             pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
                 .expect("attestation key");
-        let (expected_proposal_pubkey, _) =
-            pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
-                .expect("proposal key");
 
         std::fs::write(
-            dir.join("validator_0_pk.ssz"),
+            dir.join("validator_0_attestation_pk.ssz"),
             attestation_pubkey.as_array(),
         )
-        .expect("write legacy pk");
+        .expect("write attestation pk");
         std::fs::write(
-            dir.join("validator_0_sk.ssz"),
+            dir.join("validator_0_attestation_sk.ssz"),
             attestation_secret_key.to_bytes(),
         )
-        .expect("write legacy sk");
+        .expect("write attestation sk");
 
-        let cache =
-            build_devnet_pq_validator_keys_from_hash_sig_dir(&dir, 1).expect("build key cache");
-        let material = cache
-            .first()
-            .and_then(|entry| entry.as_ref())
-            .expect("validator key material");
-
-        assert_eq!(material.attestation_pubkey, attestation_pubkey);
-        assert_eq!(material.proposal_pubkey, expected_proposal_pubkey);
+        let err = match build_devnet_pq_validator_keys_from_hash_sig_dir(&dir, 1) {
+            Ok(_) => panic!("missing proposal files must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.contains("validator_0_proposal_pk.ssz"), "{err}");
 
         let _ = std::fs::remove_dir_all(dir);
     }
