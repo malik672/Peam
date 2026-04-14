@@ -1085,6 +1085,12 @@ fn parse_genesis_validator_pubkey(
     hex_str: &str,
 ) -> Result<Bytes52, String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    if !hex_str.is_ascii() {
+        return Err(format!(
+            "GENESIS_VALIDATORS[{index}].{field} must be ASCII hex in {}",
+            path.display()
+        ));
+    }
     if hex_str.len() % 2 != 0 {
         return Err(format!(
             "GENESIS_VALIDATORS[{index}].{field} must have even-length hex in {}",
