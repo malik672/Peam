@@ -91,12 +91,15 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
 fn gossip_block_updates_fork_choice_head() {
-    let (pubkey, _) =
+    let (attestation_pubkey, _) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-            .expect("validator key");
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let v = Validator {
-        attestation_pubkey: pubkey,
-        proposal_pubkey: pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -141,12 +144,15 @@ fn gossip_block_updates_fork_choice_head() {
 #[test]
 #[ignore = "integration test uses placeholder signatures; pq path is covered separately"]
 fn gossip_attestation_enqueues_for_aggregation_when_aggregator() {
-    let (pubkey, _) =
+    let (attestation_pubkey, _) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-            .expect("validator key");
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let v = Validator {
-        attestation_pubkey: pubkey,
-        proposal_pubkey: pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };
@@ -234,12 +240,15 @@ fn gossip_attestation_enqueues_for_aggregation_when_aggregator() {
 
 #[test]
 fn gossip_block_enqueues_proposer_attestation_for_future_aggregation() {
-    let (pubkey, _) =
+    let (attestation_pubkey, _) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-            .expect("validator key");
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let v = Validator {
-        attestation_pubkey: pubkey,
-        proposal_pubkey: pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     };

@@ -348,23 +348,6 @@ pub fn validate_gossip(
     }
 }
 
-/// Constructs the appropriate [`GossipSignatureVerifier`] for `validators`.
-///
-/// Returns a [`NoopGossipVerifier`] if the registry is empty, otherwise a
-/// [`SimpleGossipVerifier`] built from the validators' public keys.
-pub fn verifier_from_pubkeys(
-    attestation_pubkeys: Vec<Bytes52>,
-    proposal_pubkeys: Vec<Bytes52>,
-) -> Arc<dyn GossipSignatureVerifier> {
-    if attestation_pubkeys.is_empty() {
-        return Arc::new(NoopGossipVerifier);
-    }
-    Arc::new(SimpleGossipVerifier::new(
-        attestation_pubkeys,
-        proposal_pubkeys,
-    ))
-}
-
 pub fn verifier_from_validators(validators: &[Validator]) -> Arc<dyn GossipSignatureVerifier> {
     if validators.is_empty() {
         return Arc::new(NoopGossipVerifier);
@@ -450,12 +433,36 @@ mod tests {
 
     #[test]
     fn simple_verifier_uses_proposal_pubkeys_for_block_signatures() {
-        let (attestation_pubkey, attestation_secret_key) =
+        let (attestation_pubkey, attestation_signature) = {
             pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-                .expect("attestation key");
-        let (proposal_pubkey, proposal_secret_key) =
+                .map(|(pubkey, secret_key)| {
+                    let bits = BitList::new(vec![true]).expect("bits");
+                    let proposer_attestation = Attestation {
+                        aggregation_bits: bits,
+                        data: sample_attestation_data(4),
+                    };
+                    let message_root = proposer_attestation.data.hash_tree_root();
+                    let signature = pq::sign_message(&secret_key, 4, &message_root)
+                        .expect("attestation signature");
+                    (pubkey, signature)
+                })
+                .expect("attestation key")
+        };
+        let (proposal_pubkey, proposal_signature) = {
             pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
-                .expect("proposal key");
+                .map(|(pubkey, secret_key)| {
+                    let bits = BitList::new(vec![true]).expect("bits");
+                    let proposer_attestation = Attestation {
+                        aggregation_bits: bits,
+                        data: sample_attestation_data(4),
+                    };
+                    let message_root = proposer_attestation.data.hash_tree_root();
+                    let signature =
+                        pq::sign_message(&secret_key, 4, &message_root).expect("proposal signature");
+                    (pubkey, signature)
+                })
+                .expect("proposal key")
+        };
 
         let verifier = SimpleGossipVerifier::new(vec![attestation_pubkey], vec![proposal_pubkey]);
         let bits = BitList::new(vec![true]).expect("bits");
@@ -475,11 +482,6 @@ mod tests {
             },
             proposer_attestation: proposer_attestation.clone(),
         };
-        let message_root = proposer_attestation.data.hash_tree_root();
-        let proposal_signature =
-            pq::sign_message(&proposal_secret_key, 4, &message_root).expect("proposal signature");
-        let attestation_signature = pq::sign_message(&attestation_secret_key, 4, &message_root)
-            .expect("attestation signature");
 
         assert!(verifier.verify_block_signature(
             ValidatorIndex(Uint64(0)),

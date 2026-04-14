@@ -1044,10 +1044,6 @@ pub fn build_genesis_from_config_yaml_with_override(
 #[inline]
 fn build_devnet_validators(validator_count: usize) -> Validators {
     let mut validators = Vec::with_capacity(validator_count);
-    // SAFETY:
-    // - capacity is pre-allocated to `validator_count`.
-    // - each slot in [0, validator_count) is written exactly once below.
-    unsafe { validators.set_len(validator_count) };
     for i in 0..validator_count {
         let (attestation_pubkey, _) =
             crate::crypto::pq::key_gen_for_devnet_validator_with_role(
@@ -1060,8 +1056,12 @@ fn build_devnet_validators(validator_count: usize) -> Validators {
             crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
         )
         .expect("derive devnet proposal key");
-        // SAFETY: `i < validator_count`, so index is in-bounds of initialized len.
+        // SAFETY:
+        // - capacity was pre-allocated to `validator_count`, so writing at `i` is in-bounds.
+        // - `len` is only incremented after both fallible key derivations succeed, so the
+        //   vector never exposes uninitialized elements on panic.
         unsafe {
+            validators.set_len(i + 1);
             write_at(
                 &mut validators,
                 i,
@@ -1085,6 +1085,12 @@ fn parse_genesis_validator_pubkey(
     hex_str: &str,
 ) -> Result<Bytes52, String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    if hex_str.len() % 2 != 0 {
+        return Err(format!(
+            "GENESIS_VALIDATORS[{index}].{field} must have even-length hex in {}",
+            path.display()
+        ));
+    }
     let pk_bytes: Vec<u8> = (0..hex_str.len())
         .step_by(2)
         .map(|j| {

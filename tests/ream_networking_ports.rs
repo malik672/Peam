@@ -38,12 +38,15 @@ fn empty_state() -> Arc<RwLock<State>> {
 }
 
 fn single_validator_state() -> Arc<RwLock<State>> {
-    let (pubkey, _) =
+    let (attestation_pubkey, _) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-            .expect("validator key");
+            .expect("attestation key");
+    let (proposal_pubkey, _) =
+        key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+            .expect("proposal key");
     let validators = Validators::new(vec![Validator {
-        attestation_pubkey: pubkey,
-        proposal_pubkey: pubkey,
+        attestation_pubkey,
+        proposal_pubkey,
         index: ValidatorIndex(Uint64(0)),
         balance: Uint64(0),
     }])

@@ -1,5 +1,5 @@
 use crate::ssz::hash::hash_nodes;
-use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
+use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
 use crate::types::bytes::Bytes32;
 use crate::types::bytes::Bytes52;
 use crate::types::container::Container;
@@ -95,10 +95,9 @@ impl SszDecode for Validator {
     }
 }
 
-impl SszElement for Validator {
-    #[inline]
-    fn fixed_len_opt() -> Option<usize> {
-        None
+impl SszFixedLen for Validator {
+    fn fixed_len() -> usize {
+        112
     }
 }
 

@@ -1055,7 +1055,7 @@ pub(super) fn spawn_block_production_task(
         warn!("failed to get local proposer key from cache");
         return None;
     };
-    let local_pubkey = local_key.attestation_pubkey;
+    let local_proposal_pubkey = local_key.proposal_pubkey;
     let proposal_secret_key = Arc::clone(&local_key.proposal_secret_key);
 
     {
@@ -1066,8 +1066,8 @@ pub(super) fn spawn_block_production_task(
             );
             return None;
         };
-        if v.attestation_pubkey != local_pubkey {
-            warn!("local validator attestation key mismatch; block production disabled");
+        if v.proposal_pubkey != local_proposal_pubkey {
+            warn!("local validator proposal key mismatch; block production disabled");
             return None;
         }
     }
