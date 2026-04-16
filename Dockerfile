@@ -22,9 +22,19 @@ LABEL org.opencontainers.image.version=$GIT_BRANCH
 LABEL org.opencontainers.image.created=$BUILD_DATE
 LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get update -o Acquire::Retries=3; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        sleep 5; \
+    done; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /workspace/target/release/peam /usr/local/bin/peam
 
