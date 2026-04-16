@@ -2,7 +2,7 @@ name: Publish Docker Image
 
 on:
   push:
-    branches: [master]
+    branches: [master, devnet4]
     tags:
       - "v*"
       - "devnet*"
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tags:
-        description: "Additional Docker tags, comma-separated (for example: latest,devnet3)"
+        description: "Additional Docker tags, comma-separated (for example: latest,devnet4)"
         required: false
         default: ""
 
@@ -62,7 +62,10 @@ jobs:
 
           if [[ "${GITHUB_REF}" == "refs/heads/master" ]]; then
             tags+=("${image}:latest")
-            tags+=("${image}:devnet3")
+          fi
+
+          if [[ "${GITHUB_REF}" == "refs/heads/devnet4" ]]; then
+            tags+=("${image}:devnet4")
           fi
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
