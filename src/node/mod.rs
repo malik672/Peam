@@ -585,7 +585,7 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
             self.state.clone(),
             self.store.clone(),
         ));
-        let slot_clock = spawn_strict_slot_clock(self.config.genesis_time.0);
+        let slot_clock = spawn_strict_slot_clock(self.config.genesis_time.0, self.metrics.clone());
         let gossip_context = Arc::new(StateGossipContext::with_slot_clock_and_store(
             self.state.clone(),
             slot_clock,

@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::networking::peer_manager::PeerManager;
+use crate::slot::slot_index_from_unix_secs;
 use crate::ssz::SszEncode;
 use crate::storage::{FileStore, Store};
 use crate::unsafe_vec::{write_at, write_bytes_at};
@@ -127,6 +128,47 @@ pub static BUCKETS_COMMITTEE_AGG: &[u64] = &[
     500_000_000,   // 0.5s
     750_000_000,   // 0.75s
     1_000_000_000, // 1s
+];
+
+/// Bucket upper bounds for number of aggregated payloads in a block.
+pub static BUCKETS_BLOCK_AGGREGATED_PAYLOADS: &[u64] = &[1, 2, 4, 8, 16, 32, 64, 128];
+
+/// Bucket upper bounds in nanoseconds for block payload aggregation time.
+pub static BUCKETS_BLOCK_BUILDING_PAYLOAD_AGGREGATION_TIME: &[u64] = &[
+    100_000_000,   // 0.1s
+    250_000_000,   // 0.25s
+    500_000_000,   // 0.5s
+    750_000_000,   // 0.75s
+    1_000_000_000, // 1s
+    2_000_000_000, // 2s
+    3_000_000_000, // 3s
+    4_000_000_000, // 4s
+];
+
+/// Bucket upper bounds in nanoseconds for total block building time.
+pub static BUCKETS_BLOCK_BUILDING_TIME: &[u64] = &[
+    10_000_000,    // 0.01s
+    25_000_000,    // 0.025s
+    50_000_000,    // 0.05s
+    100_000_000,   // 0.1s
+    250_000_000,   // 0.25s
+    500_000_000,   // 0.5s
+    750_000_000,   // 0.75s
+    1_000_000_000, // 1s
+];
+
+/// Bucket upper bounds in bytes for gossip block message sizes.
+pub static BUCKETS_GOSSIP_BLOCK_SIZE_BYTES: &[u64] = &[
+    10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 5_000_000,
+];
+
+/// Bucket upper bounds in bytes for gossip attestation message sizes.
+pub static BUCKETS_GOSSIP_ATTESTATION_SIZE_BYTES: &[u64] =
+    &[512, 1_024, 2_048, 4_096, 8_192, 16_384];
+
+/// Bucket upper bounds in bytes for gossip aggregated attestation message sizes.
+pub static BUCKETS_GOSSIP_AGGREGATION_SIZE_BYTES: &[u64] = &[
+    1_024, 4_096, 16_384, 65_536, 131_072, 262_144, 524_288, 1_048_576,
 ];
 
 /// Lock-free histogram with fixed bucket boundaries.
@@ -279,6 +321,15 @@ pub struct MetricsRegistry {
     pub peer_connection_outbound: AtomicCounter,
     pub peer_disconnection_inbound: AtomicCounter,
     pub peer_disconnection_outbound: AtomicCounter,
+    pub gossip_block_size_bytes: AtomicHistogram,
+    pub gossip_attestation_size_bytes: AtomicHistogram,
+    pub gossip_aggregation_size_bytes: AtomicHistogram,
+    pub block_aggregated_payloads: AtomicHistogram,
+    pub block_building_payload_aggregation_time: AtomicHistogram,
+    pub block_building_time: AtomicHistogram,
+    pub block_building_success_total: AtomicCounter,
+    pub block_building_failures_total: AtomicCounter,
+    pub sync_status_first_tick_seen: AtomicBool,
 
     // -- Sync/cache observability --
     pub sync_inflight_roots: AtomicU64,
@@ -340,6 +391,21 @@ impl MetricsRegistry {
             peer_connection_outbound: AtomicCounter::new(),
             peer_disconnection_inbound: AtomicCounter::new(),
             peer_disconnection_outbound: AtomicCounter::new(),
+            gossip_block_size_bytes: AtomicHistogram::new(BUCKETS_GOSSIP_BLOCK_SIZE_BYTES),
+            gossip_attestation_size_bytes: AtomicHistogram::new(
+                BUCKETS_GOSSIP_ATTESTATION_SIZE_BYTES,
+            ),
+            gossip_aggregation_size_bytes: AtomicHistogram::new(
+                BUCKETS_GOSSIP_AGGREGATION_SIZE_BYTES,
+            ),
+            block_aggregated_payloads: AtomicHistogram::new(BUCKETS_BLOCK_AGGREGATED_PAYLOADS),
+            block_building_payload_aggregation_time: AtomicHistogram::new(
+                BUCKETS_BLOCK_BUILDING_PAYLOAD_AGGREGATION_TIME,
+            ),
+            block_building_time: AtomicHistogram::new(BUCKETS_BLOCK_BUILDING_TIME),
+            block_building_success_total: AtomicCounter::new(),
+            block_building_failures_total: AtomicCounter::new(),
+            sync_status_first_tick_seen: AtomicBool::new(false),
 
             sync_inflight_roots: AtomicU64::new(0),
             sync_request_active: AtomicU64::new(0),
@@ -780,6 +846,11 @@ fn write_gauge_metric(out: &mut String, name: &str, value: impl std::fmt::Displa
 }
 
 #[inline]
+fn write_gauge_metric_labeled(out: &mut String, name: &str, labels: &str, value: u64) {
+    let _ = writeln!(out, "{name}{{{labels}}} {value}");
+}
+
+#[inline]
 fn write_counter_metric(out: &mut String, name: &str, value: impl std::fmt::Display) {
     let _ = writeln!(out, "# TYPE {name} counter");
     let _ = writeln!(out, "{name} {value}");
@@ -890,6 +961,7 @@ fn render_metrics(
         .unwrap_or(0);
 
     let head_slot = store_head_slot.max(fc_head_slot);
+    let wall_clock_slot = slot_index_from_unix_secs(state.config.genesis_time.0, now);
     let justified_slot = state.latest_justified.slot.0.0.max(fc_justified_slot);
     let finalized_slot = state.latest_finalized.slot.0.0.max(fc_finalized_slot);
     let previous_justified_slot = if fc_previous_justified_slot > 0 {
@@ -1055,8 +1127,77 @@ fn render_metrics(
         "direction=\"outbound\",reason=\"error\"",
         0,
     );
+    write_counter_metric(
+        &mut out,
+        "lean_block_building_success_total",
+        registry.block_building_success_total.get(),
+    );
+    write_counter_metric(
+        &mut out,
+        "lean_block_building_failures_total",
+        registry.block_building_failures_total.get(),
+    );
+    out.push_str(&registry.gossip_block_size_bytes.render(
+        "lean_gossip_block_size_bytes",
+        "Bytes size of a gossip block message.",
+        false,
+    ));
+    out.push_str(&registry.gossip_attestation_size_bytes.render(
+        "lean_gossip_attestation_size_bytes",
+        "Bytes size of a gossip attestation message.",
+        false,
+    ));
+    out.push_str(&registry.gossip_aggregation_size_bytes.render(
+        "lean_gossip_aggregation_size_bytes",
+        "Bytes size of a gossip aggregated attestation message.",
+        false,
+    ));
+    out.push_str(&registry.block_aggregated_payloads.render(
+        "lean_block_aggregated_payloads",
+        "Number of aggregated payloads in a block.",
+        false,
+    ));
+    out.push_str(&registry.block_building_payload_aggregation_time.render(
+        "lean_block_building_payload_aggregation_time_seconds",
+        "Time taken to build aggregated payloads during block building.",
+        true,
+    ));
+    out.push_str(&registry.block_building_time.render(
+        "lean_block_building_time_seconds",
+        "Time taken to build a block.",
+        true,
+    ));
 
     // -- Sync --
+    let sync_status = if !registry
+        .sync_status_first_tick_seen
+        .load(Ordering::Relaxed)
+    {
+        "idle"
+    } else if syncing || head_slot < wall_clock_slot {
+        "syncing"
+    } else {
+        "synced"
+    };
+    let _ = writeln!(out, "# TYPE lean_node_sync_status gauge");
+    write_gauge_metric_labeled(
+        &mut out,
+        "lean_node_sync_status",
+        "status=\"idle\"",
+        u64::from(sync_status == "idle"),
+    );
+    write_gauge_metric_labeled(
+        &mut out,
+        "lean_node_sync_status",
+        "status=\"syncing\"",
+        u64::from(sync_status == "syncing"),
+    );
+    write_gauge_metric_labeled(
+        &mut out,
+        "lean_node_sync_status",
+        "status=\"synced\"",
+        u64::from(sync_status == "synced"),
+    );
     write_gauge_metric(&mut out, "lean_syncing", if syncing { 1 } else { 0 });
     write_gauge_metric(&mut out, "lean_sync_target_slot", sync_target_slot);
     write_gauge_metric(&mut out, "lean_sync_pending_depth", sync_pending_depth);

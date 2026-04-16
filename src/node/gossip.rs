@@ -279,6 +279,7 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
     };
     match msg {
         LeanGossipsubMessage::Block(block) => {
+            metrics.gossip_block_size_bytes.observe(payload.len() as u64);
             let block_start = Instant::now();
             let signed = block.block.clone();
             let root = Bytes32::from(signed.message.block.hash_tree_root());
@@ -345,6 +346,9 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
             }
         }
         LeanGossipsubMessage::AttestationSubnet { attestation, .. } => {
+            metrics
+                .gossip_attestation_size_bytes
+                .observe(payload.len() as u64);
             let att_start = Instant::now();
             let att = &attestation.attestation;
             let idx = att.validator_id.0 as usize;
@@ -364,6 +368,9 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
             }
         }
         LeanGossipsubMessage::AggregatedAttestation(attestation) => {
+            metrics
+                .gossip_aggregation_size_bytes
+                .observe(payload.len() as u64);
             let att_start = Instant::now();
             let att = &attestation.attestation;
             if !bitlist_has_any_set(&att.proof.participants) {
