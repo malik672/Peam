@@ -14,9 +14,8 @@ use crate::containers::attestation::{
     VALIDATOR_REGISTRY_LIMIT,
 };
 use crate::containers::block::{
-    track_distinct_attestation_data, ATTESTATIONS_LIMIT, Block, BlockBody, BlockSignatures,
-    BlockWithAttestation, MAX_ATTESTATIONS_DATA,
-    SignedBlockWithAttestation,
+    ATTESTATIONS_LIMIT, Block, BlockBody, BlockSignatures, BlockWithAttestation,
+    MAX_ATTESTATIONS_DATA, SignedBlockWithAttestation,
 };
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::gossip::{GossipAttestation, GossipBlock};
@@ -586,6 +585,48 @@ fn set_bits(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>) -> Vec<usize> {
 }
 
 #[inline]
+fn merge_aggregation_bits(
+    dst: &mut BitList<VALIDATOR_REGISTRY_LIMIT>,
+    src: &BitList<VALIDATOR_REGISTRY_LIMIT>,
+) {
+    let target_len = dst.len.max(src.len);
+    let target_bytes = target_len.div_ceil(8);
+    if dst.data.len() < target_bytes {
+        dst.data.resize(target_bytes, 0);
+    }
+
+    let merge_bytes = src.data.len().min(dst.data.len());
+    let full_chunks = merge_bytes / 8;
+    let dst_ptr = dst.data.as_mut_ptr();
+    let src_ptr = src.data.as_ptr();
+    for i in 0..full_chunks {
+        unsafe {
+            let off = i * 8;
+            let d = (dst_ptr.add(off) as *mut u64).read_unaligned();
+            let s = (src_ptr.add(off) as *const u64).read_unaligned();
+            (dst_ptr.add(off) as *mut u64).write_unaligned(d | s);
+        }
+    }
+    let tail = full_chunks * 8;
+    for i in tail..merge_bytes {
+        dst.data[i] |= src.data[i];
+    }
+
+    dst.len = target_len;
+}
+
+#[inline]
+fn insert_aggregation_bit(dst: &mut BitList<VALIDATOR_REGISTRY_LIMIT>, idx: usize) {
+    let target_len = dst.len.max(idx + 1);
+    let target_bytes = target_len.div_ceil(8);
+    if dst.data.len() < target_bytes {
+        dst.data.resize(target_bytes, 0);
+    }
+    dst.data[idx / 8] |= 1u8 << (idx % 8);
+    dst.len = target_len;
+}
+
+#[inline]
 fn aggregate_signed_attestations(
     signed_attestations: Vec<SignedAttestation>,
     devnet_validator_keys: &DevnetValidatorKeyCache,
@@ -733,6 +774,12 @@ fn build_block_attestation_payload(
     devnet_validator_keys: &DevnetValidatorKeyCache,
     metrics: &MetricsRegistry,
 ) -> (Vec<Attestation>, Vec<AggregatedSignatureProof>) {
+    struct BlockAttestationGroup {
+        data: AttestationData,
+        proofed: Vec<AggregatedSignatureProof>,
+        unaggregated: Vec<Attestation>,
+    }
+
     let drained = {
         let mut pending = pending_block_attestations
             .write()
@@ -745,29 +792,35 @@ fn build_block_attestation_payload(
 
     let mut attestations = Vec::new();
     let mut proofs = Vec::new();
-    let mut unaggregated = Vec::new();
     let mut stale_dropped = 0usize;
     let mut attestation_data_limit_dropped = 0usize;
-    let mut included_data = Vec::with_capacity(MAX_ATTESTATIONS_DATA);
+    let mut groups: Vec<BlockAttestationGroup> = Vec::with_capacity(MAX_ATTESTATIONS_DATA);
 
     for entry in drained {
         if entry.attestation.data.target.slot.0.0 < finalized_slot {
             stale_dropped += 1;
             continue;
         }
-        if !track_distinct_attestation_data(&mut included_data, &entry.attestation.data) {
-            attestation_data_limit_dropped += 1;
-            continue;
-        }
-        if let Some(proof) = entry.proof {
-            let mut attestation = entry.attestation;
-            if attestation.aggregation_bits != proof.participants {
-                attestation.aggregation_bits = proof.participants.clone();
-            }
-            attestations.push(attestation);
-            proofs.push(proof);
+        let group_idx = if let Some(idx) = groups.iter().position(|group| group.data == entry.attestation.data) {
+            idx
         } else {
-            unaggregated.push(entry.attestation);
+            if groups.len() >= MAX_ATTESTATIONS_DATA {
+                attestation_data_limit_dropped += 1;
+                continue;
+            }
+            groups.push(BlockAttestationGroup {
+                data: entry.attestation.data.clone(),
+                proofed: Vec::new(),
+                unaggregated: Vec::new(),
+            });
+            groups.len() - 1
+        };
+
+        let group = &mut groups[group_idx];
+        if let Some(proof) = entry.proof {
+            group.proofed.push(proof);
+        } else {
+            group.unaggregated.push(entry.attestation);
         }
     }
 
@@ -779,74 +832,116 @@ fn build_block_attestation_payload(
             "proposal dropped stale pending attestations"
         );
     }
-    if attestations.len() >= ATTESTATIONS_LIMIT {
-        attestations.truncate(ATTESTATIONS_LIMIT);
-        proofs.truncate(ATTESTATIONS_LIMIT);
-        return (attestations, proofs);
-    }
+    for group in groups.into_iter().take(ATTESTATIONS_LIMIT) {
+        let merged_unaggregated = aggregate_attestations(group.unaggregated);
+        let mut final_bits = BitList::new(Vec::new()).expect("empty bitlist");
+        let mut covered = vec![false; devnet_validator_keys.len()];
+        let mut child_public_keys = Vec::with_capacity(group.proofed.len());
+        let mut child_proofs = Vec::with_capacity(group.proofed.len());
+        let mut invalid_group = false;
 
-    let remaining = ATTESTATIONS_LIMIT - attestations.len();
-    let aggregated = aggregate_attestations(unaggregated);
-
-    for attestation in aggregated.into_iter().take(remaining) {
-        if !track_distinct_attestation_data(&mut included_data, &attestation.data) {
-            attestation_data_limit_dropped += 1;
-            continue;
-        }
-        let participants = set_bits(&attestation.aggregation_bits);
-        if participants.is_empty() {
-            continue;
-        }
-
-        let mut public_keys = Vec::with_capacity(participants.len());
-        let mut secret_key_refs = Vec::with_capacity(participants.len());
-        let mut signable = true;
-        for validator_index in participants {
-            let Some(Some(key_material)) = devnet_validator_keys.get(validator_index) else {
-                signable = false;
-                break;
-            };
-            let secret_key = key_material.attestation_secret_key.as_ref();
-            if !secret_key.get_activation_interval().contains(&slot)
-                || !secret_key.get_prepared_interval().contains(&slot)
-            {
-                signable = false;
+        for proof in &group.proofed {
+            merge_aggregation_bits(&mut final_bits, &proof.participants);
+            let participant_indices = set_bits(&proof.participants);
+            let mut proof_public_keys = Vec::with_capacity(participant_indices.len());
+            for validator_index in participant_indices {
+                let Some(Some(key_material)) = devnet_validator_keys.get(validator_index) else {
+                    invalid_group = true;
+                    break;
+                };
+                if validator_index < covered.len() {
+                    covered[validator_index] = true;
+                }
+                proof_public_keys.push(key_material.attestation_pubkey);
+            }
+            if invalid_group {
                 break;
             }
-            public_keys.push(key_material.attestation_pubkey);
-            secret_key_refs.push(secret_key);
+            child_public_keys.push(proof_public_keys);
+            child_proofs.push(proof);
         }
-        if !signable || public_keys.is_empty() {
+        if invalid_group {
             metrics.pq_aggregated_signatures_invalid_total.inc();
             continue;
         }
+
+        let mut raw_public_keys = Vec::new();
+        let mut raw_signatures = Vec::new();
+        for attestation in merged_unaggregated {
+            for validator_index in set_bits(&attestation.aggregation_bits) {
+                if covered.get(validator_index).copied().unwrap_or(false) {
+                    continue;
+                }
+                let Some(Some(key_material)) = devnet_validator_keys.get(validator_index) else {
+                    continue;
+                };
+                let secret_key = key_material.attestation_secret_key.as_ref();
+                if !secret_key.get_activation_interval().contains(&slot)
+                    || !secret_key.get_prepared_interval().contains(&slot)
+                {
+                    continue;
+                }
+
+                let signature = match crate::crypto::pq::sign_message(
+                    secret_key,
+                    attestation.data.slot.0.0 as u32,
+                    &attestation.data.hash_tree_root(),
+                ) {
+                    Ok(signature) => signature,
+                    Err(err) => {
+                        warn!("failed to sign attestation for block production: {err}");
+                        continue;
+                    }
+                };
+                insert_aggregation_bit(&mut final_bits, validator_index);
+                if validator_index < covered.len() {
+                    covered[validator_index] = true;
+                }
+                raw_public_keys.push(key_material.attestation_pubkey);
+                raw_signatures.push(signature);
+            }
+        }
+
+        if child_proofs.is_empty() && raw_public_keys.is_empty() {
+            continue;
+        }
+
+        metrics.pq_aggregated_signatures_total.inc();
         metrics
             .pq_attestations_in_aggregated_signatures_total
-            .add(public_keys.len() as u64);
-
-        let message_root = attestation.data.hash_tree_root();
-        metrics.pq_aggregated_signatures_total.inc();
+            .add(set_bits(&final_bits).len() as u64);
+        let message_root = group.data.hash_tree_root();
         let aggregate_start = Instant::now();
-        let attestation_slot = attestation.data.slot.0.0 as u32;
-        let proof_bytes = match crate::crypto::pq::sign_aggregate(
-            &public_keys,
-            &secret_key_refs,
-            attestation_slot,
-            &message_root,
-        ) {
-            Ok(proof_bytes) => {
-                metrics
-                    .pq_aggregated_signing_time
-                    .observe_duration(aggregate_start);
-                metrics.pq_aggregated_signatures_valid_total.inc();
-                proof_bytes
-            }
-            Err(err) => {
-                metrics.pq_aggregated_signatures_invalid_total.inc();
-                warn!("failed to aggregate attestation signatures for block production: {err}");
-                continue;
+        let proof_bytes = if child_proofs.len() == 1 && raw_public_keys.is_empty() {
+            child_proofs[0].proof_data.as_slice().to_vec()
+        } else {
+            let children = child_public_keys
+                .iter()
+                .zip(child_proofs.iter())
+                .map(|(public_keys, proof)| crate::crypto::pq::AggregateChildProof {
+                    public_keys,
+                    proof_data: proof.proof_data.as_slice(),
+                })
+                .collect::<Vec<_>>();
+            match crate::crypto::pq::aggregate_proofs(
+                &children,
+                &raw_public_keys,
+                &raw_signatures,
+                &message_root,
+                group.data.slot.0.0 as u32,
+            ) {
+                Ok(proof_bytes) => proof_bytes,
+                Err(err) => {
+                    metrics.pq_aggregated_signatures_invalid_total.inc();
+                    warn!("failed to recursively aggregate attestation proofs for block production: {err}");
+                    continue;
+                }
             }
         };
+        metrics
+            .pq_aggregated_signing_time
+            .observe_duration(aggregate_start);
+        metrics.pq_aggregated_signatures_valid_total.inc();
         let proof_data = match ByteList::<PROOF_MAX_BYTES>::new(proof_bytes) {
             Ok(proof_data) => proof_data,
             Err(err) => {
@@ -857,10 +952,13 @@ fn build_block_attestation_payload(
         };
 
         proofs.push(AggregatedSignatureProof {
-            participants: attestation.aggregation_bits.clone(),
+            participants: final_bits.clone(),
             proof_data,
         });
-        attestations.push(attestation);
+        attestations.push(Attestation {
+            aggregation_bits: final_bits,
+            data: group.data,
+        });
     }
     if attestation_data_limit_dropped > 0 {
         warn!(
@@ -1248,7 +1346,7 @@ pub(super) fn spawn_block_production_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingBlockAttestation, build_block_attestation_payload,
+        PendingBlockAttestation, build_block_attestation_payload, build_devnet_pq_validator_keys,
         build_devnet_pq_validator_keys_from_hash_sig_dir, load_attestation_data,
         load_proposal_pre_state,
     };
@@ -1362,7 +1460,13 @@ mod tests {
     }
 
     fn dummy_attestation(target_slot: u64) -> Attestation {
-        let bits = BitList::new(vec![true]).expect("bitlist");
+        attestation_for_validator(0, target_slot)
+    }
+
+    fn attestation_for_validator(validator_index: usize, target_slot: u64) -> Attestation {
+        let mut bits = vec![false; validator_index + 1];
+        bits[validator_index] = true;
+        let bits = BitList::new(bits).expect("bitlist");
         Attestation {
             aggregation_bits: bits,
             data: AttestationData {
@@ -1380,6 +1484,27 @@ mod tests {
                     root: root_from_u64(target_slot + 3_000),
                 },
             },
+        }
+    }
+
+    fn signed_proof_for_attestation(
+        key_cache: &Arc<Vec<Option<super::DevnetValidatorKeyMaterial>>>,
+        attestation: &Attestation,
+        validator_index: usize,
+    ) -> AggregatedSignatureProof {
+        let key_material = key_cache[validator_index]
+            .as_ref()
+            .expect("validator key material");
+        let proof_bytes = crate::crypto::pq::sign_aggregate(
+            &[key_material.attestation_pubkey],
+            &[key_material.attestation_secret_key.as_ref()],
+            attestation.data.slot.0.0 as u32,
+            &attestation.data.hash_tree_root(),
+        )
+        .expect("sign aggregate");
+        AggregatedSignatureProof {
+            participants: attestation.aggregation_bits.clone(),
+            proof_data: ByteList::<PROOF_MAX_BYTES>::new(proof_bytes).expect("proof bytes"),
         }
     }
 
@@ -1507,6 +1632,45 @@ mod tests {
             pending.read().expect("pending lock").is_empty(),
             "payload builder should still drain the pending queue"
         );
+    }
+
+    #[test]
+    #[ignore = "recursive XMSS proof composition is slow; run explicitly when validating the path"]
+    fn proposal_payload_recursively_merges_duplicate_attestation_data() {
+        let key_cache = build_devnet_pq_validator_keys(2);
+        let attestation_0 = attestation_for_validator(0, 8);
+        let attestation_1 = attestation_for_validator(1, 8);
+        let proof_0 = signed_proof_for_attestation(&key_cache, &attestation_0, 0);
+        let proof_1 = signed_proof_for_attestation(&key_cache, &attestation_1, 1);
+
+        let pending = Arc::new(RwLock::new(vec![
+            PendingBlockAttestation {
+                attestation: attestation_0.clone(),
+                proof: Some(proof_0),
+            },
+            PendingBlockAttestation {
+                attestation: attestation_1.clone(),
+                proof: Some(proof_1),
+            },
+        ]));
+
+        let (attestations, proofs) =
+            build_block_attestation_payload(8, 0, &pending, &key_cache, &MetricsRegistry::new());
+
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(attestations[0].data, attestation_0.data);
+        assert_eq!(super::set_bits(&attestations[0].aggregation_bits), vec![0, 1]);
+        assert_eq!(attestations[0].aggregation_bits, proofs[0].participants);
+
+        let public_keys = [key_cache[0].as_ref().expect("key0").attestation_pubkey, key_cache[1].as_ref().expect("key1").attestation_pubkey];
+        crate::crypto::pq::verify_aggregate_signature(
+            &public_keys,
+            &attestations[0].data.hash_tree_root(),
+            proofs[0].proof_data.as_slice(),
+            8,
+        )
+        .expect("verify merged aggregate proof");
     }
 
     #[test]
