@@ -1375,7 +1375,7 @@ fn produce_block_with_signatures(
             data: proposer_data,
         };
 
-        let proposer_message = proposer_attestation.data.hash_tree_root();
+        let proposer_message = block.hash_tree_root();
         let epoch = slot;
         if !proposal_secret_key.get_activation_interval().contains(&epoch) {
             warn!("skipping block proposal: key not active at epoch {}", epoch);
@@ -1403,7 +1403,7 @@ fn produce_block_with_signatures(
             }
             Err(err) => {
                 build_failed = true;
-                warn!("failed to sign proposer attestation: {err}");
+                warn!("failed to sign block proposal: {err}");
                 return None;
             }
         };

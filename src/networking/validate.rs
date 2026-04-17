@@ -96,7 +96,7 @@ pub enum GossipValidatorKind {
 /// Implementations must be `Send + Sync` so they can be shared across async
 /// networking tasks.
 pub trait GossipSignatureVerifier: Send + Sync {
-    /// Verify proposer signature over the proposer attestation.
+    /// Verify proposer signature over the block.
     fn verify_block_signature(
         &self,
         proposer_index: ValidatorIndex,
@@ -179,13 +179,12 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
         message: &BlockWithAttestation,
         signature: &Bytes3112,
     ) -> bool {
-        let proposer_attestation = &message.proposer_attestation;
         let idx = proposer_index.0.0 as usize;
         let Some(pubkey) = self.proposal_pubkeys.get(idx) else {
             return false;
         };
-        let root = proposer_attestation.data.hash_tree_root();
-        let epoch = proposer_attestation.data.slot.0.0 as u32;
+        let root = message.block.hash_tree_root();
+        let epoch = message.block.slot.0.0 as u32;
         crypto::pq::verify_signature(pubkey, epoch, &root, signature).is_ok()
     }
 
@@ -505,18 +504,22 @@ mod tests {
             .name("proposal-pubkey-verifier-test".to_string())
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
+                let block = Block {
+                    slot: Slot(Uint64(4)),
+                    proposer_index: ValidatorIndex(Uint64(0)),
+                    parent_root: Bytes32::zero(),
+                    state_root: Bytes32::zero(),
+                    body: BlockBody {
+                        attestations: SszList::new(vec![]).expect("attestations"),
+                    },
+                };
                 let (attestation_pubkey, attestation_signature) = {
                     pq::key_gen_for_devnet_validator_with_role(
                         0,
                         DevnetValidatorKeyRole::Attestation,
                     )
                     .map(|(pubkey, secret_key)| {
-                        let bits = BitList::new(vec![true]).expect("bits");
-                        let proposer_attestation = Attestation {
-                            aggregation_bits: bits,
-                            data: sample_attestation_data(4),
-                        };
-                        let message_root = proposer_attestation.data.hash_tree_root();
+                        let message_root = block.hash_tree_root();
                         let signature = pq::sign_message(&secret_key, 4, &message_root)
                             .expect("attestation signature");
                         (pubkey, signature)
@@ -529,12 +532,7 @@ mod tests {
                         DevnetValidatorKeyRole::Proposal,
                     )
                     .map(|(pubkey, secret_key)| {
-                        let bits = BitList::new(vec![true]).expect("bits");
-                        let proposer_attestation = Attestation {
-                            aggregation_bits: bits,
-                            data: sample_attestation_data(4),
-                        };
-                        let message_root = proposer_attestation.data.hash_tree_root();
+                        let message_root = block.hash_tree_root();
                         let signature = pq::sign_message(&secret_key, 4, &message_root)
                             .expect("proposal signature");
                         (pubkey, signature)
@@ -550,15 +548,7 @@ mod tests {
                     data: sample_attestation_data(4),
                 };
                 let message = BlockWithAttestation {
-                    block: Block {
-                        slot: Slot(Uint64(4)),
-                        proposer_index: ValidatorIndex(Uint64(0)),
-                        parent_root: Bytes32::zero(),
-                        state_root: Bytes32::zero(),
-                        body: BlockBody {
-                            attestations: SszList::new(vec![]).expect("attestations"),
-                        },
-                    },
+                    block,
                     proposer_attestation: proposer_attestation.clone(),
                 };
 

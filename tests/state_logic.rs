@@ -1354,9 +1354,6 @@ fn pq_verifier_rejects_placeholder_aggregate_proof_for_block_attestation() {
         target: checkpoint,
         source: checkpoint,
     };
-    let proposer_signature = pq::sign_message(&secret_key, 1, &proposer_data.hash_tree_root())
-        .expect("proposer signature");
-
     let body_attestation = Attestation {
         aggregation_bits: BitList::new(vec![true]).expect("bits"),
         data: proposer_data.clone(),
@@ -1370,6 +1367,8 @@ fn pq_verifier_rejects_placeholder_aggregate_proof_for_block_attestation() {
             attestations: Attestations::new(vec![body_attestation]).expect("attestations"),
         },
     };
+    let proposer_signature =
+        pq::sign_message(&secret_key, 1, &block.hash_tree_root()).expect("proposer signature");
     let signed = SignedBlockWithAttestation {
         message: BlockWithAttestation {
             block,

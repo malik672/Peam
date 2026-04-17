@@ -969,14 +969,13 @@ impl SignatureVerifier for PqSignatureVerifier {
             }
         }
 
-        let proposer_attestation = &signed.message.proposer_attestation;
         let proposer_idx = block.proposer_index.0.0 as usize;
         let proposer_pubkey = proposer_pubkey_for(validators, proposer_idx)
             .ok_or_else(|| "proposer index out of range".to_string())?;
-        let proposer_message = proposer_attestation.data.hash_tree_root();
+        let proposer_message = block.hash_tree_root();
         pq::verify_signature(
             &proposer_pubkey,
-            proposer_attestation.data.slot.0.0 as u32,
+            block.slot.0.0 as u32,
             &proposer_message,
             &signed.signature.proposer_signature,
         )?;

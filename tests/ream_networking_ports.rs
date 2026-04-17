@@ -105,10 +105,10 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
     let (_, secret_key) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
             .expect("validator key");
-    let proposer_message = proposer_attestation.data.hash_tree_root();
+    let proposer_message = block.hash_tree_root();
     let proposer_signature = sign_message(
         &secret_key,
-        proposer_attestation.data.slot.0.0 as u32,
+        block.slot.0.0 as u32,
         &proposer_message,
     )
     .expect("proposer signature");
