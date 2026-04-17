@@ -1,4 +1,6 @@
-use peam::containers::attestation::{Attestation, AttestationData, SignedAttestation};
+use peam::containers::attestation::{
+    Attestation, AttestationData, SignedAggregatedAttestation, SignedAttestation,
+};
 use peam::containers::block::{
     Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
     SignedBlockWithAttestation,
@@ -7,7 +9,7 @@ use peam::containers::checkpoint::Checkpoint;
 use peam::containers::gossip::{GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit};
 use peam::containers::validator::ValidatorIndex;
 use peam::slot::Slot;
-use peam::ssz::{HashTreeRoot, SszDecode, SszEncode};
+use peam::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
 use peam::types::bytes::Bytes32;
 use peam::types::collections::SszList;
 use peam::types::uint::Uint64;
@@ -119,4 +121,44 @@ fn voluntary_exit_roundtrip() {
     let decoded = VoluntaryExit::decode_ssz(&encoded).unwrap();
     assert_eq!(decoded, exit);
     let _ = exit.hash_tree_root();
+}
+
+#[test]
+fn attestation_checked_decode_rejects_bad_offset() {
+    let mut bytes = vec![0u8; 4 + AttestationData::fixed_len()];
+    bytes[0..4].copy_from_slice(&0u32.to_le_bytes());
+    let err = Attestation::decode_ssz_checked(&bytes).unwrap_err();
+    assert!(err.contains("invalid aggregation_bits offset"));
+}
+
+#[test]
+fn signed_aggregated_attestation_checked_decode_rejects_bad_inner_proof_offsets() {
+    let data = AttestationData {
+        slot: Slot(Uint64(0)),
+        head: Checkpoint {
+            root: Bytes32::zero(),
+            slot: Slot(Uint64(0)),
+        },
+        target: Checkpoint {
+            root: Bytes32::zero(),
+            slot: Slot(Uint64(0)),
+        },
+        source: Checkpoint {
+            root: Bytes32::zero(),
+            slot: Slot(Uint64(0)),
+        },
+    };
+    let data_bytes = data.encode_ssz();
+    let mut proof_bytes = vec![0u8; 8];
+    proof_bytes[0..4].copy_from_slice(&0u32.to_le_bytes());
+    proof_bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+
+    let fixed_len = AttestationData::fixed_len() + 4;
+    let mut bytes = Vec::with_capacity(fixed_len + proof_bytes.len());
+    bytes.extend_from_slice(&data_bytes);
+    bytes.extend_from_slice(&(fixed_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&proof_bytes);
+
+    let err = SignedAggregatedAttestation::decode_ssz_checked(&bytes).unwrap_err();
+    assert!(err.contains("AggregatedSignatureProof invalid offsets"));
 }

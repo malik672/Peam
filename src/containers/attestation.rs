@@ -243,6 +243,16 @@ impl Attestation {
         if bytes.len() < 4 + AttestationData::fixed_len() {
             return Err("Attestation missing offset table".to_string());
         }
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&bytes[0..4]);
+        let offset = u32::from_le_bytes(buf) as usize;
+        let min_offset = 4 + AttestationData::fixed_len();
+        if offset < min_offset || offset > bytes.len() {
+            return Err(format!(
+                "Attestation invalid aggregation_bits offset {offset} for length {}",
+                bytes.len()
+            ));
+        }
         Self::decode_ssz(bytes)
     }
 }
@@ -379,7 +389,9 @@ impl SignedAggregatedAttestation {
                 bytes.len()
             ));
         }
-        Self::decode_ssz(bytes)
+        let data = AttestationData::decode_ssz(&bytes[..data_len])?;
+        let proof = AggregatedSignatureProof::decode_ssz_checked(&bytes[off_proof..])?;
+        Ok(Self { data, proof })
     }
 }
 
@@ -426,6 +438,28 @@ impl SszDecode for AggregatedSignatureProof {
             participants,
             proof_data,
         })
+    }
+}
+
+impl AggregatedSignatureProof {
+    /// Bounds-checked SSZ deserialization for untrusted input.
+    pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
+        let fixed_len = 8;
+        if bytes.len() < fixed_len {
+            return Err("AggregatedSignatureProof missing offset table".to_string());
+        }
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&bytes[0..4]);
+        let off_bits = u32::from_le_bytes(buf) as usize;
+        buf.copy_from_slice(&bytes[4..8]);
+        let off_proof = u32::from_le_bytes(buf) as usize;
+        if off_bits != fixed_len || off_proof < off_bits || off_proof > bytes.len() {
+            return Err(format!(
+                "AggregatedSignatureProof invalid offsets off_bits={off_bits} off_proof={off_proof} for length {}",
+                bytes.len()
+            ));
+        }
+        Self::decode_ssz(bytes)
     }
 }
 
