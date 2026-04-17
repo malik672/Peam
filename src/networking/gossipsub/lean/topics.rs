@@ -4,7 +4,7 @@
 //! ```text
 //! /{TOPIC_PREFIX}/{fork}/{kind}/{ENCODING_POSTFIX}
 //! ```
-//! e.g. `/leanconsensus/devnet0/block/ssz_snappy`.
+//! e.g. `/leanconsensus/12345678/block/ssz_snappy`.
 //!
 //! [`LeanGossipTopic`] represents a parsed topic and converts to/from libp2p
 //! [`TopicHash`] and [`IdentTopic`].
@@ -83,7 +83,7 @@ impl LeanGossipTopic {
     }
 }
 
-/// Renders the full topic string, e.g. `/leanconsensus/devnet0/block/ssz_snappy`.
+/// Renders the full topic string, e.g. `/leanconsensus/12345678/block/ssz_snappy`.
 impl std::fmt::Display for LeanGossipTopic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let topic_name = match &self.kind {

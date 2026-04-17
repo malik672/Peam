@@ -146,8 +146,8 @@ impl<const LIMIT: usize> SszElement for ByteList<LIMIT> {}
 
 impl SszEncode for Bytes3112 {
     fn encode_ssz(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(3112);
-        unsafe { out.set_len(3112) };
+        let mut out = Vec::with_capacity(Bytes3112::LEN);
+        unsafe { out.set_len(Bytes3112::LEN) };
         unsafe { write_bytes_at(&mut out, 0, &self.0) };
         out
     }
@@ -170,7 +170,7 @@ impl HashTreeRoot for Bytes3112 {
 
 impl SszFixedLen for Bytes3112 {
     fn fixed_len() -> usize {
-        3112
+        Bytes3112::LEN
     }
 }
 

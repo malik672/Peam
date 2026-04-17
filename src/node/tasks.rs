@@ -63,6 +63,23 @@ pub(super) struct DevnetValidatorKeyMaterial {
 pub(super) type DevnetValidatorKeyCache = Arc<Vec<Option<DevnetValidatorKeyMaterial>>>;
 
 #[inline]
+fn validate_loaded_devnet_keypair(
+    public_key: &Bytes52,
+    secret_key: &crate::crypto::pq::LeanSigSecretKey,
+    role: &str,
+    index: usize,
+) -> Result<(), String> {
+    let epoch = secret_key.get_activation_interval().start as u32;
+    let message = [0xA5u8; leansig::MESSAGE_LENGTH];
+    let signature = crate::crypto::pq::sign_message(secret_key, epoch, &message).map_err(|err| {
+        format!("failed to self-sign with {role} key for validator {index}: {err}")
+    })?;
+    crate::crypto::pq::verify_signature(public_key, epoch, &message, &signature).map_err(|err| {
+        format!("loaded {role} public/secret key mismatch for validator {index}: {err}")
+    })
+}
+
+#[inline]
 pub(super) fn build_devnet_pq_validator_keys(validator_count: usize) -> DevnetValidatorKeyCache {
     let mut keys = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
@@ -146,11 +163,25 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
             crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(
                 |err| format!("failed to decode {}: {err:?}", proposal_sk_path.display()),
             )?;
+        let attestation_pubkey = Bytes52::from_slice(&attestation_pk_bytes);
+        let proposal_pubkey = Bytes52::from_slice(&proposal_pk_bytes);
+        validate_loaded_devnet_keypair(
+            &attestation_pubkey,
+            &attestation_secret_key,
+            "attestation",
+            i,
+        )?;
+        validate_loaded_devnet_keypair(
+            &proposal_pubkey,
+            &proposal_secret_key,
+            "proposal",
+            i,
+        )?;
 
         keys.push(Some(DevnetValidatorKeyMaterial {
-            attestation_pubkey: Bytes52::from_slice(&attestation_pk_bytes),
+            attestation_pubkey,
             attestation_secret_key: Arc::new(attestation_secret_key),
-            proposal_pubkey: Bytes52::from_slice(&proposal_pk_bytes),
+            proposal_pubkey,
             proposal_secret_key: Arc::new(proposal_secret_key),
         }));
     }

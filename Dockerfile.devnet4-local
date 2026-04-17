@@ -1,0 +1,30 @@
+# syntax=docker.io/docker/dockerfile:1.7-labs
+
+FROM rust:1 AS builder
+WORKDIR /workspace/Peam
+
+COPY Peam /workspace/Peam
+COPY vendor /workspace/vendor
+
+RUN cargo build --release --locked --bin peam
+
+FROM ubuntu:24.04 AS runtime
+
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get update -o Acquire::Retries=3; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        sleep 5; \
+    done; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/Peam/target/release/peam /usr/local/bin/peam
+
+ENTRYPOINT ["/usr/local/bin/peam"]
+CMD ["--help"]

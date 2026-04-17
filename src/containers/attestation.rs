@@ -26,8 +26,8 @@ pub fn set_attestation_committee_count(count: u64) {
     ATTESTATION_COMMITTEE_COUNT_RUNTIME.store(count.max(1), Ordering::Relaxed);
 }
 
-/// Byte length of a post-quantum aggregate signature.
-pub const SIGNATURE_BYTES: usize = 3_112;
+/// Byte length of a post-quantum XMSS signature on devnet4.
+pub const SIGNATURE_BYTES: usize = Bytes3112::LEN;
 
 /// Maximum byte length of a variable-length aggregated signature proof.
 pub const PROOF_MAX_BYTES: usize = 1_048_576;

@@ -12,7 +12,8 @@
 use std::sync::Arc;
 
 use crate::containers::attestation::{
-    AggregatedSignatureProof, Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
+    AggregatedSignatureProof, Attestation, SignedAggregatedAttestation, SignedAttestation,
+    VALIDATOR_REGISTRY_LIMIT,
 };
 use crate::containers::block::BlockWithAttestation;
 use crate::containers::gossip::{
@@ -20,11 +21,58 @@ use crate::containers::gossip::{
 };
 use crate::containers::validator::{Validator, ValidatorIndex};
 use crate::crypto;
-use crate::ssz::HashTreeRoot;
+use crate::ssz::{HashTreeRoot, SszFixedLen};
 use crate::types::bitlist::BitList;
 use crate::types::bytes::{Bytes52, Bytes3112};
 use crate::unsafe_vec::write_at;
 use tracing::warn;
+
+fn payload_prefix_hex(bytes: &[u8], max_bytes: usize) -> String {
+    let shown = bytes.len().min(max_bytes);
+    let mut out = String::with_capacity(shown * 2 + if bytes.len() > shown { 3 } else { 0 });
+    for byte in &bytes[..shown] {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    if bytes.len() > shown {
+        out.push_str("...");
+    }
+    out
+}
+
+fn describe_attestation_topic_payload(payload: &[u8]) -> String {
+    let signed_expected = SignedAttestation::fixed_len();
+    let signed_err = SignedAttestation::decode_ssz_checked(payload)
+        .err()
+        .unwrap_or_else(|| "decoded".to_string());
+    let plain_shape = match Attestation::decode_ssz_checked(payload) {
+        Ok(attestation) => format!(
+            "ok(slot={}, bits={})",
+            attestation.data.slot.0.0,
+            attestation.aggregation_bits.len
+        ),
+        Err(err) => format!("err({err})"),
+    };
+    let aggregated_shape = match SignedAggregatedAttestation::decode_ssz_checked(payload) {
+        Ok(attestation) => format!(
+            "ok(slot={}, proof_bytes={}, bits={})",
+            attestation.data.slot.0.0,
+            attestation.proof.proof_data.as_slice().len(),
+            attestation.proof.participants.len
+        ),
+        Err(err) => format!("err({err})"),
+    };
+
+    format!(
+        "len={} expected_signed_len={} signed={} plain_attestation={} signed_aggregate={} prefix=0x{}",
+        payload.len(),
+        signed_expected,
+        signed_err,
+        plain_shape,
+        aggregated_shape,
+        payload_prefix_hex(payload, 16)
+    )
+}
 
 /// Discriminant for selecting the gossip validator to run on a topic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -314,7 +362,10 @@ pub fn validate_gossip(
         GossipValidatorKind::Attestation => {
             // Attestation gossip is a signed attestation (single validator).
             let Ok(attestation) = GossipAttestation::decode_ssz_checked(payload) else {
-                warn!("gossip attestation decode failed");
+                warn!(
+                    "gossip attestation decode failed {}",
+                    describe_attestation_topic_payload(payload)
+                );
                 return false;
             };
             let ok = verifier.verify_signed_attestation_signature(&attestation.attestation);
