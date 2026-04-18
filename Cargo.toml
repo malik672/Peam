@@ -79,12 +79,3 @@ harness = false
 [[bench]]
 name = "verify_signed_block_gather"
 harness = false
-
-[patch."https://github.com/leanEthereum/multilinear-toolkit.git"]
-multilinear-toolkit = { path = "../vendor/multilinear-toolkit-e06" }
-
-[patch."https://github.com/leanEthereum/fiat-shamir.git"]
-fiat-shamir = { path = "../vendor/fiat-shamir" }
-
-[patch."https://github.com/TomWambsgans/whir-p3"]
-whir-p3 = { path = "../vendor/whir-p3" }
