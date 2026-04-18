@@ -1,24 +1,19 @@
 //! Real post-quantum signature implementation.
 //!
-//! Uses `leansig` for single signatures.
-//! Aggregate signing/verifying uses `lean-multisig` (devnet-2 target).
+//! Uses `leansig` for single signatures and `lean-multisig` devnet4 aggregation.
 
 use lean_multisig::{
-    Devnet2XmssAggregateSignature, xmss_aggregate_signatures, xmss_aggregation_setup_prover,
-    xmss_aggregation_setup_verifier, xmss_verify_aggregated_signatures,
+    AggregatedXMSS, setup_prover, setup_verifier, xmss_aggregate, xmss_verify_aggregation,
 };
 use leansig::{MESSAGE_LENGTH, serialization::Serializable, signature::SignatureScheme};
 use rand::{SeedableRng, rngs::StdRng};
-use ssz::{Decode, Encode};
 use std::hash::Hasher;
 
 use crate::types::bytes::{Bytes52, Bytes3112};
 
 /// The concrete XMSS-based post-quantum signature scheme used throughout the node.
-///
-/// Instantiated with Poseidon hashing, optimized for hashing performance,
-/// lifetime `2^32`, dimension 64, and base 8.
-pub type LeanSigScheme = leansig::signature::generalized_xmss::instantiations_poseidon_top_level::lifetime_2_to_the_32::hashing_optimized::SIGTopLevelTargetSumLifetime32Dim64Base8;
+pub type LeanSigScheme =
+    leansig::signature::generalized_xmss::instantiations_aborting::lifetime_2_to_the_32::SchemeAbortingTargetSumLifetime32Dim46Base8;
 
 /// Public key type for [`LeanSigScheme`].
 pub type LeanSigPublicKey = <LeanSigScheme as SignatureScheme>::PublicKey;
@@ -30,6 +25,9 @@ pub type LeanSigSecretKey = <LeanSigScheme as SignatureScheme>::SecretKey;
 
 /// Narrow per-key active signing interval used for local devnet key material.
 const DEVNET_KEY_ACTIVE_EPOCHS: usize = 8;
+/// Aggregation rate used when Peam proves fresh XMSS aggregate proofs.
+const XMSS_AGGREGATION_LOG_INV_RATE: usize = 1;
+
 pub struct AggregateChildProof<'a> {
     pub public_keys: &'a [Bytes52],
     pub proof_data: &'a [u8],
@@ -54,12 +52,12 @@ fn devnet_validator_seed(validator_index: usize, role: DevnetValidatorKeyRole) -
 
 /// Pre-computes aggregation proving artifacts.
 pub fn setup_aggregate_prover() {
-    xmss_aggregation_setup_prover();
+    setup_prover();
 }
 
 /// Pre-computes aggregation verification artifacts.
 pub fn setup_aggregate_verifier() {
-    xmss_aggregation_setup_verifier();
+    setup_verifier();
 }
 
 /// Deterministically derives a role-specific validator keypair for local devnets.
@@ -82,7 +80,7 @@ pub fn key_gen_for_devnet_validator_with_role(
     Ok((Bytes52::from_slice(&pk_bytes), sk))
 }
 
-/// Signs a 32-byte message and returns the canonical 3112-byte signature.
+/// Signs a 32-byte message and returns the canonical devnet4 direct signature.
 #[inline]
 pub fn sign_message(
     secret_key: &LeanSigSecretKey,
@@ -122,17 +120,13 @@ pub fn sign_aggregate(
     let mut signatures = Vec::with_capacity(secret_keys.len());
     for secret_key in secret_keys {
         let signature = sign_message(secret_key, epoch, message)?;
-        // SAFETY:
-        // - `signatures` was preallocated with `secret_keys.len()`, and we perform
-        //   exactly one insertion per loop iteration, so `len < capacity` always holds.
-        // - `signature` is fully initialized before writing.
         unsafe {
             let idx = signatures.len();
             signatures.set_len(idx + 1);
             *signatures.get_unchecked_mut(idx) = signature;
         }
     }
-    aggregate_signatures_impl(public_keys, &signatures, message, epoch)
+    aggregate_signatures_impl(&[], public_keys, &signatures, message, epoch)
 }
 
 #[inline]
@@ -177,23 +171,55 @@ fn maybe_log_aggregate_io(
 
 #[inline]
 fn aggregate_signatures_impl(
+    children: &[AggregateChildProof<'_>],
     public_keys: &[Bytes52],
     signatures: &[Bytes3112],
     message: &[u8; MESSAGE_LENGTH],
     epoch: u32,
 ) -> Result<Vec<u8>, String> {
     maybe_log_aggregate_io("prove", public_keys, message, epoch);
-    let pub_keys = public_keys
-        .iter()
-        .map(public_key_from_bytes)
-        .collect::<Result<Vec<_>, _>>()?;
-    let sigs = signatures
-        .iter()
-        .map(signature_from_bytes)
-        .collect::<Result<Vec<_>, _>>()?;
-    let aggregate = xmss_aggregate_signatures(&pub_keys, &sigs, message, epoch)
-        .map_err(|err| format!("failed to aggregate signatures: {err:?}"))?;
-    Ok(aggregate.as_ssz_bytes())
+    let mut child_pubkeys = Vec::with_capacity(children.len());
+    let mut child_refs = Vec::with_capacity(children.len());
+    unsafe {
+        for (idx, child) in children.iter().enumerate() {
+            let pub_keys = child
+                .public_keys
+                .iter()
+                .map(public_key_from_bytes)
+                .collect::<Result<Vec<_>, _>>()?;
+            let aggregate = AggregatedXMSS::deserialize(child.proof_data)
+                .ok_or_else(|| "failed to decode child aggregate signature".to_string())?;
+            crate::unsafe_vec::write_at(&mut child_pubkeys, idx, pub_keys);
+            let initialized_len = idx.unchecked_add(1);
+            child_pubkeys.set_len(initialized_len);
+            let pub_keys = (&*child_pubkeys.as_ptr().add(idx)).as_slice();
+            crate::unsafe_vec::write_at(&mut child_refs, idx, (pub_keys, aggregate));
+            child_refs.set_len(initialized_len);
+        }
+    }
+    let mut raw_xmss = Vec::with_capacity(public_keys.len());
+    unsafe {
+        for (idx, (public_key, signature)) in public_keys.iter().zip(signatures.iter()).enumerate()
+        {
+            crate::unsafe_vec::write_at(
+                &mut raw_xmss,
+                idx,
+                (public_key_from_bytes(public_key)?, signature_from_bytes(signature)?),
+            );
+            raw_xmss.set_len(idx.unchecked_add(1));
+        }
+    }
+    if child_refs.is_empty() && raw_xmss.is_empty() {
+        return Err("aggregate signature participants must be non-empty".to_string());
+    }
+    let (_, aggregate) = xmss_aggregate(
+        &child_refs,
+        raw_xmss,
+        message,
+        epoch,
+        XMSS_AGGREGATION_LOG_INV_RATE,
+    );
+    Ok(aggregate.serialize())
 }
 
 /// Aggregates pre-existing signatures into a single SSZ-encoded leanMultisig proof.
@@ -214,7 +240,7 @@ pub fn aggregate_signatures(
             signatures.len()
         ));
     }
-    aggregate_signatures_impl(public_keys, signatures, message, epoch)
+    aggregate_signatures_impl(&[], public_keys, signatures, message, epoch)
 }
 
 /// Recursively aggregates existing aggregate proofs together with optional raw signatures.
@@ -233,31 +259,17 @@ pub fn aggregate_proofs(
             signatures.len()
         ));
     }
-    if children.is_empty() {
-        return aggregate_signatures_impl(public_keys, signatures, message, epoch);
-    }
-    if children.len() == 1 && public_keys.is_empty() {
-        return Ok(children[0].proof_data.to_vec());
-    }
-    Err("recursive proof aggregation is unavailable with the current lean-multisig stack".to_string())
+    aggregate_signatures_impl(children, public_keys, signatures, message, epoch)
 }
 
 /// Deserializes a 52-byte public key into a [`LeanSigPublicKey`].
-///
-/// # Errors
-///
-/// Returns `Err` if the byte slice is not a valid encoded public key.
 #[inline]
 pub fn public_key_from_bytes(bytes: &Bytes52) -> Result<LeanSigPublicKey, String> {
     LeanSigPublicKey::from_bytes(bytes.as_ref())
         .map_err(|err| format!("Failed to decode LeanSigPublicKey: {err:?}"))
 }
 
-/// Deserializes a 3112-byte signature into a [`LeanSigSignature`].
-///
-/// # Errors
-///
-/// Returns `Err` if the byte slice is not a valid encoded signature.
+/// Deserializes a devnet4 direct signature into a [`LeanSigSignature`].
 #[inline]
 pub fn signature_from_bytes(bytes: &Bytes3112) -> Result<LeanSigSignature, String> {
     LeanSigSignature::from_bytes(bytes.as_ref())
@@ -265,14 +277,6 @@ pub fn signature_from_bytes(bytes: &Bytes3112) -> Result<LeanSigSignature, Strin
 }
 
 /// Verifies a single post-quantum signature.
-///
-/// Decodes `public_key` and `signature` from their byte representations, then
-/// checks the signature over `message` at the given `epoch`.
-///
-/// # Errors
-///
-/// Returns `Err` if key/signature deserialization fails or if verification does
-/// not pass.
 #[inline]
 pub fn verify_signature(
     public_key: &Bytes52,
@@ -306,13 +310,14 @@ pub fn verify_aggregate_signature(
     }
     maybe_log_aggregate_io("verify", public_keys, message, epoch);
 
-    let aggregate = Devnet2XmssAggregateSignature::from_ssz_bytes(aggregate_signature_bytes)
-        .map_err(|err| format!("failed to decode aggregate signature: {err:?}"))?;
+    let aggregate = AggregatedXMSS::deserialize(aggregate_signature_bytes)
+        .ok_or_else(|| "failed to decode aggregate signature".to_string())?;
     let pub_keys = public_keys
         .iter()
         .map(public_key_from_bytes)
         .collect::<Result<Vec<_>, _>>()?;
-    xmss_verify_aggregated_signatures(&pub_keys, message, &aggregate, epoch)
+    xmss_verify_aggregation(pub_keys, &aggregate, message, epoch)
+        .map(|_| ())
         .map_err(|err| format!("failed to verify aggregated signatures: {err}"))
 }
 

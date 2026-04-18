@@ -15,10 +15,10 @@ libp2p = { version = "0.54", features = ["tokio", "tcp", "dns", "noise", "yamux"
 futures = "0.3"
 async-trait = "0.1"
 libp2p-swarm-derive = "0.35.1"
-leansig = { git = "https://github.com/leanEthereum/leanSig.git", rev = "73bedc26ed961b110df7ac2e234dc11361a4bf25" }
-lean-multisig = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "e4474138487eeb1ed7c2e1013674fe80ac9f3165" }
+leansig = { git = "https://github.com/leanEthereum/leanSig.git", branch = "devnet4" }
+lean-multisig = { git = "https://github.com/leanEthereum/leanMultisig.git", rev = "2eb4b9d983171139af36749f127dd9890c9109e6" }
 ssz = { package = "ethereum_ssz", version = "0.10.1" }
-rand = { version = "0.9.2" }
+rand = { version = "0.10" }
 snap = "1.1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

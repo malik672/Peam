@@ -20,10 +20,12 @@ pub struct ByteList<const LIMIT: usize> {
     pub data: Vec<u8>,
 }
 
-/// 3112-byte fixed-size value. Holds a post-quantum (XMSS) signature.
-/// SSZ hash_tree_root chunkifies into 98 chunks and merkleizes.
+/// Legacy fixed-size direct-signature wrapper.
+///
+/// The type name is kept for compatibility across the codebase, but the live
+/// devnet4 direct XMSS signature width is 2536 bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct Bytes3112([u8; 3112]);
+pub struct Bytes3112([u8; 2536]);
 
 impl Bytes52 {
     pub fn from_slice(bytes: &[u8]) -> Self {
@@ -55,20 +57,20 @@ impl<const LIMIT: usize> ByteList<LIMIT> {
 }
 
 impl Bytes3112 {
-    pub const LEN: usize = 3112;
+    pub const LEN: usize = 2536;
 
     pub fn zero() -> Self {
-        Self([0u8; 3112])
+        Self([0u8; 2536])
     }
 
     #[inline]
     pub fn from_slice(bytes: &[u8]) -> Self {
-        let mut out = [0u8; 3112];
-        out.copy_from_slice(&bytes[0..3112]);
+        let mut out = [0u8; 2536];
+        out.copy_from_slice(&bytes[0..Bytes3112::LEN]);
         Self(out)
     }
 
-    pub fn as_array(&self) -> [u8; 3112] {
+    pub fn as_array(&self) -> [u8; 2536] {
         self.0
     }
 }
@@ -85,8 +87,8 @@ impl AsRef<[u8; 52]> for Bytes52 {
     }
 }
 
-impl AsRef<[u8; 3112]> for Bytes3112 {
-    fn as_ref(&self) -> &[u8; 3112] {
+impl AsRef<[u8; 2536]> for Bytes3112 {
+    fn as_ref(&self) -> &[u8; 2536] {
         &self.0
     }
 }
@@ -97,8 +99,8 @@ impl AsRef<[u8]> for Bytes3112 {
     }
 }
 
-impl From<[u8; 3112]> for Bytes3112 {
-    fn from(value: [u8; 3112]) -> Self {
+impl From<[u8; 2536]> for Bytes3112 {
+    fn from(value: [u8; 2536]) -> Self {
         Self(value)
     }
 }
