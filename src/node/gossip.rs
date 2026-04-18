@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::containers::attestation::{Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT};
-use crate::containers::block::SignedBlockWithAttestation;
+use crate::containers::block::{SignedBlockWithAttestation, proposer_attestation_present};
 use crate::containers::state::State;
 use crate::fork_choice::ForkChoiceStore;
 use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
@@ -233,6 +233,9 @@ fn enqueue_proposer_attestation_from_signed_block(
     signed: &SignedBlockWithAttestation,
 ) {
     let proposer_attestation = signed.message.proposer_attestation.clone();
+    if !proposer_attestation_present(&proposer_attestation) {
+        return;
+    }
     log_pending_attestation_sample(
         "from_imported_block_proposer_attestation",
         &proposer_attestation,

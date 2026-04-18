@@ -1,6 +1,7 @@
 use crate::containers::attestation::{
     AggregatedSignatureProof, Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT,
 };
+use crate::containers::checkpoint::Checkpoint;
 use crate::containers::validator::ValidatorIndex;
 use crate::slot::Slot;
 use crate::ssz::hash::{hash_nodes, merkleize_tree_root};
@@ -8,6 +9,7 @@ use crate::ssz::{HashTreeRoot, SszDecode, SszElement, SszEncode, SszFixedLen};
 use crate::types::bitlist::BitList;
 use crate::types::bytes::{Bytes32, Bytes3112};
 use crate::types::collections::SszList;
+use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
 
 /// Maximum number of attestations that can appear in a single block body.
@@ -181,13 +183,17 @@ impl SignedBlockWithAttestation {
         }
         validate_attestation_data_limit(&block.body.attestations)?;
         let proposer_attestation = &self.message.proposer_attestation;
-        if proposer_attestation.data.slot != block.slot {
-            return Err("proposer attestation slot does not match block slot".to_string());
-        }
-        let proposer_bit = single_set_bit(&proposer_attestation.aggregation_bits)
-            .ok_or_else(|| "proposer attestation must have exactly one participant".to_string())?;
-        if proposer_bit != block.proposer_index.0.0 as usize {
-            return Err("proposer attestation does not match proposer index".to_string());
+        if proposer_attestation_present(proposer_attestation) {
+            if proposer_attestation.data.slot != block.slot {
+                return Err("proposer attestation slot does not match block slot".to_string());
+            }
+            let proposer_bit = single_set_bit(&proposer_attestation.aggregation_bits)
+                .ok_or_else(|| {
+                    "proposer attestation must have exactly one participant".to_string()
+                })?;
+            if proposer_bit != block.proposer_index.0.0 as usize {
+                return Err("proposer attestation does not match proposer index".to_string());
+            }
         }
         Ok(())
     }
@@ -244,6 +250,36 @@ fn single_set_bit(
         }
     }
     found
+}
+
+#[inline]
+pub fn proposer_attestation_present(attestation: &Attestation) -> bool {
+    attestation
+        .aggregation_bits
+        .data
+        .iter()
+        .copied()
+        .any(|byte| byte != 0)
+}
+
+#[inline]
+pub(crate) fn absent_proposer_attestation_for_block(block: &Block) -> Attestation {
+    let anchor = Checkpoint {
+        root: block.parent_root,
+        slot: Slot(Uint64(0)),
+    };
+    Attestation {
+        aggregation_bits: BitList {
+            data: Vec::new(),
+            len: 0,
+        },
+        data: AttestationData {
+            slot: block.slot,
+            head: anchor,
+            target: anchor,
+            source: anchor,
+        },
+    }
 }
 
 #[inline]
@@ -311,6 +347,72 @@ fn decode_ream_block_with_attestation(
     Ok(BlockWithAttestation {
         block,
         proposer_attestation,
+    })
+}
+
+#[inline]
+pub fn encode_signed_block_network(signed: &SignedBlockWithAttestation) -> Vec<u8> {
+    let msg = signed.message.block.encode_ssz();
+    let sig = signed.signature.encode_ssz();
+    let fixed_len = 8;
+    let mut out = Vec::with_capacity(fixed_len + msg.len() + sig.len());
+    unsafe { out.set_len(fixed_len + msg.len() + sig.len()) };
+    let off_msg = fixed_len as u32;
+    let off_sig = (fixed_len + msg.len()) as u32;
+    unsafe { write_bytes_at(&mut out, 0, &off_msg.to_le_bytes()) };
+    unsafe { write_bytes_at(&mut out, 4, &off_sig.to_le_bytes()) };
+    unsafe { write_bytes_at(&mut out, fixed_len, &msg) };
+    unsafe { write_bytes_at(&mut out, fixed_len + msg.len(), &sig) };
+    out
+}
+
+#[inline]
+pub fn decode_signed_block_network(bytes: &[u8]) -> Result<SignedBlockWithAttestation, String> {
+    if bytes.len() < 8 {
+        return Err("SignedBlock missing offset table".to_string());
+    }
+    let mut buf = [0u8; 4];
+    buf.copy_from_slice(&bytes[0..4]);
+    let off_msg = u32::from_le_bytes(buf) as usize;
+    buf.copy_from_slice(&bytes[4..8]);
+    let off_sig = u32::from_le_bytes(buf) as usize;
+    if off_msg != 8 || off_sig < off_msg || off_sig > bytes.len() {
+        return Err("SignedBlock offsets are invalid".to_string());
+    }
+    let block = Block::decode_ssz(&bytes[off_msg..off_sig])?;
+    let signature = BlockSignatures::decode_ssz(&bytes[off_sig..])?;
+    Ok(SignedBlockWithAttestation {
+        message: BlockWithAttestation {
+            proposer_attestation: absent_proposer_attestation_for_block(&block),
+            block,
+        },
+        signature,
+    })
+}
+
+#[inline]
+pub fn decode_signed_block_network_checked(
+    bytes: &[u8],
+) -> Result<SignedBlockWithAttestation, String> {
+    if bytes.len() < 8 {
+        return Err("SignedBlock missing offset table".to_string());
+    }
+    let mut buf = [0u8; 4];
+    buf.copy_from_slice(&bytes[0..4]);
+    let off_msg = u32::from_le_bytes(buf) as usize;
+    buf.copy_from_slice(&bytes[4..8]);
+    let off_sig = u32::from_le_bytes(buf) as usize;
+    if off_msg != 8 || off_sig < off_msg || off_sig > bytes.len() {
+        return Err("SignedBlock offsets are invalid".to_string());
+    }
+    let block = Block::decode_ssz_checked(&bytes[off_msg..off_sig])?;
+    let signature = BlockSignatures::decode_ssz_checked(&bytes[off_sig..])?;
+    Ok(SignedBlockWithAttestation {
+        message: BlockWithAttestation {
+            proposer_attestation: absent_proposer_attestation_for_block(&block),
+            block,
+        },
+        signature,
     })
 }
 

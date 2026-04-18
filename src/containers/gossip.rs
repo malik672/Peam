@@ -1,5 +1,8 @@
 use crate::containers::attestation::{SignedAggregatedAttestation, SignedAttestation};
-use crate::containers::block::{BlockHeader, SignedBlockWithAttestation};
+use crate::containers::block::{
+    BlockHeader, SignedBlockWithAttestation, decode_signed_block_network,
+    decode_signed_block_network_checked, encode_signed_block_network,
+};
 use crate::containers::validator::ValidatorIndex;
 use crate::ssz::hash::hash_nodes;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
@@ -35,14 +38,14 @@ pub struct VoluntaryExit {
 
 impl SszEncode for GossipBlock {
     fn encode_ssz(&self) -> Vec<u8> {
-        self.block.encode_ssz()
+        encode_signed_block_network(&self.block)
     }
 }
 
 impl SszDecode for GossipBlock {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         Ok(Self {
-            block: SignedBlockWithAttestation::decode_ssz(bytes)?,
+            block: decode_signed_block_network(bytes)?,
         })
     }
 }
@@ -50,7 +53,7 @@ impl SszDecode for GossipBlock {
 impl GossipBlock {
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         Ok(Self {
-            block: SignedBlockWithAttestation::decode_ssz_checked(bytes)?,
+            block: decode_signed_block_network_checked(bytes)?,
         })
     }
 }

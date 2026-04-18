@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::containers::attestation::Attestation;
 use crate::containers::block::{
     Block, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
+    proposer_attestation_present,
 };
 use crate::containers::checkpoint::Checkpoint;
 use crate::containers::state::State;
@@ -232,7 +233,7 @@ impl ForkChoiceStore {
         for att in block.body.attestations.iter() {
             let _ = self.apply_attestation_votes(att, VoteDisposition::Active);
         }
-        if include_proposer_attestation {
+        if include_proposer_attestation && proposer_attestation_present(&proposer_attestation) {
             let _ = self.apply_attestation_votes(&proposer_attestation, VoteDisposition::Active);
         }
         // Keep checkpoint progression monotonic even when importing side branches.

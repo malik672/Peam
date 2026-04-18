@@ -15,7 +15,7 @@ use crate::containers::attestation::{
     AggregatedSignatureProof, Attestation, SignedAggregatedAttestation, SignedAttestation,
     VALIDATOR_REGISTRY_LIMIT,
 };
-use crate::containers::block::BlockWithAttestation;
+use crate::containers::block::{Block, proposer_attestation_present};
 use crate::containers::gossip::{
     GossipAggregatedAttestation, GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
 };
@@ -100,7 +100,7 @@ pub trait GossipSignatureVerifier: Send + Sync {
     fn verify_block_signature(
         &self,
         proposer_index: ValidatorIndex,
-        message: &BlockWithAttestation,
+        message: &Block,
         signature: &Bytes3112,
     ) -> bool;
     /// Verify a single validator's signed attestation.
@@ -124,7 +124,7 @@ impl GossipSignatureVerifier for NoopGossipVerifier {
     fn verify_block_signature(
         &self,
         _proposer_index: ValidatorIndex,
-        _message: &BlockWithAttestation,
+        _message: &Block,
         _signature: &Bytes3112,
     ) -> bool {
         true
@@ -176,15 +176,15 @@ impl GossipSignatureVerifier for SimpleGossipVerifier {
     fn verify_block_signature(
         &self,
         proposer_index: ValidatorIndex,
-        message: &BlockWithAttestation,
+        message: &Block,
         signature: &Bytes3112,
     ) -> bool {
         let idx = proposer_index.0.0 as usize;
         let Some(pubkey) = self.proposal_pubkeys.get(idx) else {
             return false;
         };
-        let root = message.block.hash_tree_root();
-        let epoch = message.block.slot.0.0 as u32;
+        let root = message.hash_tree_root();
+        let epoch = message.slot.0.0 as u32;
         crypto::pq::verify_signature(pubkey, epoch, &root, signature).is_ok()
     }
 
@@ -294,31 +294,33 @@ pub fn validate_gossip(
             let message = &block.block.message;
             let block_body = &message.block.body;
             let proposer_attestation = &message.proposer_attestation;
-            if proposer_attestation.data.slot != message.block.slot {
-                warn!(
-                    "gossip block rejected: proposer attestation slot mismatch att_slot={} block_slot={}",
-                    proposer_attestation.data.slot.0.0, message.block.slot.0.0
-                );
-                return false;
-            }
-            let proposer_bits = set_bits(&proposer_attestation.aggregation_bits);
-            if proposer_bits.len() != 1 {
-                warn!(
-                    "gossip block rejected: proposer aggregation bits count={} expected=1",
-                    proposer_bits.len()
-                );
-                return false;
-            }
-            if proposer_bits[0] != message.block.proposer_index.0.0 as usize {
-                warn!(
-                    "gossip block rejected: proposer bit index={} proposer_index={}",
-                    proposer_bits[0], message.block.proposer_index.0.0
-                );
-                return false;
+            if proposer_attestation_present(proposer_attestation) {
+                if proposer_attestation.data.slot != message.block.slot {
+                    warn!(
+                        "gossip block rejected: proposer attestation slot mismatch att_slot={} block_slot={}",
+                        proposer_attestation.data.slot.0.0, message.block.slot.0.0
+                    );
+                    return false;
+                }
+                let proposer_bits = set_bits(&proposer_attestation.aggregation_bits);
+                if proposer_bits.len() != 1 {
+                    warn!(
+                        "gossip block rejected: proposer aggregation bits count={} expected=1",
+                        proposer_bits.len()
+                    );
+                    return false;
+                }
+                if proposer_bits[0] != message.block.proposer_index.0.0 as usize {
+                    warn!(
+                        "gossip block rejected: proposer bit index={} proposer_index={}",
+                        proposer_bits[0], message.block.proposer_index.0.0
+                    );
+                    return false;
+                }
             }
             if !verifier.verify_block_signature(
                 message.block.proposer_index,
-                message,
+                &message.block,
                 &block.block.signature.proposer_signature,
             ) {
                 warn!(
@@ -436,7 +438,7 @@ mod tests {
     use crate::containers::attestation::{
         AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
     };
-    use crate::containers::block::{Block, BlockBody, BlockWithAttestation};
+    use crate::containers::block::Block;
     use crate::containers::checkpoint::Checkpoint;
     use crate::containers::validator::ValidatorIndex;
     use crate::crypto::pq::{self, DevnetValidatorKeyRole};
@@ -542,24 +544,14 @@ mod tests {
 
                 let verifier =
                     SimpleGossipVerifier::new(vec![attestation_pubkey], vec![proposal_pubkey]);
-                let bits = BitList::new(vec![true]).expect("bits");
-                let proposer_attestation = Attestation {
-                    aggregation_bits: bits,
-                    data: sample_attestation_data(4),
-                };
-                let message = BlockWithAttestation {
-                    block,
-                    proposer_attestation: proposer_attestation.clone(),
-                };
-
                 assert!(verifier.verify_block_signature(
                     ValidatorIndex(Uint64(0)),
-                    &message,
+                    &block,
                     &proposal_signature
                 ));
                 assert!(!verifier.verify_block_signature(
                     ValidatorIndex(Uint64(0)),
-                    &message,
+                    &block,
                     &attestation_signature
                 ));
             })

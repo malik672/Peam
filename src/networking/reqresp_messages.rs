@@ -7,7 +7,9 @@
 //! used above the raw byte layer; both implement SSZ encode/decode dispatched
 //! by protocol variant.
 
-use crate::containers::block::SignedBlockWithAttestation;
+use crate::containers::block::{
+    SignedBlockWithAttestation, decode_signed_block_network_checked, encode_signed_block_network,
+};
 use crate::containers::req_resp::{
     BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse, Status,
 };
@@ -27,10 +29,10 @@ fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootReque
 fn decode_blocks_by_root_response_compat(
     data: &[u8],
 ) -> Result<SignedBlockWithAttestation, String> {
-    if let Ok(single) = SignedBlockWithAttestation::decode_ssz_checked(data) {
+    if let Ok(single) = decode_signed_block_network_checked(data) {
         return Ok(single);
     }
-    let single_err = SignedBlockWithAttestation::decode_ssz_checked(data).unwrap_err();
+    let single_err = decode_signed_block_network_checked(data).unwrap_err();
     if let Ok(resp) = BlocksByRootResponse::decode_ssz_checked(data) {
         return resp
             .blocks
@@ -49,10 +51,10 @@ fn decode_blocks_by_root_response_compat(
 fn decode_blocks_by_range_response_compat(
     data: &[u8],
 ) -> Result<SignedBlockWithAttestation, String> {
-    if let Ok(single) = SignedBlockWithAttestation::decode_ssz_checked(data) {
+    if let Ok(single) = decode_signed_block_network_checked(data) {
         return Ok(single);
     }
-    let single_err = SignedBlockWithAttestation::decode_ssz_checked(data).unwrap_err();
+    let single_err = decode_signed_block_network_checked(data).unwrap_err();
     if let Ok(resp) = BlocksByRangeResponse::decode_ssz_checked(data) {
         return resp
             .blocks
@@ -213,8 +215,8 @@ impl LeanResponseMessage {
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanResponseMessage::Status(status) => status.encode_ssz(),
-            LeanResponseMessage::BlocksByRange(block) => block.encode_ssz(),
-            LeanResponseMessage::BlocksByRoot(block) => block.encode_ssz(),
+            LeanResponseMessage::BlocksByRange(block) => encode_signed_block_network(block),
+            LeanResponseMessage::BlocksByRoot(block) => encode_signed_block_network(block),
         }
     }
 

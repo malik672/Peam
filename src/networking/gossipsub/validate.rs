@@ -15,7 +15,7 @@ use crate::containers::attestation::{
     AttestationData, SignedAggregatedAttestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
     attestation_committee_count,
 };
-use crate::containers::block::SignedBlockWithAttestation;
+use crate::containers::block::{SignedBlockWithAttestation, proposer_attestation_present};
 use crate::networking::gossipsub::context::GossipContext;
 use crate::logfmt::short_checkpoint;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
@@ -83,7 +83,9 @@ pub fn validate_with_context(
 fn validate_block_basic(block: &SignedBlockWithAttestation) -> ValidationResult {
     let message = &block.message;
     let proposer_attestation = &message.proposer_attestation;
-    if proposer_attestation.data.slot != message.block.slot {
+    if proposer_attestation_present(proposer_attestation)
+        && proposer_attestation.data.slot != message.block.slot
+    {
         return ValidationResult::Reject("proposer attestation slot mismatch".to_string());
     }
     for att in message.block.body.attestations.iter() {
@@ -175,12 +177,14 @@ fn validate_block_with_context(
     // Block gossip should be admitted based on block ancestry and block-local
     // structure. Embedded attestations are processed after block import, once
     // the imported block can make their referenced head roots known.
-    let proposer_check = validate_attestation_fields(
-        &block.message.proposer_attestation.data,
-        Some(block.message.block.slot.0.0),
-    );
-    if !matches!(proposer_check, ValidationResult::Accept) {
-        return proposer_check;
+    if proposer_attestation_present(&block.message.proposer_attestation) {
+        let proposer_check = validate_attestation_fields(
+            &block.message.proposer_attestation.data,
+            Some(block.message.block.slot.0.0),
+        );
+        if !matches!(proposer_check, ValidationResult::Accept) {
+            return proposer_check;
+        }
     }
     ValidationResult::Accept
 }

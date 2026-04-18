@@ -9,6 +9,7 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::containers::attestation::Attestation;
+use crate::containers::block::proposer_attestation_present;
 use crate::containers::req_resp::{
     BlocksByRangeResponse, BlocksByRootRequest, MAX_BLOCKS_PER_REQUEST,
 };
@@ -172,7 +173,9 @@ fn enqueue_proposer_attestations_from_backfill_chain(
         .expect("pending attestations lock");
     for signed in fetched_chain_newest_to_oldest {
         log_sync_proposer_attestation_sample("from_sync_backfill_import", signed);
-        pending.push(signed.message.proposer_attestation.clone());
+        if proposer_attestation_present(&signed.message.proposer_attestation) {
+            pending.push(signed.message.proposer_attestation.clone());
+        }
     }
     if attestation_trace_enabled() {
         info!(

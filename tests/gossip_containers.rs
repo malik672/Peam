@@ -3,7 +3,7 @@ use peam::containers::attestation::{
 };
 use peam::containers::block::{
     Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
-    SignedBlockWithAttestation,
+    SignedBlockWithAttestation, proposer_attestation_present,
 };
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::gossip::{GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit};
@@ -65,7 +65,11 @@ fn gossip_block_roundtrip() {
     };
     let encoded = msg.encode_ssz();
     let decoded = GossipBlock::decode_ssz(&encoded).unwrap();
-    assert_eq!(decoded, msg);
+    assert_eq!(decoded.block.message.block, msg.block.message.block);
+    assert_eq!(decoded.block.signature, msg.block.signature);
+    assert!(!proposer_attestation_present(
+        &decoded.block.message.proposer_attestation
+    ));
 }
 
 #[test]
