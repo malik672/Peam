@@ -1,0 +1,13 @@
+{
+  "block_with_invalid_proposer": {
+    "validators": 2,
+    "blocks": [
+      {
+        "slot": 1,
+        "proposer": 1,
+        "overrideProposerIndex": 0
+      }
+    ],
+    "expectedErrorContains": "proposer"
+  }
+}

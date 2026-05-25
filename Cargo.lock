@@ -3516,11 +3516,14 @@ dependencies = [
  "leansig",
  "libp2p",
  "libp2p-swarm-derive",
+ "peam-consensus-types",
+ "peam-fork-choice",
  "peam-ssz",
+ "peam-state",
+ "peam-storage",
  "rand 0.10.1",
  "rapidhash 1.4.0",
  "rayon",
- "redb",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3536,12 +3539,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "peam-consensus-types"
+version = "0.1.0"
+dependencies = [
+ "peam-ssz",
+]
+
+[[package]]
+name = "peam-fork-choice"
+version = "0.1.0"
+dependencies = [
+ "peam-consensus-types",
+ "peam-ssz",
+ "peam-state",
+ "rapidhash 1.4.0",
+ "tracing",
+]
+
+[[package]]
 name = "peam-ssz"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b19af75e0ba71021cc61f4fc10daef14a4f0a704d89001f4ecc0e128b79cf346"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "peam-state"
+version = "0.1.0"
+dependencies = [
+ "peam-consensus-types",
+ "peam-ssz",
+ "rapidhash 1.4.0",
+ "tracing",
+]
+
+[[package]]
+name = "peam-storage"
+version = "0.1.0"
+dependencies = [
+ "peam-consensus-types",
+ "peam-ssz",
+ "peam-state",
+ "rapidhash 1.4.0",
+ "redb",
+ "sha2",
+ "tracing",
 ]
 
 [[package]]

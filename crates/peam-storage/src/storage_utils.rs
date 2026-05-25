@@ -28,11 +28,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+use peam_consensus_types::containers::block::{Block, SignedBlockWithAttestation};
+use peam_consensus_types::types::bytes::Bytes32;
 use super::{BLOB_MAGIC, BLOB_VERSION, SCHEMA_FILE, SCHEMA_VERSION};
-use crate::containers::block::{Block, SignedBlockWithAttestation};
-use crate::containers::state::State;
-use crate::ssz::SszDecode;
-use crate::types::bytes::Bytes32;
+use peam_state::state::State;
+use peam_ssz::ssz::SszDecode;
 
 /// Returns `true` if `root` appears in the `pinned` set.
 ///

@@ -1,0 +1,28 @@
+{
+  "basic_prefer_voted_branch": {
+    "validators": 1,
+    "anchorSlot": 1,
+    "blocks": [
+      {
+        "label": "fork_a",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": false
+      },
+      {
+        "label": "fork_b",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": true
+      }
+    ],
+    "votes": [
+      {
+        "validator": 0,
+        "head": "fork_b",
+        "slot": 2
+      }
+    ],
+    "expectedHead": "fork_b"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "safe_target_advances_after_supermajority_votes": {
+    "validators": 3,
+    "anchorSlot": 1,
+    "blocks": [
+      {
+        "label": "next_block",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": false
+      }
+    ],
+    "votes": [
+      {
+        "participants": [0, 1],
+        "head": "next_block",
+        "slot": 2,
+        "acceptAfter": true
+      }
+    ],
+    "expectedHead": "next_block",
+    "expectedSafeTarget": "next_block"
+  }
+}

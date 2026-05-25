@@ -1,0 +1,181 @@
+{
+  "tests/consensus/devnet/fc/test_gossip_attestation_validation.py::test_attestation_target_slot_mismatch_generated[fork_Devnet-fork_choice_test]": {
+    "_info": {
+      "fixtureFormat": "fork_choice_test",
+      "description": "Generated-envelope compatibility fixture for target slot mismatch rejection"
+    },
+    "network": "Devnet",
+    "anchorState": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {}
+      ]
+    },
+    "anchorBlock": {
+      "slot": 1
+    },
+    "steps": [
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 2,
+          "proposerIndex": 0,
+          "blockRootLabel": "block_2"
+        }
+      },
+      {
+        "stepType": "attestation",
+        "valid": false,
+        "expectedError": "Target checkpoint slot mismatch",
+        "attestation": {
+          "validatorId": 1,
+          "slot": 2,
+          "targetSlot": 3,
+          "targetRootLabel": "block_2",
+          "headRootLabel": "block_2"
+        }
+      }
+    ]
+  },
+  "tests/consensus/devnet/fc/test_gossip_attestation_validation.py::test_attestation_head_older_than_target_generated[fork_Devnet-fork_choice_test]": {
+    "_info": {
+      "fixtureFormat": "fork_choice_test",
+      "description": "Generated-envelope compatibility fixture for head older than target rejection"
+    },
+    "network": "Devnet",
+    "anchorState": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {}
+      ]
+    },
+    "anchorBlock": {
+      "slot": 1
+    },
+    "steps": [
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 2,
+          "proposerIndex": 0,
+          "blockRootLabel": "block_2"
+        }
+      },
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 3,
+          "proposerIndex": 1,
+          "blockRootLabel": "block_3"
+        }
+      },
+      {
+        "stepType": "attestation",
+        "valid": false,
+        "expectedError": "Head checkpoint must not be older than target",
+        "attestation": {
+          "validatorId": 1,
+          "slot": 3,
+          "targetSlot": 3,
+          "targetRootLabel": "block_3",
+          "headRootLabel": "block_2",
+          "headSlot": 2
+        }
+      }
+    ]
+  },
+  "tests/consensus/devnet/fc/test_gossip_attestation_validation.py::test_attestation_unknown_target_generated[fork_Devnet-fork_choice_test]": {
+    "_info": {
+      "fixtureFormat": "fork_choice_test",
+      "description": "Generated-envelope compatibility fixture for unknown target root rejection"
+    },
+    "network": "Devnet",
+    "anchorState": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {}
+      ]
+    },
+    "anchorBlock": {
+      "slot": 1
+    },
+    "steps": [
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 2,
+          "proposerIndex": 0,
+          "blockRootLabel": "block_2"
+        }
+      },
+      {
+        "stepType": "attestation",
+        "valid": false,
+        "expectedError": "Unknown target block",
+        "attestation": {
+          "validatorId": 1,
+          "slot": 2,
+          "targetSlot": 2,
+          "targetRootLabel": "block_2",
+          "targetRootOverride": "0xdededededededededededededededededededededededededededededededede",
+          "headRootLabel": "block_2"
+        }
+      }
+    ]
+  },
+  "tests/consensus/devnet/fc/test_gossip_attestation_validation.py::test_attestation_too_far_in_future_generated[fork_Devnet-fork_choice_test]": {
+    "_info": {
+      "fixtureFormat": "fork_choice_test",
+      "description": "Generated-envelope compatibility fixture for future attestation rejection"
+    },
+    "network": "Devnet",
+    "anchorState": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {}
+      ]
+    },
+    "anchorBlock": {
+      "slot": 1
+    },
+    "steps": [
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 2,
+          "proposerIndex": 0,
+          "blockRootLabel": "block_2"
+        }
+      },
+      {
+        "stepType": "attestation",
+        "valid": false,
+        "expectedError": "Attestation too far in future",
+        "attestation": {
+          "validatorId": 1,
+          "slot": 5,
+          "targetSlot": 2,
+          "targetRootLabel": "block_2",
+          "headRootLabel": "block_2",
+          "headSlot": 2
+        }
+      }
+    ]
+  }
+}

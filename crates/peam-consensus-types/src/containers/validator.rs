@@ -1,4 +1,4 @@
-use crate::ssz::hash::hash_nodes;
+use crate::ssz::hash::merkleize_tree_root_3;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
 use crate::types::bytes::Bytes32;
 use crate::types::bytes::Bytes52;
@@ -120,10 +120,40 @@ impl HashTreeRoot for Validator {
         let attestation_pubkey_root = Bytes32::from(self.attestation_pubkey.hash_tree_root());
         let proposal_pubkey_root = Bytes32::from(self.proposal_pubkey.hash_tree_root());
         let index_root = Bytes32::from(self.index.hash_tree_root());
-        let pubkeys_root = hash_nodes(&attestation_pubkey_root, &proposal_pubkey_root);
         // Lean interop consensus root uses only pubkeys + index.
         // `balance` is local metadata and is intentionally excluded.
-        let root = hash_nodes(&pubkeys_root, &index_root);
+        //
+        // This is still a 3-field SSZ container, so the index field must be
+        // merkleized with the implicit zero right sibling from the 4-leaf tree.
+        let root =
+            merkleize_tree_root_3(&[attestation_pubkey_root, proposal_pubkey_root, index_root]);
         *root.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Validator, ValidatorIndex};
+    use crate::ssz::HashTreeRoot;
+    use crate::ssz::hash::merkleize_tree_root_3;
+    use crate::types::bytes::{Bytes32, Bytes52};
+    use crate::types::uint::Uint64;
+
+    #[test]
+    fn validator_hash_tree_root_uses_three_field_container_shape() {
+        let validator = Validator {
+            attestation_pubkey: Bytes52::from([0x11; 52]),
+            proposal_pubkey: Bytes52::from([0x22; 52]),
+            index: ValidatorIndex(Uint64(3)),
+            balance: Uint64(0),
+        };
+
+        let expected = merkleize_tree_root_3(&[
+            Bytes32::from(validator.attestation_pubkey.hash_tree_root()),
+            Bytes32::from(validator.proposal_pubkey.hash_tree_root()),
+            Bytes32::from(validator.index.hash_tree_root()),
+        ]);
+
+        assert_eq!(Bytes32::from(validator.hash_tree_root()), expected);
     }
 }

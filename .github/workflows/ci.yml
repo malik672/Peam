@@ -43,6 +43,9 @@ jobs:
             --test gossip_containers \
             --test lean_spec_container_placeholders \
             --test lean_spec_fixtures \
+            --test lean_spec_fork_choice \
+            --test lean_spec_http_api \
+            --test lean_spec_state_transition \
             --test networking_peer \
             --test pq_devnet1_e2e \
             --test pq_negative \

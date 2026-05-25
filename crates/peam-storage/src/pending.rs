@@ -8,7 +8,7 @@
 //! The cache is addressed by `slot % capacity` and stores the original slot
 //! alongside `block_root` so wraparound collisions are detected safely.
 
-use crate::types::bytes::Bytes32;
+use peam_consensus_types::types::bytes::Bytes32;
 
 /// Single pending slot entry.
 ///
@@ -60,11 +60,7 @@ impl PendingSlotCache {
     /// - the old value for the same slot, or
     /// - a collided value from a different slot that shared the same bucket.
     #[inline]
-    pub(super) fn insert(
-        &mut self,
-        slot: u64,
-        block_root: Bytes32,
-    ) -> Option<PendingEntry> {
+    pub(super) fn insert(&mut self, slot: u64, block_root: Bytes32) -> Option<PendingEntry> {
         let idx = self.index(slot);
         let prev = self.entries[idx];
         if prev.is_none() {

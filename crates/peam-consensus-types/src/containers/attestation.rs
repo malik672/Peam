@@ -43,7 +43,7 @@ pub const PROOF_MAX_BYTES: usize = 1_048_576;
 /// | 8 – 47     | `head`   |
 /// | 48 – 87    | `target` |
 /// | 88 – 127   | `source` |
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Copy)]
 pub struct AttestationData {
     /// Slot at which the attestation was created.
     pub slot: Slot,

@@ -11,17 +11,19 @@
 //! Each function returns a [`ValidationResult`] whose variant determines how
 //! the p2p layer scores and propagates the message.
 
-use crate::containers::attestation::{
+use peam_consensus_types::containers::attestation::{
     AttestationData, SignedAggregatedAttestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
     attestation_committee_count,
 };
-use crate::containers::block::{SignedBlockWithAttestation, proposer_attestation_present};
-use crate::networking::gossipsub::context::GossipContext;
 use crate::logfmt::short_checkpoint;
+use crate::networking::gossipsub::context::GossipContext;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
-use crate::types::bitlist::BitList;
+use peam_consensus_types::containers::block::{SignedBlockWithAttestation, proposer_attestation_present};
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::Bytes32;
 
 pub const UNKNOWN_CHAIN_ROOTS_IGNORE_REASON: &str = "attestation references unknown chain roots";
+pub const UNKNOWN_HEAD_BLOCK_IGNORE_REASON: &str = "attestation head block unknown locally";
 
 /// The outcome of a gossip validation step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +38,31 @@ pub enum ValidationResult {
 
 #[inline]
 pub fn is_retryable_unknown_roots_ignore(reason: &str) -> bool {
-    reason == UNKNOWN_CHAIN_ROOTS_IGNORE_REASON
+    reason == UNKNOWN_CHAIN_ROOTS_IGNORE_REASON || reason == UNKNOWN_HEAD_BLOCK_IGNORE_REASON
+}
+
+#[inline]
+fn attestation_known_roots(
+    msg: &AttestationData,
+    context: &dyn GossipContext,
+) -> (bool, bool, bool) {
+    (
+        context.knows_block_root(&msg.head.root),
+        context.knows_block_root(&msg.source.root),
+        context.knows_block_root(&msg.target.root),
+    )
+}
+
+#[inline]
+pub fn missing_head_root_if_only_head_unknown(
+    msg: &AttestationData,
+    context: &dyn GossipContext,
+) -> Option<Bytes32> {
+    let (knows_head, knows_source, knows_target) = attestation_known_roots(msg, context);
+    if !knows_head && knows_source && knows_target {
+        return Some(msg.head.root);
+    }
+    None
 }
 
 /// Runs basic (context-free) validation on a decoded gossipsub message.
@@ -218,9 +244,10 @@ fn validate_attestation_data_with_context(
     if msg.head.slot < msg.target.slot {
         return ValidationResult::Reject("attestation head below target".to_string());
     }
-    let knows_head = context.knows_block_root(&msg.head.root);
-    let knows_source = context.knows_block_root(&msg.source.root);
-    let knows_target = context.knows_block_root(&msg.target.root);
+    let (knows_head, knows_source, knows_target) = attestation_known_roots(msg, context);
+    if !knows_head && knows_source && knows_target {
+        return ValidationResult::Ignore(UNKNOWN_HEAD_BLOCK_IGNORE_REASON.to_string());
+    }
     if !knows_head || !knows_source || !knows_target {
         tracing::info!(
             attestation_slot = ?msg.slot,
@@ -269,19 +296,18 @@ fn validate_subnet_attestation_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::containers::attestation::{AggregatedSignatureProof, Attestation};
-    use crate::containers::block::{
+    use peam_consensus_types::containers::attestation::{AggregatedSignatureProof, Attestation};
+    use peam_consensus_types::containers::block::{
         AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures,
         BlockWithAttestation, SignedBlockWithAttestation,
     };
-    use crate::containers::checkpoint::Checkpoint;
-    use crate::containers::validator::ValidatorIndex;
+    use peam_consensus_types::containers::checkpoint::Checkpoint;
+    use peam_consensus_types::containers::validator::ValidatorIndex;
+    use peam_consensus_types::slot::Slot;
+    use peam_consensus_types::types::bitlist::BitList;
+    use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes3112};
+    use peam_consensus_types::types::uint::Uint64;
     use crate::networking::gossipsub::context::GossipContext;
-    use crate::slot::Slot;
-    use crate::types::bitlist::BitList;
-    use crate::types::bytes::ByteList;
-    use crate::types::bytes::{Bytes32, Bytes3112};
-    use crate::types::uint::Uint64;
 
     struct MockContext {
         current: Option<Slot>,
@@ -424,6 +450,37 @@ mod tests {
         let att = signed_attestation(9, 8, 8, 8);
         let res = validate_attestation_with_context(&att, &ctx);
         assert!(matches!(res, ValidationResult::Accept));
+    }
+
+    #[test]
+    fn attestation_context_marks_head_only_unknown_as_retryable_head_case() {
+        let ctx = MockContext {
+            current: Some(Slot(Uint64(10))),
+            finalized: Some(Slot(Uint64(5))),
+            known: [Bytes32::from([1; 32]), Bytes32::from([2; 32])]
+                .into_iter()
+                .collect(),
+        };
+        let att = signed_attestation(9, 8, 9, 9);
+        let res = validate_attestation_with_context(&att, &ctx);
+        assert_eq!(
+            res,
+            ValidationResult::Ignore(UNKNOWN_HEAD_BLOCK_IGNORE_REASON.to_string())
+        );
+        let root = missing_head_root_if_only_head_unknown(&att.message, &ctx);
+        assert_eq!(root, Some(Bytes32::from([3; 32])));
+    }
+
+    #[test]
+    fn attestation_context_keeps_broader_unknown_roots_reason_when_target_missing() {
+        let ctx = MockContext {
+            current: Some(Slot(Uint64(10))),
+            finalized: Some(Slot(Uint64(5))),
+            known: [Bytes32::from([1; 32])].into_iter().collect(),
+        };
+        let att = signed_attestation(9, 8, 9, 9);
+        let root = missing_head_root_if_only_head_unknown(&att.message, &ctx);
+        assert_eq!(root, None);
     }
 
     #[test]

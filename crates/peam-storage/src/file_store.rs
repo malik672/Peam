@@ -37,17 +37,17 @@
 //! `persist_signed_block_bundle` transaction.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use peam_consensus_types::containers::checkpoint::Checkpoint;
 use tracing::warn;
 
 use super::canonical_db::CanonicalDb;
 use super::pending::PendingSlotCache;
 use super::*;
-use crate::containers::checkpoint::Checkpoint;
 use crate::logfmt::{short_opt_root_or_dash, short_root, short_slot_root};
-use crate::ssz::{HashTreeRoot, SszEncode};
+use peam_ssz::ssz::{HashTreeRoot, SszEncode};
 
 /// A disk-backed [`Store`] with canonical+pending slot indexes as truth.
 ///
@@ -294,7 +294,7 @@ impl FileStore {
         if self.finalized_slot.is_none() {
             self.finalized_slot = self
                 .finalized
-                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0 .0));
+                .and_then(|root| self.load_block_by_root(&root).map(|block| block.slot.0.0));
         }
         self.recovery.loaded_states = self.state_by_slot.len();
         self.recovery.loaded_blocks = self.block_by_slot.len();
@@ -402,7 +402,7 @@ impl FileStore {
     ) -> Result<(), String> {
         static PERSIST_LOGS: OnceLock<AtomicUsize> = OnceLock::new();
         let block = signed.message.block.clone();
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         let state_root = block.state_root;
         let block_blob = encode_blob(BLOB_KIND_BLOCK, &block.encode_ssz());
         let signed_blob = encode_blob(BLOB_KIND_SIGNED_BLOCK, &signed.encode_ssz());
@@ -419,7 +419,7 @@ impl FileStore {
             self.finalized
         };
         let next_finalized_slot = if update_head {
-            Some(meta_finalized.slot.0 .0)
+            Some(meta_finalized.slot.0.0)
         } else {
             self.finalized_slot
         };
@@ -493,53 +493,36 @@ impl FileStore {
     }
 
     #[inline]
-    fn replay_signed_block_from_parent(
+    fn replay_signed_block_from_parent<P: SignedBlockProcessor>(
         &self,
         signed: &SignedBlockWithAttestation,
-        metrics: Option<&crate::metrics::MetricsRegistry>,
+        metrics: Option<&impl TransitionMetricsSink>,
     ) -> Result<State, String> {
         let parent_root = signed.message.block.parent_root;
         let mut parent_state = self
             .load_state_by_block_root(&parent_root)
             .ok_or_else(|| "parent state root missing in store".to_string())?;
         if let Some(metrics) = metrics {
-            parent_state.process_signed_block_with_metrics(signed, metrics)?;
+            P::process_signed_block_with_metrics(&mut parent_state, signed, metrics)?;
         } else {
-            parent_state.process_signed_block(signed)?;
+            P::process_signed_block(&mut parent_state, signed)?;
         }
         Ok(parent_state)
     }
 
-    #[cfg(test)]
     #[inline]
-    fn replay_signed_block_from_parent_with_verifier<
-        V: crate::containers::state::SignatureVerifier,
-    >(
-        &self,
-        signed: &SignedBlockWithAttestation,
-        verifier: &V,
-    ) -> Result<State, String> {
-        let parent_root = signed.message.block.parent_root;
-        let mut parent_state = self
-            .load_state_by_block_root(&parent_root)
-            .ok_or_else(|| "parent state root missing in store".to_string())?;
-        parent_state.process_signed_block_with_verifier(signed, verifier)?;
-        Ok(parent_state)
-    }
-
-    #[inline]
-    fn put_signed_block_inner(
+    fn put_signed_block_inner<P: SignedBlockProcessor, M: StorageMetricsSink + TransitionMetricsSink>(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,
         state: &mut State,
-        metrics: Option<&crate::metrics::MetricsRegistry>,
+        metrics: Option<&M>,
     ) -> Result<(), String> {
         let import_start = metrics.map(|_| Instant::now());
         let result = (|| {
             let pre_import_justified = state.latest_justified;
             let pre_import_finalized = state.latest_finalized;
-            let replayed = self.replay_signed_block_from_parent(&signed, metrics)?;
+            let replayed = self.replay_signed_block_from_parent::<P>(&signed, metrics)?;
             let meta_finalized = if replayed.latest_finalized.slot < pre_import_finalized.slot {
                 pre_import_finalized
             } else {
@@ -575,67 +558,21 @@ impl FileStore {
         })();
 
         if let (Some(metrics), Some(start)) = (metrics, import_start) {
-            metrics.block_import_end_to_end_time.observe_duration(start);
+            metrics.observe_block_import_end_to_end_time(start);
         }
 
         result
     }
 
-    #[cfg(test)]
     #[inline]
-    fn put_signed_block_inner_with_verifier<V: crate::containers::state::SignatureVerifier>(
-        &mut self,
-        root: Bytes32,
-        signed: SignedBlockWithAttestation,
-        state: &mut State,
-        verifier: &V,
-    ) -> Result<(), String> {
-        let pre_import_justified = state.latest_justified;
-        let pre_import_finalized = state.latest_finalized;
-        let replayed = self.replay_signed_block_from_parent_with_verifier(&signed, verifier)?;
-        let meta_finalized = if replayed.latest_finalized.slot < pre_import_finalized.slot {
-            pre_import_finalized
-        } else {
-            replayed.latest_finalized
-        };
-        let meta_justified = if replayed.latest_justified.slot < pre_import_justified.slot {
-            pre_import_justified
-        } else {
-            replayed.latest_justified
-        };
-        let promotes_head = replayed.slot >= state.slot;
-        self.persist_signed_block_bundle_inner(
-            root,
-            &signed,
-            &replayed,
-            meta_justified,
-            meta_finalized,
-            promotes_head,
-        )?;
-        if promotes_head {
-            *state = replayed;
-            state.latest_finalized = meta_finalized;
-            state.latest_justified = meta_justified;
-        } else {
-            if meta_justified.slot > state.latest_justified.slot {
-                state.latest_justified = meta_justified;
-            }
-            if meta_finalized.slot > state.latest_finalized.slot {
-                state.latest_finalized = meta_finalized;
-            }
-        }
-        Ok(())
-    }
-
-    #[inline]
-    pub(crate) fn put_backfill_signed_block(
+    pub fn put_backfill_signed_block<P: SignedBlockProcessor>(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,
         state: &mut State,
     ) -> Result<(), String> {
         let pre_import_slot = state.slot;
-        let replayed = self.replay_signed_block_from_parent(&signed, None)?;
+        let replayed = self.replay_signed_block_from_parent::<P>(&signed, Option::<&NoopStorageMetrics>::None)?;
         if replayed.slot < pre_import_slot {
             return Err("imported block would regress local state slot".to_string());
         }
@@ -651,7 +588,7 @@ impl FileStore {
     }
 
     #[inline]
-    pub(crate) fn put_anchor_signed_block(
+    pub fn put_anchor_signed_block(
         &mut self,
         root: Bytes32,
         signed: &SignedBlockWithAttestation,
@@ -672,7 +609,7 @@ impl FileStore {
         signed: &SignedBlockWithAttestation,
         state: &mut State,
         post_state: State,
-        metrics: &crate::metrics::MetricsRegistry,
+        metrics: &(impl StorageMetricsSink + TransitionMetricsSink),
     ) -> Result<(), String> {
         let import_start = Instant::now();
         let result = (|| {
@@ -727,9 +664,7 @@ impl FileStore {
             state.latest_justified = meta_justified;
             Ok(())
         })();
-        metrics
-            .block_import_end_to_end_time
-            .observe_duration(import_start);
+        metrics.observe_block_import_end_to_end_time(import_start);
         result
     }
 }
@@ -765,7 +700,7 @@ impl Store for FileStore {
 
     #[inline]
     fn put_state(&mut self, root: Bytes32, state: State) {
-        let slot = state.slot.0 .0;
+        let slot = state.slot.0.0;
         // `put_state` is keyed by the owning block root.
         let block_root = root;
         let state_root = Bytes32::from(state.hash_tree_root());
@@ -795,7 +730,7 @@ impl Store for FileStore {
 
     #[inline]
     fn put_block(&mut self, root: Bytes32, block: Block) {
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         // Blob write must succeed before canonical indexes can reference this root.
         if self.persist_block(root, &block).is_err() {
             return;
@@ -811,13 +746,18 @@ impl Store for FileStore {
     /// entries are published. If it fails, neither the durable nor the live
     /// view is advanced.
     #[inline]
-    fn put_signed_block(
+    fn put_signed_block<P: SignedBlockProcessor>(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,
         state: &mut State,
     ) -> Result<(), String> {
-        self.put_signed_block_inner(root, signed, state, None)
+        self.put_signed_block_inner::<P, NoopStorageMetrics>(
+            root,
+            signed,
+            state,
+            Option::<&NoopStorageMetrics>::None,
+        )
     }
 
     /// By-slot state read: pending window (`O(1)`) → canonical index → cold path.
@@ -861,7 +801,7 @@ impl Store for FileStore {
             warn!("set_finalized called with unknown root; ignoring");
             return;
         };
-        let slot = block.slot.0 .0;
+        let slot = block.slot.0.0;
         if let Some(current) = self.finalized_slot {
             if slot < current {
                 warn!(
@@ -883,7 +823,7 @@ impl Store for FileStore {
     /// Sets finalized checkpoint root + slot explicitly, then flushes metadata.
     #[inline]
     fn set_finalized_checkpoint(&mut self, checkpoint: Checkpoint) {
-        let slot = checkpoint.slot.0 .0;
+        let slot = checkpoint.slot.0.0;
         if let Some(current) = self.finalized_slot {
             if slot < current {
                 warn!(
@@ -910,31 +850,31 @@ impl Store for FileStore {
         self.set_meta_dirty();
     }
 
-    fn put_signed_block_with_metrics(
+    fn put_signed_block_with_metrics<P: SignedBlockProcessor, M: StorageMetricsSink + TransitionMetricsSink>(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,
         state: &mut State,
-        metrics: &crate::metrics::MetricsRegistry,
+        metrics: &M,
     ) -> Result<(), String> {
-        self.put_signed_block_inner(root, signed, state, Some(metrics))
+        self.put_signed_block_inner::<P, M>(root, signed, state, Some(metrics))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::containers::attestation::{Attestation, AttestationData};
-    use crate::containers::block::{
+    use peam_consensus_types::containers::attestation::{Attestation, AttestationData};
+    use peam_consensus_types::containers::block::{
         Block, BlockBody, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
     };
-    use crate::containers::state::{NoopSignatureVerifier, Validators};
-    use crate::containers::validator::{Validator, ValidatorIndex};
-    use crate::slot::Slot;
-    use crate::types::bitlist::BitList;
-    use crate::types::bytes::{Bytes3112, Bytes52};
-    use crate::types::collections::SszList;
-    use crate::types::uint::Uint64;
+    use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
+    use peam_consensus_types::slot::Slot;
+    use peam_consensus_types::types::bitlist::BitList;
+    use peam_consensus_types::types::bytes::{Bytes52, Bytes3112};
+    use peam_consensus_types::types::collections::SszList;
+    use peam_consensus_types::types::uint::Uint64;
+    use peam_state::state::{NoopSignatureVerifier, Validators};
 
     fn temp_store_dir(tag: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
@@ -1014,22 +954,33 @@ mod tests {
         (signed, post, root)
     }
 
+    struct NoopProcessor;
+
+    impl SignedBlockProcessor for NoopProcessor {
+        fn process_signed_block(
+            state: &mut State,
+            signed: &SignedBlockWithAttestation,
+        ) -> Result<(), String> {
+            let verifier = NoopSignatureVerifier;
+            state.process_signed_block_with_verifier(signed, &verifier)
+        }
+    }
+
     #[test]
     fn replays_from_parent_when_live_state_checkpoints_drift() {
         let dir = temp_store_dir("checkpoint_drift");
         let mut store = FileStore::open(&dir).expect("open store");
-        let verifier = NoopSignatureVerifier;
         let mut live_state = single_validator_state();
         let anchor_root = Bytes32::from(live_state.latest_block_header.hash_tree_root());
         store.put_state(anchor_root, live_state.clone());
 
         let (parent_signed, parent_post_state, parent_root) = build_signed_block(&live_state, 1);
         store
-            .put_signed_block_inner_with_verifier(
+            .put_signed_block_inner::<NoopProcessor, NoopStorageMetrics>(
                 parent_root,
                 parent_signed,
                 &mut live_state,
-                &verifier,
+                None,
             )
             .expect("import parent block");
 
@@ -1046,11 +997,11 @@ mod tests {
             slot: Slot(Uint64(1)),
         };
 
-        let import_result = store.put_signed_block_inner_with_verifier(
+        let import_result = store.put_signed_block_inner::<NoopProcessor, NoopStorageMetrics>(
             child_root,
             child_signed,
             &mut live_state,
-            &verifier,
+            None,
         );
 
         assert!(

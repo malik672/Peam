@@ -161,7 +161,9 @@ impl CanonicalDb {
     /// Loads the full `state_root -> block_root` lookup table into memory.
     pub(super) fn load_state_root_index(&self) -> Result<RapidHashMap<Bytes32, Bytes32>, String> {
         let read_txn = self.db.begin_read().map_err(to_string)?;
-        let table = read_txn.open_table(STATE_ROOT_INDEX_TABLE).map_err(to_string)?;
+        let table = read_txn
+            .open_table(STATE_ROOT_INDEX_TABLE)
+            .map_err(to_string)?;
         let mut out = RapidHashMap::default();
         for row in table.iter().map_err(to_string)? {
             let (state_root, block_root) = row.map_err(to_string)?;
@@ -310,7 +312,10 @@ impl CanonicalDb {
             clear_bytes_table(&mut state_root_table)?;
             for (state_root, block_root) in state_root_index {
                 state_root_table
-                    .insert(state_root.as_array().as_slice(), block_root.as_array().as_slice())
+                    .insert(
+                        state_root.as_array().as_slice(),
+                        block_root.as_array().as_slice(),
+                    )
                     .map_err(to_string)?;
             }
         }
@@ -355,7 +360,10 @@ impl CanonicalDb {
                 .open_table(STATE_ROOT_INDEX_TABLE)
                 .map_err(to_string)?;
             state_root_index
-                .insert(state_root.as_array().as_slice(), block_root.as_array().as_slice())
+                .insert(
+                    state_root.as_array().as_slice(),
+                    block_root.as_array().as_slice(),
+                )
                 .map_err(to_string)?;
         }
         {
@@ -444,7 +452,10 @@ impl CanonicalDb {
                 .open_table(STATE_ROOT_INDEX_TABLE)
                 .map_err(to_string)?;
             table
-                .insert(state_root.as_array().as_slice(), block_root.as_array().as_slice())
+                .insert(
+                    state_root.as_array().as_slice(),
+                    block_root.as_array().as_slice(),
+                )
                 .map_err(to_string)?;
         }
         write_txn.commit().map_err(to_string)
@@ -478,8 +489,8 @@ impl CanonicalDb {
         let write_txn = self.db.begin_write().map_err(to_string)?;
         let report = {
             let mut state_blob_table = write_txn.open_table(STATE_BLOB_TABLE).map_err(to_string)?;
-            let removed_state_blobs = gc_blob_table(&mut state_blob_table, keep_state_block_roots)
-                .map_err(to_string)?;
+            let removed_state_blobs =
+                gc_blob_table(&mut state_blob_table, keep_state_block_roots).map_err(to_string)?;
 
             let mut block_blob_table = write_txn.open_table(BLOCK_BLOB_TABLE).map_err(to_string)?;
             let removed_block_blobs =

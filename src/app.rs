@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 use enr::{Enr, EnrPublicKey, k256::ecdsa::SigningKey as EnrSigningKey};
 use libp2p::PeerId;
 use libp2p::identity::secp256k1;
+use peam_consensus_types::containers::config::Config;
+use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
+use peam_consensus_types::types::bytes::Bytes52;
+use peam_consensus_types::types::uint::Uint64;
 use serde::Deserialize;
 
-use crate::containers::config::Config;
-use crate::containers::state::{State, Validators};
-use crate::containers::validator::{Validator, ValidatorIndex};
+use peam_state::state::{State, Validators};
 use crate::ssz::SszFixedLen;
-use crate::types::bytes::Bytes52;
-use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_at;
 
 /// Default validator-set size used when config does not specify `validator_count`.
@@ -1028,8 +1028,7 @@ pub fn build_genesis_from_config_yaml_with_override(
             })?;
         let attestation_pubkey =
             parse_genesis_validator_pubkey(path, i, "attestation_pubkey", attestation)?;
-        let proposal_pubkey =
-            parse_genesis_validator_pubkey(path, i, "proposal_pubkey", proposal)?;
+        let proposal_pubkey = parse_genesis_validator_pubkey(path, i, "proposal_pubkey", proposal)?;
         validators.push(Validator {
             attestation_pubkey,
             proposal_pubkey,
@@ -1045,12 +1044,11 @@ pub fn build_genesis_from_config_yaml_with_override(
 fn build_devnet_validators(validator_count: usize) -> Result<Validators, String> {
     let mut validators = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
-        let (attestation_pubkey, _) =
-            crate::crypto::pq::key_gen_for_devnet_validator_with_role(
-                i,
-                crate::crypto::pq::DevnetValidatorKeyRole::Attestation,
-            )
-            .map_err(|err| format!("failed to derive devnet attestation key {i}: {err}"))?;
+        let (attestation_pubkey, _) = crate::crypto::pq::key_gen_for_devnet_validator_with_role(
+            i,
+            crate::crypto::pq::DevnetValidatorKeyRole::Attestation,
+        )
+        .map_err(|err| format!("failed to derive devnet attestation key {i}: {err}"))?;
         let (proposal_pubkey, _) = crate::crypto::pq::key_gen_for_devnet_validator_with_role(
             i,
             crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
@@ -1074,7 +1072,8 @@ fn build_devnet_validators(validator_count: usize) -> Result<Validators, String>
             )
         };
     }
-    Validators::new(validators).map_err(|err| format!("failed to build devnet validator set: {err}"))
+    Validators::new(validators)
+        .map_err(|err| format!("failed to build devnet validator set: {err}"))
 }
 
 #[inline]
@@ -1101,7 +1100,10 @@ fn parse_genesis_validator_pubkey(
         .step_by(2)
         .map(|j| {
             u8::from_str_radix(&hex_str[j..j + 2], 16).map_err(|err| {
-                format!("GENESIS_VALIDATORS[{index}].{field} bad hex in {}: {err}", path.display())
+                format!(
+                    "GENESIS_VALIDATORS[{index}].{field} bad hex in {}: {err}",
+                    path.display()
+                )
             })
         })
         .collect::<Result<Vec<_>, _>>()?;

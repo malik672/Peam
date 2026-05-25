@@ -7,14 +7,14 @@
 //! used above the raw byte layer; both implement SSZ encode/decode dispatched
 //! by protocol variant.
 
-use crate::containers::block::{
+use peam_consensus_types::containers::block::{
     SignedBlockWithAttestation, decode_signed_block_network_checked, encode_signed_block_network,
 };
-use crate::containers::req_resp::{
+use peam_consensus_types::containers::req_resp::{
     BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse, Status,
 };
+use peam_consensus_types::types::collections::SszList;
 use crate::ssz::{SszDecode, SszEncode};
-use crate::types::collections::SszList;
 
 #[inline]
 fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootRequest, String> {

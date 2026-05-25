@@ -73,7 +73,11 @@ fn prune_removes_unreferenced_state_and_block_blobs() {
 
     // Recent roots should still be available.
     let newest_slot = rows - 1;
-    assert!(store.get_state(&root_from_u64(newest_slot + 20_000)).is_some());
+    assert!(
+        store
+            .get_state(&root_from_u64(newest_slot + 20_000))
+            .is_some()
+    );
     assert!(
         store
             .get_block(&root_from_u64(newest_slot + 20_000))

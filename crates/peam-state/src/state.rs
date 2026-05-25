@@ -23,24 +23,25 @@ use rapidhash::RapidHashMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use peam_consensus_types::containers::attestation::Attestation;
+use peam_consensus_types::containers::block::{
+    Attestations, Block, BlockBody, BlockHeader, SignedBlockWithAttestation,
+    validate_attestation_data_limit,
+};
+use peam_consensus_types::containers::checkpoint::Checkpoint;
+use peam_consensus_types::containers::config::Config;
+use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
+use peam_consensus_types::slot::{self, Slot};
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::collections::SszList;
+use peam_consensus_types::types::uint::Uint64;
+use peam_ssz::ssz::hash::merkleize;
+use peam_ssz::ssz::{HashTreeRoot, SszDecode, SszEncode};
 use tracing::{info, warn};
 
-use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::block::{Attestations, Block, BlockHeader};
-use crate::containers::checkpoint::Checkpoint;
-use crate::containers::config::Config;
-use crate::containers::state_metrics::{NoopTransitionMetricsSink, TransitionMetricsSink};
-use crate::containers::validator::Validator;
-use crate::crypto::pq;
 use crate::logfmt::{short_opt_root_or_dash, short_root, short_slot_root};
-use crate::metrics::MetricsRegistry;
-use crate::slot::{self, Slot};
-use crate::ssz::hash::merkleize;
-use crate::ssz::{HashTreeRoot, SszDecode, SszEncode};
-use crate::types::bitlist::BitList;
-use crate::types::bytes::Bytes32;
-use crate::types::collections::SszList;
-use crate::types::uint::Uint64;
+use crate::state_metrics::{NoopTransitionMetricsSink, TransitionMetricsSink};
 use crate::unsafe_vec::write_bytes_at;
 
 /// Maximum number of historical block roots retained in [`HistoricalBlockHashes`].
@@ -76,13 +77,6 @@ pub type JustifiedSlots = BitList<HISTORICAL_ROOTS_LIMIT>;
 /// Aggregate bitfield of validator participation across all pending justification
 /// attestations.
 pub type JustificationValidators = BitList<JUSTIFICATION_VALIDATORS_LIMIT>;
-
-#[inline]
-fn proposer_pubkey_for(validators: &[Validator], proposer_idx: usize) -> Option<crate::types::bytes::Bytes52> {
-    validators
-        .get(proposer_idx)
-        .map(|validator| validator.proposal_pubkey)
-}
 
 /// `HashTreeRoot(BlockBody { attestations: [] })` — the body root used in the genesis
 /// block header.
@@ -161,12 +155,12 @@ impl State {
         let empty_body_root = Bytes32::from(EMPTY_BLOCK_BODY_ROOT_BYTES);
         let latest_block_header = BlockHeader {
             slot: Slot(Uint64(0)),
-            proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
+            proposer_index: ValidatorIndex(Uint64(0)),
             parent_root: Bytes32::zero(),
             state_root: Bytes32::zero(),
             body_root: empty_body_root,
         };
-        let mut state = State {
+        State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
             latest_block_header,
@@ -183,12 +177,7 @@ impl State {
             validators,
             justifications_roots: SszList::default(),
             justifications_validators: BitList::default(),
-        };
-        let mut tmp = state.clone();
-        tmp.latest_block_header.state_root = Bytes32::zero();
-        let state_root = Bytes32::from(tmp.hash_tree_root());
-        state.latest_block_header.state_root = state_root;
-        state
+        }
     }
 
     /// Generic genesis constructor for tests, fixtures, and custom validator sets.
@@ -197,12 +186,12 @@ impl State {
         let empty_body_root = Bytes32::from(EMPTY_BLOCK_BODY_ROOT_BYTES);
         let latest_block_header = BlockHeader {
             slot: Slot(Uint64(0)),
-            proposer_index: crate::containers::validator::ValidatorIndex(Uint64(0)),
+            proposer_index: ValidatorIndex(Uint64(0)),
             parent_root: Bytes32::zero(),
             state_root: Bytes32::zero(),
             body_root: empty_body_root,
         };
-        let mut state = State {
+        State {
             config: Config { genesis_time },
             slot: Slot(Uint64(0)),
             latest_block_header,
@@ -220,12 +209,7 @@ impl State {
             validators,
             justifications_roots: SszList::default(),
             justifications_validators: BitList::default(),
-        };
-        let mut tmp = state.clone();
-        tmp.latest_block_header.state_root = Bytes32::zero();
-        let state_root = Bytes32::from(tmp.hash_tree_root());
-        state.latest_block_header.state_root = state_root;
-        state
+        }
     }
 
     /// Advances state from `self.slot` to `target_slot`.
@@ -358,14 +342,14 @@ impl State {
     #[inline]
     pub fn process_block_body(
         &mut self,
-        body: &crate::containers::block::BlockBody,
+        body: &BlockBody,
         expected_root: Bytes32,
     ) -> Result<(), String> {
         let body_root = body.hash_tree_root();
         if expected_root != Bytes32::from(body_root) {
             return Err("block body root does not match header".to_string());
         }
-        crate::containers::block::validate_attestation_data_limit(&body.attestations)?;
+        validate_attestation_data_limit(&body.attestations)?;
         self.process_attestations(&body.attestations)?;
         Ok(())
     }
@@ -763,16 +747,6 @@ impl State {
         Ok(())
     }
 
-    /// Imports a signed block using the canonical post-quantum verifier.
-    #[inline]
-    pub fn process_signed_block(
-        &mut self,
-        signed: &SignedBlockWithAttestation,
-    ) -> Result<(), String> {
-        let verifier = PqSignatureVerifier;
-        self.process_signed_block_with_verifier(signed, &verifier)
-    }
-
     /// Imports a signed block using the provided [`SignatureVerifier`].
     ///
     /// Steps:
@@ -796,20 +770,8 @@ impl State {
         )
     }
 
-    /// Like [`process_signed_block`] but records sub-step timings in the
-    /// provided [`MetricsRegistry`].
     #[inline]
-    pub fn process_signed_block_with_metrics(
-        &mut self,
-        signed: &SignedBlockWithAttestation,
-        metrics: &MetricsRegistry,
-    ) -> Result<(), String> {
-        let verifier = PqSignatureVerifier;
-        self.process_signed_block_with_verifier_and_sink(signed, &verifier, metrics)
-    }
-
-    #[inline]
-    fn process_signed_block_with_verifier_and_sink<
+    pub fn process_signed_block_with_verifier_and_sink<
         V: SignatureVerifier,
         M: TransitionMetricsSink,
     >(
@@ -908,81 +870,6 @@ impl SignatureVerifier for NoopSignatureVerifier {
     }
 }
 
-/// A [`SignatureVerifier`] that performs full post-quantum aggregate-signature
-/// verification for each attestation and the block proposer.
-pub struct PqSignatureVerifier;
-
-impl SignatureVerifier for PqSignatureVerifier {
-    #[inline]
-    fn verify_signed_block(
-        &self,
-        signed: &SignedBlockWithAttestation,
-        state: &State,
-    ) -> Result<(), String> {
-        let block = &signed.message.block;
-        let attestations = block.body.attestations.as_slice();
-        let proofs = signed.signature.attestation_signatures.as_slice();
-        if attestations.len() != proofs.len() {
-            return Err(format!(
-                "attestation signatures count {} does not match attestations {}",
-                proofs.len(),
-                attestations.len()
-            ));
-        }
-        if !proofs.is_empty() {
-            static PQ_AGG_VERIFIER_INIT: std::sync::Once = std::sync::Once::new();
-            PQ_AGG_VERIFIER_INIT.call_once(pq::setup_aggregate_verifier);
-        }
-
-        let validators = state.validators.as_slice();
-        let mut public_keys = Vec::new();
-
-        for (att, proof) in attestations.iter().zip(proofs.iter()) {
-            public_keys.clear();
-            let bit_len = att.aggregation_bits.len;
-            for (byte_idx, byte) in att.aggregation_bits.data.iter().copied().enumerate() {
-                let mut remaining = byte;
-                while remaining != 0 {
-                    let bit = remaining.trailing_zeros() as usize;
-                    let idx = byte_idx * 8 + bit;
-                    if idx >= bit_len {
-                        break;
-                    }
-                    let validator = validators
-                        .get(idx)
-                        .ok_or_else(|| "validator index out of range".to_string())?;
-                    public_keys.push(validator.attestation_pubkey);
-                    remaining &= remaining - 1;
-                }
-            }
-            if public_keys.is_empty() {
-                return Err("attestation aggregate participants must be non-empty".to_string());
-            }
-            let message = att.data.hash_tree_root();
-            if let Err(err) = pq::verify_aggregate_signature(
-                &public_keys,
-                &message,
-                proof.proof_data.as_slice(),
-                att.data.slot.0.0 as u32,
-            ) {
-                return Err(err);
-            }
-        }
-
-        let proposer_idx = block.proposer_index.0.0 as usize;
-        let proposer_pubkey = proposer_pubkey_for(validators, proposer_idx)
-            .ok_or_else(|| "proposer index out of range".to_string())?;
-        let proposer_message = block.hash_tree_root();
-        pq::verify_signature(
-            &proposer_pubkey,
-            block.slot.0.0 as u32,
-            &proposer_message,
-            &signed.signature.proposer_signature,
-        )?;
-        Ok(())
-    }
-}
-
 #[derive(Default)]
 struct AttestationDecisionStats {
     eligible_votes: usize,
@@ -1051,7 +938,7 @@ fn state_root_trace_enabled() -> bool {
 
 fn log_attestation_decision_sample(
     reason: &'static str,
-    att: &crate::containers::attestation::Attestation,
+    att: &Attestation,
     state_slot: Slot,
     finalized_slot: Slot,
 ) {
@@ -1079,7 +966,7 @@ fn log_attestation_decision_sample(
 #[inline]
 fn log_attestation_slot_mismatch_sample(
     reason: &'static str,
-    att: &crate::containers::attestation::Attestation,
+    att: &Attestation,
     state_slot: Slot,
     finalized_slot: Slot,
     resolved_slot: Option<Slot>,
@@ -1111,7 +998,7 @@ fn log_attestation_slot_mismatch_sample(
 #[inline]
 fn log_vote_threshold_sample(
     reason: &'static str,
-    att: &crate::containers::attestation::Attestation,
+    att: &Attestation,
     state_slot: Slot,
     finalized_slot: Slot,
     votes_count: usize,
@@ -1698,5 +1585,24 @@ impl HashTreeRoot for State {
         ];
         let root = merkleize(&field_roots);
         *root.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{State, Validators};
+    use peam_consensus_types::types::bytes::Bytes32;
+    use peam_consensus_types::types::uint::Uint64;
+
+    #[test]
+    fn genesis_empty_keeps_latest_header_state_root_zero() {
+        let state = State::generate_genesis_empty(Uint64(1));
+        assert_eq!(state.latest_block_header.state_root, Bytes32::zero());
+    }
+
+    #[test]
+    fn genesis_with_validators_keeps_latest_header_state_root_zero() {
+        let state = State::generate_genesis(Uint64(1), Validators::default());
+        assert_eq!(state.latest_block_header.state_root, Bytes32::zero());
     }
 }

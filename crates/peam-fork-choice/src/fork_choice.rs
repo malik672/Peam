@@ -1,20 +1,23 @@
 use rapidhash::{RapidHashMap, RapidHashSet};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use crate::containers::attestation::Attestation;
-use crate::containers::block::{
+use peam_consensus_types::containers::attestation::{
+    Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT,
+};
+use peam_consensus_types::containers::block::{
     Block, BlockSignatures, BlockWithAttestation, SignedBlockWithAttestation,
     proposer_attestation_present,
 };
-use crate::containers::checkpoint::Checkpoint;
-use crate::containers::state::State;
-use crate::slot::Slot;
-use crate::ssz::HashTreeRoot;
-use crate::types::bitlist::BitList;
-use crate::types::bytes::{Bytes32, Bytes3112};
-use crate::types::collections::SszList;
-use crate::types::uint::Uint64;
+use peam_consensus_types::containers::checkpoint::Checkpoint;
+use peam_consensus_types::slot::{Slot, is_justifiable_after};
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::{Bytes32, Bytes3112};
+use peam_consensus_types::types::collections::SszList;
+use peam_consensus_types::types::uint::Uint64;
+use peam_ssz::ssz::HashTreeRoot;
+use peam_state::state::State;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::logfmt::{short_checkpoint, short_slot_root};
 
 const JUSTIFICATION_LOOKBACK_SLOTS: u64 = 3;
 
@@ -75,7 +78,7 @@ struct ProtoNode {
     proposer_index: u64,
     /// Aggregate subtree vote weight from active validator votes.
     weight: i64,
-    /// Heaviest direct child, tie-broken by lexicographically smaller root.
+    /// Heaviest direct child, tie-broken by higher slot, then lexicographically smaller root.
     best_child: Option<usize>,
 }
 
@@ -172,7 +175,7 @@ impl ForkChoiceStore {
         &self,
         block: Block,
         post_state: State,
-    ) -> Result<crate::containers::attestation::AttestationData, String> {
+    ) -> Result<AttestationData, String> {
         let block_root = Bytes32::from(block.hash_tree_root());
         let block_slot = block.slot;
         let mut preview = self.clone();
@@ -192,12 +195,14 @@ impl ForkChoiceStore {
                 slot: block_slot,
             };
         }
-        let head = preview.checkpoint_for_root(preview.head()).unwrap_or(Checkpoint {
-            root: block_root,
-            slot: block_slot,
-        });
+        let head = preview
+            .checkpoint_for_root(preview.head())
+            .unwrap_or(Checkpoint {
+                root: block_root,
+                slot: block_slot,
+            });
 
-        Ok(crate::containers::attestation::AttestationData {
+        Ok(AttestationData {
             slot: block_slot,
             head,
             target,
@@ -267,10 +272,11 @@ impl ForkChoiceStore {
             self.head = root;
             self.head_slot = slot;
         }
-        if self.head_change_is_reorg(old_head, self.head) {
-            self.reorgs_total += 1;
-        }
         self.refresh_safe_target();
+        self.record_head_change(old_head, "block_import");
+        if finalized_advanced {
+            self.log_finality_table("block_import");
+        }
         Ok(())
     }
 
@@ -300,10 +306,8 @@ impl ForkChoiceStore {
             self.head = head;
             self.head_slot = head_block.message.block.slot.0.0;
         }
-        if self.head_change_is_reorg(old_head, self.head) {
-            self.reorgs_total += 1;
-        }
         self.refresh_safe_target();
+        self.record_head_change(old_head, "attestation_votes");
     }
 
     /// Recompute safe target from currently active votes.
@@ -338,7 +342,7 @@ impl ForkChoiceStore {
     }
 
     /// Walk the tree from `latest_justified` toward the leaves, picking the heaviest child
-    /// at each step (tie-broken by lexicographically smaller block root).
+    /// at each step (tie-broken by higher slot, then lexicographically smaller block root).
     ///
     /// Returns the current `self.head` unchanged if the justified root is not in the store.
     #[inline]
@@ -564,7 +568,7 @@ impl ForkChoiceStore {
         loop {
             let target_slot = self.blocks.get(&target_root)?.message.block.slot.0.0;
             let target = Slot(Uint64(target_slot));
-            match crate::slot::is_justifiable_after(target, finalized_slot) {
+            match is_justifiable_after(target, finalized_slot) {
                 Ok(true) => break,
                 Ok(false) => {
                     let parent = *self.parents.get(&target_root)?;
@@ -612,6 +616,70 @@ impl ForkChoiceStore {
             }
         }
         depth
+    }
+
+    #[inline]
+    fn record_head_change(&mut self, old_head: Bytes32, trigger: &'static str) {
+        if old_head == self.head {
+            return;
+        }
+
+        let old_slot = self
+            .blocks
+            .get(&old_head)
+            .map(|block| block.message.block.slot.0.0)
+            .unwrap_or(0);
+        let new_slot = self.head_slot;
+        if self.head_change_is_reorg(old_head, self.head) {
+            let depth = self.reorg_depth(old_head, self.head);
+            self.reorgs_total += 1;
+            tracing::info!(
+                "Fork choice reorg detected ({trigger}): {} -> {} | depth={} | safe={} | justified={} | finalized={} | total_reorgs={}",
+                short_slot_root(old_slot, &old_head),
+                short_slot_root(new_slot, &self.head),
+                depth,
+                short_slot_root(self.safe_target_slot(), &self.safe_target),
+                short_checkpoint(&self.latest_justified),
+                short_checkpoint(&self.latest_finalized),
+                self.reorgs_total,
+            );
+        }
+
+        tracing::info!(
+            "Fork choice head updated ({trigger}): {} -> {} | safe={} | justified={} | prev_justified={} | finalized={}",
+            short_slot_root(old_slot, &old_head),
+            short_slot_root(new_slot, &self.head),
+            short_slot_root(self.safe_target_slot(), &self.safe_target),
+            short_checkpoint(&self.latest_justified),
+            short_checkpoint(&self.previous_justified),
+            short_checkpoint(&self.latest_finalized),
+        );
+    }
+
+    #[inline]
+    fn log_finality_table(&self, trigger: &'static str) {
+        let table = format!(
+            concat!(
+                "\n+--------------------+-----------------+\n",
+                "| Checkpoint         | Slot:Root       |\n",
+                "+--------------------+-----------------+\n",
+                "| Head               | {:<15} |\n",
+                "| Safe Target        | {:<15} |\n",
+                "| Justified          | {:<15} |\n",
+                "| Previous Justified | {:<15} |\n",
+                "| Finalized          | {:<15} |\n",
+                "+--------------------+-----------------+\n",
+                "| Reorgs Total       | {:<15} |\n",
+                "+--------------------+-----------------+"
+            ),
+            short_slot_root(self.head_slot, &self.head),
+            short_slot_root(self.safe_target_slot(), &self.safe_target),
+            short_checkpoint(&self.latest_justified),
+            short_checkpoint(&self.previous_justified),
+            short_checkpoint(&self.latest_finalized),
+            self.reorgs_total,
+        );
+        tracing::info!("Fork choice finality advanced ({trigger}){table}");
     }
 
     #[inline]
@@ -716,7 +784,9 @@ impl ForkChoiceStore {
         let incumbent = &self.nodes[incumbent_idx];
         candidate.weight > incumbent.weight
             || (candidate.weight == incumbent.weight
-                && candidate.root.as_array() < incumbent.root.as_array())
+                && (candidate.slot > incumbent.slot
+                    || (candidate.slot == incumbent.slot
+                        && candidate.root.as_array() < incumbent.root.as_array())))
     }
 
     #[inline]
@@ -1020,10 +1090,10 @@ fn bitlist_indices<const LIMIT: usize>(bits: &BitList<LIMIT>) -> Vec<usize> {
 fn placeholder_signed_block(block: Block) -> Result<SignedBlockWithAttestation, String> {
     let block_root = Bytes32::from(block.hash_tree_root());
     let proposer_index = block.proposer_index.0.0 as usize;
-    if proposer_index >= crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT {
+    if proposer_index >= VALIDATOR_REGISTRY_LIMIT {
         return Err(format!(
             "proposer validator index {proposer_index} exceeds registry limit {}",
-            crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT
+            VALIDATOR_REGISTRY_LIMIT
         ));
     }
 
@@ -1040,7 +1110,7 @@ fn placeholder_signed_block(block: Block) -> Result<SignedBlockWithAttestation, 
             block,
             proposer_attestation: Attestation {
                 aggregation_bits,
-                data: crate::containers::attestation::AttestationData {
+                data: AttestationData {
                     slot: checkpoint.slot,
                     head: checkpoint,
                     target: checkpoint,

@@ -1,0 +1,36 @@
+{
+  "reorg_vote_shift_changes_head": {
+    "validators": 1,
+    "anchorSlot": 1,
+    "blocks": [
+      {
+        "label": "fork_a",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": false
+      },
+      {
+        "label": "fork_b",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": true
+      }
+    ],
+    "votes": [
+      {
+        "validator": 0,
+        "head": "fork_a",
+        "slot": 2,
+        "acceptAfter": true
+      },
+      {
+        "validator": 0,
+        "head": "fork_b",
+        "slot": 2,
+        "acceptAfter": true
+      }
+    ],
+    "expectedHead": "fork_b",
+    "expectedReorgsMin": 1
+  }
+}

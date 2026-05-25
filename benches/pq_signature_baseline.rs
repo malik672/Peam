@@ -54,8 +54,13 @@ fn bench_pq_signature_baseline(c: &mut Criterion) {
     let sig0 = pq::sign_message(&sk0, 1, &message).expect("sig0");
 
     let agg2 = pq::sign_aggregate(&[pk0, pk1], &[&sk0, &sk1], 1, &message).expect("agg2");
-    let agg4 = pq::sign_aggregate(&[pk0, pk1, pk2, pk3], &[&sk0, &sk1, &sk2, &sk3], 1, &message)
-        .expect("agg4");
+    let agg4 = pq::sign_aggregate(
+        &[pk0, pk1, pk2, pk3],
+        &[&sk0, &sk1, &sk2, &sk3],
+        1,
+        &message,
+    )
+    .expect("agg4");
     let agg5 = pq::sign_aggregate(
         &[pk0, pk1, pk2, pk3, pk4],
         &[&sk0, &sk1, &sk2, &sk3, &sk4],

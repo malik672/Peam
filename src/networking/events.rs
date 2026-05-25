@@ -4,6 +4,7 @@
 //! `tokio::sync::broadcast` channel. Any number of components can subscribe
 //! to receive [`NetworkEvent`]s without knowing about each other.
 
+use peam_consensus_types::types::bytes::Bytes32;
 use tokio::sync::broadcast;
 
 /// All observable events emitted by the networking stack.
@@ -22,6 +23,14 @@ pub enum NetworkEvent {
     /// A gossipsub message was ignored because it referenced roots that may
     /// become known shortly after import/sync catches up.
     GossipDeferredUnknownRoots { topic: String, payload: Vec<u8> },
+    /// A gossip attestation referenced a head block that is the only missing
+    /// dependency; callers may fetch the block and replay the message when it arrives.
+    GossipDeferredMissingHead {
+        topic: String,
+        payload: Vec<u8>,
+        head_root: Bytes32,
+        peer_id: String,
+    },
     /// A gossipsub message passed (`valid: true`) or failed (`valid: false`) validation.
     GossipValidated { topic: String, valid: bool },
     /// An inbound req/resp request arrived from a peer.

@@ -1,11 +1,11 @@
 use peam::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
 use peam::containers::block::{
     AttestationSignatures, Attestations, Block, BlockBody, BlockHeader, BlockSignatures,
-    BlockWithAttestation, SignedBlockWithAttestation, MAX_ATTESTATIONS_DATA,
+    BlockWithAttestation, MAX_ATTESTATIONS_DATA, SignedBlockWithAttestation,
 };
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::state::{
-    NoopSignatureVerifier, PqSignatureVerifier, SignatureVerifier, State, Validators,
+    NoopSignatureVerifier, PqSignatureVerifier, SignatureVerifier, State, StatePqExt, Validators,
 };
 use peam::containers::validator::{Validator, ValidatorIndex};
 use peam::crypto::pq;
@@ -22,7 +22,8 @@ use peam::types::uint::Uint64;
 fn process_slots_advances_state_and_sets_root() {
     let validators: Validators = SszList::new(vec![]).expect("validators");
     let mut state = State::generate_genesis(Uint64(0), validators);
-    let original_header_root = state.latest_block_header.state_root;
+    let original_header_root = Bytes32::from([0x5au8; 32]);
+    state.latest_block_header.state_root = original_header_root;
 
     state.process_slots(Slot(Uint64(1))).expect("process slots");
     assert_eq!(state.slot, Slot(Uint64(1)));
@@ -199,128 +200,6 @@ fn apply_state_transition_for_test(state: &mut State, block: &Block) -> Result<(
     state.latest_block_header.state_root = computed_root;
 
     Ok(())
-}
-
-#[test]
-fn lean_spec_process_first_block_after_genesis() {
-    let v = Validator {
-        attestation_pubkey: Bytes52::from([0x01u8; 52]),
-        proposal_pubkey: Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let validators: Validators = SszList::new(vec![v]).expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    let block = build_block_for_slot(&state, 1, 0);
-
-    apply_state_transition_for_test(&mut state, &block).expect("transition");
-
-    assert_eq!(state.slot, Slot(Uint64(1)));
-    assert_eq!(state.latest_block_header.slot, Slot(Uint64(1)));
-    assert_eq!(state.latest_block_header.state_root, block.state_root);
-    assert_eq!(state.historical_block_hashes.len(), 1);
-}
-
-#[test]
-fn lean_spec_linear_chain_multiple_blocks() {
-    let v = Validator {
-        attestation_pubkey: Bytes52::from([0x01u8; 52]),
-        proposal_pubkey: Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let validators: Validators = SszList::new(vec![v]).expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    for slot in 1..=5u64 {
-        let block = build_block_for_slot(&state, slot, 0);
-        apply_state_transition_for_test(&mut state, &block).expect("transition");
-    }
-
-    assert_eq!(state.slot, Slot(Uint64(5)));
-}
-
-#[test]
-fn lean_spec_blocks_with_gaps() {
-    let v = Validator {
-        attestation_pubkey: Bytes52::from([0x01u8; 52]),
-        proposal_pubkey: Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let validators: Validators = SszList::new(vec![v]).expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    let slots = [1u64, 4u64, 8u64];
-    for slot in slots {
-        let block = build_block_for_slot(&state, slot, 0);
-        apply_state_transition_for_test(&mut state, &block).expect("transition");
-    }
-
-    assert_eq!(state.slot, Slot(Uint64(8)));
-    assert_eq!(state.latest_block_header.slot, Slot(Uint64(8)));
-    assert_ne!(state.latest_block_header.state_root, Bytes32::zero());
-    assert_eq!(state.historical_block_hashes.len(), 8);
-}
-
-#[test]
-fn lean_spec_block_at_large_slot_number() {
-    let v = Validator {
-        attestation_pubkey: Bytes52::from([0x01u8; 52]),
-        proposal_pubkey: Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let validators: Validators = SszList::new(vec![v]).expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    let block = build_block_for_slot(&state, 100, 0);
-    apply_state_transition_for_test(&mut state, &block).expect("transition");
-
-    assert_eq!(state.slot, Slot(Uint64(100)));
-}
-
-#[test]
-fn lean_spec_block_with_invalid_proposer() {
-    let v0 = Validator {
-        attestation_pubkey: Bytes52::from([0x01u8; 52]),
-        proposal_pubkey: Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let v1 = Validator {
-        attestation_pubkey: Bytes52::from([0x02u8; 52]),
-        proposal_pubkey: Bytes52::from([0x02u8; 52]),
-        index: ValidatorIndex(Uint64(1)),
-        balance: Uint64(0),
-    };
-    let validators: Validators = SszList::new(vec![v0, v1]).expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    let mut block = build_block_for_slot(&state, 1, 1);
-    block.proposer_index = ValidatorIndex(Uint64(0)); // wrong: expected 1
-
-    let err = apply_state_transition_for_test(&mut state, &block).unwrap_err();
-    assert!(err.contains("proposer"));
-}
-
-#[test]
-fn lean_spec_block_with_invalid_parent_root() {
-    let v = Validator {
-        attestation_pubkey: Bytes52::from([0x01u8; 52]),
-        proposal_pubkey: Bytes52::from([0x01u8; 52]),
-        index: ValidatorIndex(Uint64(0)),
-        balance: Uint64(0),
-    };
-    let validators: Validators = SszList::new(vec![v]).expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    let mut block = build_block_for_slot(&state, 1, 0);
-    block.parent_root = Bytes32::from([0xDEu8; 32]);
-
-    let err = apply_state_transition_for_test(&mut state, &block).unwrap_err();
-    assert!(err.contains("parent root"));
 }
 
 #[test]

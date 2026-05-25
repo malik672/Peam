@@ -284,8 +284,14 @@ fn main() {
         // Legacy compatibility aliases still expected by lean-quickstart/qlean.
         // These point at the attestation keypair, while the split manifest carries
         // the actual dual-key devnet4 registry information.
-        write_file(&hash_sig_dir.join(format!("validator_{idx}_pk.ssz")), attestation_pk_bytes);
-        write_file(&hash_sig_dir.join(format!("validator_{idx}_sk.ssz")), &attestation_sk_bytes);
+        write_file(
+            &hash_sig_dir.join(format!("validator_{idx}_pk.ssz")),
+            attestation_pk_bytes,
+        );
+        write_file(
+            &hash_sig_dir.join(format!("validator_{idx}_sk.ssz")),
+            &attestation_sk_bytes,
+        );
         write_json_file(
             &hash_sig_dir.join(format!("validator_{idx}_pk.json")),
             &attestation_public_key_json,
@@ -312,16 +318,22 @@ fn main() {
         );
 
         validator_material.push(ValidatorMaterial {
-            attestation_pubkey_hex_no_prefix: attestation_pubkey_hex.trim_start_matches("0x").to_string(),
+            attestation_pubkey_hex_no_prefix: attestation_pubkey_hex
+                .trim_start_matches("0x")
+                .to_string(),
             proposal_pubkey_hex_no_prefix: proposal_pubkey_hex.trim_start_matches("0x").to_string(),
             attestation_privkey_file: attestation_sk_filename.clone(),
             proposal_privkey_file: proposal_sk_filename.clone(),
         });
 
         manifest_lines.push(format!("- index: {idx}"));
-        manifest_lines.push(format!("  attestation_pubkey_hex: {attestation_pubkey_hex}"));
+        manifest_lines.push(format!(
+            "  attestation_pubkey_hex: {attestation_pubkey_hex}"
+        ));
         manifest_lines.push(format!("  proposal_pubkey_hex: {proposal_pubkey_hex}"));
-        manifest_lines.push(format!("  attestation_privkey_file: {attestation_sk_filename}"));
+        manifest_lines.push(format!(
+            "  attestation_privkey_file: {attestation_sk_filename}"
+        ));
         manifest_lines.push(format!("  proposal_privkey_file: {proposal_sk_filename}"));
     }
 

@@ -1,12 +1,12 @@
 use std::sync::{Arc, RwLock};
 
+use peam_consensus_types::containers::attestation::{Attestation, VALIDATOR_REGISTRY_LIMIT};
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
 use rapidhash::RapidHashMap;
 
-use crate::containers::attestation::Attestation;
-use crate::fork_choice::ForkChoiceStore;
 use crate::ssz::HashTreeRoot;
-use crate::types::bitlist::BitList;
-use crate::types::bytes::Bytes32;
 
 /// Snapshot pending attestations and return the current proposal head root.
 ///
@@ -51,8 +51,8 @@ pub(super) fn aggregate_attestations(attestations: Vec<Attestation>) -> Vec<Atte
 
 #[inline]
 fn merge_aggregation_bits(
-    dst: &mut BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
-    src: &BitList<{ crate::containers::attestation::VALIDATOR_REGISTRY_LIMIT }>,
+    dst: &mut BitList<VALIDATOR_REGISTRY_LIMIT>,
+    src: &BitList<VALIDATOR_REGISTRY_LIMIT>,
 ) {
     let target_len = dst.len.max(src.len);
     let target_bytes = target_len.div_ceil(8);

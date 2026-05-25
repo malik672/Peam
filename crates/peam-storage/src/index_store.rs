@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::types::bytes::Bytes32;
+use peam_consensus_types::types::bytes::Bytes32;
 
 /// Fork-choice metadata persisted alongside slot indexes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

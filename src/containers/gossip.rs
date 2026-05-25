@@ -1,13 +1,15 @@
-use crate::containers::attestation::{SignedAggregatedAttestation, SignedAttestation};
-use crate::containers::block::{
+use peam_consensus_types::containers::attestation::{
+    SignedAggregatedAttestation, SignedAttestation,
+};
+use peam_consensus_types::containers::block::{
     BlockHeader, SignedBlockWithAttestation, decode_signed_block_network,
     decode_signed_block_network_checked, encode_signed_block_network,
 };
-use crate::containers::validator::ValidatorIndex;
+use peam_consensus_types::containers::validator::ValidatorIndex;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::uint::Uint64;
 use crate::ssz::hash::hash_nodes;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
-use crate::types::bytes::Bytes32;
-use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

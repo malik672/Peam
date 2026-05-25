@@ -1,0 +1,29 @@
+{
+  "tests/consensus/devnet/state_transition/test_block_processing.py::test_block_with_wrong_proposer[fork_Devnet-state_transition_test]": {
+    "_info": {
+      "fixtureFormat": "state_transition_test",
+      "description": "Generated-envelope compatibility fixture for invalid proposer"
+    },
+    "network": "Devnet",
+    "pre": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {},
+        {}
+      ]
+    },
+    "blocks": [
+      {
+        "slot": 1,
+        "proposerIndex": 0
+      }
+    ],
+    "post": null,
+    "expectException": "AssertionError",
+    "expectExceptionMessage": "block proposer index does not match expected proposer"
+  }
+}

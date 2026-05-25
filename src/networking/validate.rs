@@ -11,19 +11,19 @@
 
 use std::sync::Arc;
 
-use crate::containers::attestation::{
+use peam_consensus_types::containers::attestation::{
     AggregatedSignatureProof, Attestation, SignedAggregatedAttestation, SignedAttestation,
     VALIDATOR_REGISTRY_LIMIT,
 };
-use crate::containers::block::{Block, proposer_attestation_present};
+use peam_consensus_types::containers::block::{Block, proposer_attestation_present};
+use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::{Bytes52, Bytes3112};
 use crate::containers::gossip::{
     GossipAggregatedAttestation, GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
 };
-use crate::containers::validator::{Validator, ValidatorIndex};
 use crate::crypto;
 use crate::ssz::{HashTreeRoot, SszFixedLen};
-use crate::types::bitlist::BitList;
-use crate::types::bytes::{Bytes52, Bytes3112};
 use crate::unsafe_vec::write_at;
 use tracing::warn;
 
@@ -48,8 +48,7 @@ fn describe_attestation_topic_payload(payload: &[u8]) -> String {
     let plain_shape = match Attestation::decode_ssz_checked(payload) {
         Ok(attestation) => format!(
             "ok(slot={}, bits={})",
-            attestation.data.slot.0.0,
-            attestation.aggregation_bits.len
+            attestation.data.slot.0.0, attestation.aggregation_bits.len
         ),
         Err(err) => format!("err({err})"),
     };
@@ -435,19 +434,19 @@ pub fn verifier_from_validators(validators: &[Validator]) -> Arc<dyn GossipSigna
 #[cfg(test)]
 mod tests {
     use super::{GossipSignatureVerifier, SimpleGossipVerifier};
-    use crate::containers::attestation::{
+    use peam_consensus_types::containers::attestation::{
         AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
     };
-    use crate::containers::block::Block;
-    use crate::containers::checkpoint::Checkpoint;
-    use crate::containers::validator::ValidatorIndex;
+    use peam_consensus_types::containers::block::{Block, BlockBody};
+    use peam_consensus_types::containers::checkpoint::Checkpoint;
+    use peam_consensus_types::containers::validator::ValidatorIndex;
+    use peam_consensus_types::slot::Slot;
+    use peam_consensus_types::types::bitlist::BitList;
+    use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes52};
+    use peam_consensus_types::types::collections::SszList;
+    use peam_consensus_types::types::uint::Uint64;
     use crate::crypto::pq::{self, DevnetValidatorKeyRole};
     use crate::ssz::HashTreeRoot;
-    use crate::slot::Slot;
-    use crate::types::bitlist::BitList;
-    use crate::types::bytes::{ByteList, Bytes32, Bytes52};
-    use crate::types::collections::SszList;
-    use crate::types::uint::Uint64;
 
     fn sample_attestation_data(slot: u64) -> AttestationData {
         let checkpoint = Checkpoint {
@@ -529,17 +528,14 @@ mod tests {
                     .expect("attestation key")
                 };
                 let (proposal_pubkey, proposal_signature) = {
-                    pq::key_gen_for_devnet_validator_with_role(
-                        0,
-                        DevnetValidatorKeyRole::Proposal,
-                    )
-                    .map(|(pubkey, secret_key)| {
-                        let message_root = block.hash_tree_root();
-                        let signature = pq::sign_message(&secret_key, 4, &message_root)
-                            .expect("proposal signature");
-                        (pubkey, signature)
-                    })
-                    .expect("proposal key")
+                    pq::key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
+                        .map(|(pubkey, secret_key)| {
+                            let message_root = block.hash_tree_root();
+                            let signature = pq::sign_message(&secret_key, 4, &message_root)
+                                .expect("proposal signature");
+                            (pubkey, signature)
+                        })
+                        .expect("proposal key")
                 };
 
                 let verifier =

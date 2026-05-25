@@ -187,8 +187,8 @@ impl SignedBlockWithAttestation {
             if proposer_attestation.data.slot != block.slot {
                 return Err("proposer attestation slot does not match block slot".to_string());
             }
-            let proposer_bit = single_set_bit(&proposer_attestation.aggregation_bits)
-                .ok_or_else(|| {
+            let proposer_bit =
+                single_set_bit(&proposer_attestation.aggregation_bits).ok_or_else(|| {
                     "proposer attestation must have exactly one participant".to_string()
                 })?;
             if proposer_bit != block.proposer_index.0.0 as usize {
@@ -235,7 +235,6 @@ fn single_set_bit(
 ) -> Option<usize> {
     let mut found = None;
     let len = bits.len;
-    //SIMDDDDDDDDDDDDDDDD
     for i in 0..len {
         let byte = i / 8;
         let bit = i % 8;
@@ -678,9 +677,11 @@ impl HashTreeRoot for Block {
 /// We emit this format to preserve cross-client decode compatibility.
 impl SszEncode for BlockWithAttestation {
     fn encode_ssz(&self) -> Vec<u8> {
-        // Require exactly one proposer bit to derive validator_id for canonical wire format.
+        // Preserve cross-client compatibility even when the block arrived over a
+        // network path that omits the proposer attestation. In that case, fall
+        // back to the block proposer index and the synthesized attestation data.
         let proposer_index = single_set_bit(&self.proposer_attestation.aggregation_bits)
-            .expect("proposer attestation must have exactly one participant");
+            .unwrap_or(self.block.proposer_index.0.0 as usize);
         let block = self.block.encode_ssz();
         let att_data = self.proposer_attestation.data.encode_ssz();
         let fixed_len = 4 + 8 + AttestationData::fixed_len();

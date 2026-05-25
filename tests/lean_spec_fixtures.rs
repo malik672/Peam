@@ -1,66 +1,23 @@
 #![allow(clippy::manual_is_multiple_of)]
 
-use std::path::PathBuf;
+mod lean_spec;
 
+use lean_spec::hex::bytes32_from_hex;
+use lean_spec::ssz_runner::{
+    decode_roundtrip, load_single_fixture_entry, local_consensus_container_fixture,
+};
 use peam::containers::block::BlockBody;
 use peam::containers::block::BlockHeader;
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::config::Config;
 use peam::containers::validator::ValidatorIndex;
-use peam::ssz::{SszDecode, SszEncode};
-use peam::types::bytes::Bytes32;
 use peam::types::uint::Uint64;
-
-use serde_json::Value;
-
-fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ssz/devnet/consensus_containers")
-}
-
-fn load_fixture(path: &PathBuf) -> Value {
-    let text = std::fs::read_to_string(path).expect("fixture file");
-    let json: Value = serde_json::from_str(&text).expect("fixture json");
-    json
-}
-
-fn first_fixture_entry(json: &Value) -> &Value {
-    let obj = json.as_object().expect("fixture object");
-    let (_, entry) = obj.iter().next().expect("fixture entry");
-    entry
-}
-
-fn decode_hex(s: &str) -> Vec<u8> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    assert!(s.len() % 2 == 0, "hex string has odd length");
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let bytes = s.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let hi = (bytes[i] as char).to_digit(16).expect("hex digit");
-        let lo = (bytes[i + 1] as char).to_digit(16).expect("hex digit");
-        out.push(((hi << 4) | lo) as u8);
-        i += 2;
-    }
-    out
-}
-
-fn bytes32_from_hex(s: &str) -> Bytes32 {
-    let bytes = decode_hex(s);
-    Bytes32::from_slice(&bytes)
-}
 
 #[test]
 fn lean_spec_config_zero_fixture() {
-    let path = fixtures_root().join("test_config_zero.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "Config");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = Config::decode_ssz(&bytes).expect("decode config");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_config_zero.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: Config = decode_roundtrip(&entry, "Config");
 
     let genesis_time = entry["value"]["genesisTime"].as_u64().expect("genesisTime");
     assert_eq!(decoded.genesis_time, Uint64(genesis_time));
@@ -68,16 +25,9 @@ fn lean_spec_config_zero_fixture() {
 
 #[test]
 fn lean_spec_config_typical_fixture() {
-    let path = fixtures_root().join("test_config_typical.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "Config");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = Config::decode_ssz(&bytes).expect("decode config");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_config_typical.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: Config = decode_roundtrip(&entry, "Config");
 
     let genesis_time = entry["value"]["genesisTime"].as_u64().expect("genesisTime");
     assert_eq!(decoded.genesis_time, Uint64(genesis_time));
@@ -85,16 +35,9 @@ fn lean_spec_config_typical_fixture() {
 
 #[test]
 fn lean_spec_checkpoint_zero_fixture() {
-    let path = fixtures_root().join("test_checkpoint_zero.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "Checkpoint");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = Checkpoint::decode_ssz(&bytes).expect("decode checkpoint");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_checkpoint_zero.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: Checkpoint = decode_roundtrip(&entry, "Checkpoint");
 
     let root = entry["value"]["root"].as_str().expect("root");
     let slot = entry["value"]["slot"].as_u64().expect("slot");
@@ -104,16 +47,9 @@ fn lean_spec_checkpoint_zero_fixture() {
 
 #[test]
 fn lean_spec_checkpoint_typical_fixture() {
-    let path = fixtures_root().join("test_checkpoint_typical.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "Checkpoint");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = Checkpoint::decode_ssz(&bytes).expect("decode checkpoint");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_checkpoint_typical.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: Checkpoint = decode_roundtrip(&entry, "Checkpoint");
 
     let root = entry["value"]["root"].as_str().expect("root");
     let slot = entry["value"]["slot"].as_u64().expect("slot");
@@ -123,16 +59,9 @@ fn lean_spec_checkpoint_typical_fixture() {
 
 #[test]
 fn lean_spec_block_header_zero_fixture() {
-    let path = fixtures_root().join("test_block_header_zero.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "BlockHeader");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = BlockHeader::decode_ssz(&bytes).expect("decode block header");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_block_header_zero.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: BlockHeader = decode_roundtrip(&entry, "BlockHeader");
 
     let slot = entry["value"]["slot"].as_u64().expect("slot");
     let proposer = entry["value"]["proposerIndex"]
@@ -151,16 +80,9 @@ fn lean_spec_block_header_zero_fixture() {
 
 #[test]
 fn lean_spec_block_header_typical_fixture() {
-    let path = fixtures_root().join("test_block_header_typical.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "BlockHeader");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = BlockHeader::decode_ssz(&bytes).expect("decode block header");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_block_header_typical.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: BlockHeader = decode_roundtrip(&entry, "BlockHeader");
 
     let slot = entry["value"]["slot"].as_u64().expect("slot");
     let proposer = entry["value"]["proposerIndex"]
@@ -179,15 +101,8 @@ fn lean_spec_block_header_typical_fixture() {
 
 #[test]
 fn lean_spec_block_body_empty_fixture() {
-    let path = fixtures_root().join("test_block_body_empty.json");
-    let json = load_fixture(&path);
-    let entry = first_fixture_entry(&json);
-
-    assert_eq!(entry["typeName"], "BlockBody");
-    let serialized = entry["serialized"].as_str().expect("serialized");
-    let bytes = decode_hex(serialized);
-    let decoded = BlockBody::decode_ssz(&bytes).expect("decode block body");
-    let encoded = decoded.encode_ssz();
-    assert_eq!(encoded, bytes);
+    let path = local_consensus_container_fixture("test_block_body_empty.json");
+    let entry = load_single_fixture_entry(&path);
+    let decoded: BlockBody = decode_roundtrip(&entry, "BlockBody");
     assert!(decoded.attestations.is_empty());
 }

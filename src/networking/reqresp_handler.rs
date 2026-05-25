@@ -11,11 +11,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{debug, info};
 
-use crate::containers::req_resp::{MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Status};
+use peam_consensus_types::containers::req_resp::{
+    MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Status,
+};
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::uint::Uint64;
 use crate::ssz::HashTreeRoot;
-use crate::storage::Store;
-use crate::types::bytes::Bytes32;
-use crate::types::uint::Uint64;
+use peam_storage::Store;
 
 use super::reqresp_messages::{LeanRequestMessage, LeanResponseMessage};
 
@@ -50,13 +52,13 @@ impl ReqRespHandler for NoopReqRespHandler {
 /// - `BlocksByRoot` — looks up each requested root in the store and returns
 ///   the found signed blocks (up to [`MAX_BLOCKS_BY_ROOT_RESPONSE`]).
 pub struct StoreReqRespHandler<S: Store + Send + Sync + 'static> {
-    state: Arc<RwLock<crate::containers::state::State>>,
+    state: Arc<RwLock<peam_state::state::State>>,
     store: Arc<RwLock<S>>,
 }
 
 impl<S: Store + Send + Sync + 'static> StoreReqRespHandler<S> {
     /// Creates a new handler sharing `state` and `store` via `Arc<RwLock<…>>`.
-    pub fn new(state: Arc<RwLock<crate::containers::state::State>>, store: Arc<RwLock<S>>) -> Self {
+    pub fn new(state: Arc<RwLock<peam_state::state::State>>, store: Arc<RwLock<S>>) -> Self {
         Self { state, store }
     }
 

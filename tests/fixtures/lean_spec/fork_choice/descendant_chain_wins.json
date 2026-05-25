@@ -1,0 +1,22 @@
+{
+  "descendant_chain_wins": {
+    "validators": 1,
+    "anchorSlot": 1,
+    "blocks": [
+      {
+        "label": "older_child",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": false
+      },
+      {
+        "label": "newer_child",
+        "parent": "older_child",
+        "slot": 3,
+        "includeAttestation": false
+      }
+    ],
+    "votes": [],
+    "expectedHead": "newer_child"
+  }
+}

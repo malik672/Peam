@@ -175,6 +175,39 @@ fn fork_choice_uses_votes_to_pick_head() {
 }
 
 #[test]
+fn fork_choice_prefers_newer_child_when_weights_tie() {
+    let v = Validator {
+        attestation_pubkey: Bytes52::from([0x01u8; 52]),
+        proposal_pubkey: Bytes52::from([0x01u8; 52]),
+        index: ValidatorIndex(Uint64(0)),
+        balance: Uint64(0),
+    };
+    let validators = Validators::new(vec![v]).expect("validators");
+    let state = State::generate_genesis(Uint64(0), validators);
+
+    let (anchor_block, anchor_state, anchor_root) = build_signed_block(&state, 1, false);
+    let mut store = ForkChoiceStore::new(anchor_block, anchor_state.clone()).expect("forkchoice");
+    assert_eq!(store.head(), anchor_root);
+
+    let (older_child, older_state, older_root) = build_signed_block(&anchor_state, 2, false);
+    store
+        .on_block(older_child, older_state.clone())
+        .expect("older child");
+
+    let (newer_child, newer_state, newer_root) = build_signed_block(&older_state, 3, false);
+    store
+        .on_block(newer_child, newer_state)
+        .expect("newer child");
+
+    assert_eq!(
+        store.head(),
+        newer_root,
+        "equal-weight descendants should prefer the fresher imported slot over root ordering"
+    );
+    assert_ne!(newer_root, older_root);
+}
+
+#[test]
 fn proposal_head_applies_pending_votes_before_returning_head() {
     let v = Validator {
         attestation_pubkey: Bytes52::from([0x01u8; 52]),

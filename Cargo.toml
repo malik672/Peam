@@ -1,13 +1,20 @@
+[workspace]
+members = [".", "crates/peam-consensus-types", "crates/peam-state", "crates/peam-fork-choice", "crates/peam-storage"]
+resolver = "2"
+
 [package]
 name = "peam"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+peam-consensus-types = { path = "crates/peam-consensus-types" }
+peam-fork-choice = { path = "crates/peam-fork-choice" }
+peam-state = { path = "crates/peam-state" }
+peam-storage = { path = "crates/peam-storage" }
 peam-ssz = "2.0.1"
 sha2 = "0.10"
 rapidhash = "1.0"
-redb = "3.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }

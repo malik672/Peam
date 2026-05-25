@@ -1,0 +1,35 @@
+{
+  "tests/consensus/devnet/state_transition/test_block_processing.py::test_process_first_block_after_genesis[fork_Devnet-state_transition_test]": {
+    "_info": {
+      "fixtureFormat": "state_transition_test",
+      "description": "Generated-envelope compatibility fixture for first block after genesis"
+    },
+    "network": "Devnet",
+    "pre": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {}
+      ]
+    },
+    "blocks": [
+      {
+        "slot": 1,
+        "proposerIndex": 1
+      }
+    ],
+    "post": {
+      "slot": 1,
+      "validatorCount": 2,
+      "configGenesisTime": 0,
+      "latestBlockHeaderSlot": 1,
+      "latestBlockHeaderProposerIndex": 1,
+      "historicalBlockHashesCount": 1,
+      "latestJustifiedSlot": 0,
+      "latestFinalizedSlot": 0
+    }
+  }
+}

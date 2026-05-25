@@ -1,17 +1,18 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use peam_consensus_types::containers::block::SignedBlockWithAttestation;
+use peam_consensus_types::containers::req_resp::Status;
+use peam_consensus_types::slot::Slot;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::uint::Uint64;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
 use tracing::{debug, info, warn};
 
-use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::req_resp::Status;
-use crate::containers::state::State;
-use crate::fork_choice::ForkChoiceStore;
-use crate::slot::Slot;
+use peam_state::state::State;
+use crate::state_pq::PqBlockProcessor;
 use crate::ssz::HashTreeRoot;
-use crate::storage::{FileStore, Store};
-use crate::types::bytes::Bytes32;
-use crate::types::uint::Uint64;
+use peam_storage::{FileStore, Store};
 
 #[inline]
 pub(super) fn build_local_status(
@@ -137,7 +138,11 @@ pub(super) fn import_backfill_chain(
             return None;
         }
         if let Err(err) =
-            store_guard.put_backfill_signed_block(root, signed.clone(), &mut replay_state)
+            store_guard.put_backfill_signed_block::<PqBlockProcessor>(
+                root,
+                signed.clone(),
+                &mut replay_state,
+            )
         {
             warn!(
                 "sync import failed root={root:?} err={err} replay_slot={} block_slot={} expected_parent={expected_parent:?} block_parent={:?}",
@@ -234,7 +239,11 @@ pub(super) fn import_streamed_range_chain(
             continue;
         }
         if let Err(err) =
-            store_guard.put_backfill_signed_block(root, signed.clone(), &mut state_guard)
+            store_guard.put_backfill_signed_block::<PqBlockProcessor>(
+                root,
+                signed.clone(),
+                &mut state_guard,
+            )
         {
             warn!(
                 "sync range import failed root={root:?} slot={} err={err}",

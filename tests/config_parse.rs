@@ -324,7 +324,8 @@ fn rejects_legacy_single_pubkey_genesis_yaml() {
     )
     .expect("write legacy genesis yaml");
 
-    let err = peam::app::build_genesis_from_config_yaml(&config_path).expect_err("legacy genesis must be rejected");
+    let err = peam::app::build_genesis_from_config_yaml(&config_path)
+        .expect_err("legacy genesis must be rejected");
     assert!(err.contains("must be a mapping"), "{err}");
 
     let _ = fs::remove_dir_all(&dir);
@@ -355,11 +356,17 @@ fn parses_structured_devnet4_genesis_yaml() {
     let validator = state.validators.get(0).expect("validator");
     assert_eq!(
         validator.attestation_pubkey,
-        peam::types::bytes::Bytes52::from_slice(&[0xd1, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        peam::types::bytes::Bytes52::from_slice(&[
+            0xd1, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ])
     );
     assert_eq!(
         validator.proposal_pubkey,
-        peam::types::bytes::Bytes52::from_slice(&[0xd2, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        peam::types::bytes::Bytes52::from_slice(&[
+            0xd2, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ])
     );
 
     let _ = fs::remove_dir_all(&dir);

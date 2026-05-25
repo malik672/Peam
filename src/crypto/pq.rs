@@ -6,10 +6,9 @@ use lean_multisig::{
     AggregatedXMSS, setup_prover, setup_verifier, xmss_aggregate, xmss_verify_aggregation,
 };
 use leansig::{MESSAGE_LENGTH, serialization::Serializable, signature::SignatureScheme};
+use peam_consensus_types::types::bytes::{Bytes52, Bytes3112};
 use rand::{SeedableRng, rngs::StdRng};
 use std::hash::Hasher;
-
-use crate::types::bytes::{Bytes52, Bytes3112};
 
 /// The concrete XMSS-based post-quantum signature scheme used throughout the node.
 pub type LeanSigScheme =
@@ -204,7 +203,10 @@ fn aggregate_signatures_impl(
             crate::unsafe_vec::write_at(
                 &mut raw_xmss,
                 idx,
-                (public_key_from_bytes(public_key)?, signature_from_bytes(signature)?),
+                (
+                    public_key_from_bytes(public_key)?,
+                    signature_from_bytes(signature)?,
+                ),
             );
             raw_xmss.set_len(idx.unchecked_add(1));
         }

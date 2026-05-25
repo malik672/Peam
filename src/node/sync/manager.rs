@@ -3,27 +3,29 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
-use rapidhash::RapidHashSet;
+use peam_consensus_types::containers::attestation::Attestation;
+use peam_consensus_types::containers::block::{
+    SignedBlockWithAttestation, proposer_attestation_present,
+};
+use peam_consensus_types::containers::req_resp::{
+    BlocksByRangeResponse, BlocksByRootRequest, MAX_BLOCKS_PER_REQUEST,
+};
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::collections::SszList;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
-use crate::containers::attestation::Attestation;
-use crate::containers::block::proposer_attestation_present;
-use crate::containers::req_resp::{
-    BlocksByRangeResponse, BlocksByRootRequest, MAX_BLOCKS_PER_REQUEST,
-};
-use crate::containers::state::State;
-use crate::fork_choice::ForkChoiceStore;
+use peam_state::state::State;
+use crate::logfmt::short_root;
 use crate::metrics::MetricsRegistry;
 use crate::networking::{
     LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent, P2pCommand,
 };
 use crate::ssz::HashTreeRoot;
-use crate::storage::FileStore;
-use crate::storage::Store;
-use crate::types::bytes::Bytes32;
-use crate::types::collections::SszList;
+use peam_storage::{FileStore, Store};
 
 use super::backfill::{
     build_local_status, import_backfill_chain, import_streamed_range_chain,
@@ -38,7 +40,7 @@ fn update_sync_observability(
     in_flight_roots: &RapidHashSet<Bytes32>,
 ) {
     let request_active =
-        pending.pending_root.is_some() || pending.pending_range_start_slot.is_some();
+        !pending.pending_roots.is_empty() || pending.pending_range_start_slot.is_some();
     let request_age_seconds = pending
         .pending_since
         .map(|since| since.elapsed().as_secs())
@@ -54,7 +56,11 @@ fn update_sync_observability(
         .sync_request_age_seconds
         .store(request_age_seconds, Ordering::Relaxed);
     metrics.sync_pending_root_request.store(
-        if pending.pending_root.is_some() { 1 } else { 0 },
+        if !pending.pending_roots.is_empty() {
+            1
+        } else {
+            0
+        },
         Ordering::Relaxed,
     );
     metrics.sync_pending_range_request.store(
@@ -72,15 +78,18 @@ fn update_sync_observability(
 }
 
 #[inline]
-async fn request_root_from_peer(
+async fn request_roots_from_peer(
     p2p_tx: &tokio::sync::mpsc::Sender<P2pCommand>,
     peer_id_str: &str,
-    root: Bytes32,
+    roots: &[Bytes32],
 ) -> bool {
+    if roots.is_empty() || roots.len() > MAX_BLOCKS_PER_REQUEST {
+        return false;
+    }
     let Ok(peer) = peer_id_str.parse::<PeerId>() else {
         return false;
     };
-    let roots = match SszList::new(vec![root]) {
+    let roots = match SszList::new(roots.to_vec()) {
         Ok(roots) => roots,
         Err(_) => return false,
     };
@@ -101,11 +110,11 @@ async fn request_root_with_fanout(
     p2p_tx: &tokio::sync::mpsc::Sender<P2pCommand>,
     peers: &crate::networking::PeerManager,
     preferred_peer_id: &str,
-    root: Bytes32,
+    roots: &[Bytes32],
     max_peers: usize,
 ) -> usize {
     let mut requested = 0usize;
-    if request_root_from_peer(p2p_tx, preferred_peer_id, root).await {
+    if request_roots_from_peer(p2p_tx, preferred_peer_id, roots).await {
         requested += 1;
     }
     if requested >= max_peers {
@@ -116,7 +125,7 @@ async fn request_root_with_fanout(
         if peer_id_str == preferred_peer_id {
             continue;
         }
-        if request_root_from_peer(p2p_tx, &peer_id_str, root).await {
+        if request_roots_from_peer(p2p_tx, &peer_id_str, roots).await {
             requested += 1;
         }
         if requested >= max_peers {
@@ -124,6 +133,76 @@ async fn request_root_with_fanout(
         }
     }
     requested
+}
+
+#[inline]
+fn select_root_batch(
+    pending_parent_roots: &RapidHashMap<Bytes32, String>,
+    max_roots: usize,
+) -> (Vec<Bytes32>, Option<String>) {
+    let mut roots = Vec::with_capacity(max_roots.min(pending_parent_roots.len()));
+    let mut preferred_peer = None;
+    for (root, peer_id) in pending_parent_roots.iter().take(max_roots) {
+        roots.push(*root);
+        if preferred_peer.is_none() {
+            preferred_peer = Some(peer_id.clone());
+        }
+    }
+    (roots, preferred_peer)
+}
+
+#[inline]
+fn root_batch_sample(roots: &[Bytes32]) -> Vec<String> {
+    roots.iter().take(4).map(short_root).collect()
+}
+
+#[inline]
+async fn flush_pending_parent_fetches(
+    p2p_tx: &tokio::sync::mpsc::Sender<P2pCommand>,
+    peers: &crate::networking::PeerManager,
+    pending_parent_roots: &mut RapidHashMap<Bytes32, String>,
+    pending: &mut PendingBackfill,
+    in_flight_roots: &mut RapidHashSet<Bytes32>,
+    metrics: &MetricsRegistry,
+    max_fanout_peers: usize,
+) -> bool {
+    if !pending.pending_roots.is_empty()
+        || pending.pending_range_start_slot.is_some()
+        || pending_parent_roots.is_empty()
+    {
+        return false;
+    }
+
+    let (roots, Some(preferred_peer_id)) =
+        select_root_batch(pending_parent_roots, MAX_BLOCKS_PER_REQUEST)
+    else {
+        return false;
+    };
+    if roots.is_empty() {
+        return false;
+    }
+
+    let requested =
+        request_root_with_fanout(p2p_tx, peers, &preferred_peer_id, &roots, max_fanout_peers).await;
+    if requested == 0 {
+        return false;
+    }
+
+    for root in &roots {
+        in_flight_roots.insert(*root);
+        pending_parent_roots.remove(root);
+    }
+    pending.set_pending_roots(preferred_peer_id.clone(), roots.clone());
+    update_sync_observability(metrics, pending, in_flight_roots);
+    info!(
+        peer = preferred_peer_id,
+        requested_roots = roots.len(),
+        fanout_peers = requested,
+        sample_roots = ?root_batch_sample(&roots),
+        remaining_queued_parents = pending_parent_roots.len(),
+        "sync backfill flushed parent root batch"
+    );
+    true
 }
 
 #[inline]
@@ -163,7 +242,7 @@ async fn broadcast_status_to_peers(
 #[inline]
 fn enqueue_proposer_attestations_from_backfill_chain(
     pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
-    fetched_chain_newest_to_oldest: &[crate::containers::block::SignedBlockWithAttestation],
+    fetched_chain_newest_to_oldest: &[SignedBlockWithAttestation],
 ) {
     if fetched_chain_newest_to_oldest.is_empty() {
         return;
@@ -203,7 +282,7 @@ fn attestation_trace_enabled() -> bool {
 #[inline]
 fn log_sync_proposer_attestation_sample(
     reason: &'static str,
-    signed: &crate::containers::block::SignedBlockWithAttestation,
+    signed: &SignedBlockWithAttestation,
 ) {
     if !attestation_trace_enabled() {
         return;
@@ -216,7 +295,7 @@ fn log_sync_proposer_attestation_sample(
     let proposer = &signed.message.proposer_attestation.data;
     info!(
         reason,
-        block_root = ?crate::types::bytes::Bytes32::from(block.hash_tree_root()),
+        block_root = ?Bytes32::from(block.hash_tree_root()),
         block_slot = block.slot.0.0,
         proposer_att_slot = proposer.slot.0.0,
         proposer_head_slot = proposer.head.slot.0.0,
@@ -260,6 +339,7 @@ pub(crate) fn spawn_status_sync_task(
             .unwrap_or_else(Instant::now);
 
         let mut pending = PendingBackfill::default();
+        let mut pending_parent_roots = RapidHashMap::<Bytes32, String>::default();
         // Single-flight guard: while a root is in this set, never schedule it again.
         let mut in_flight_roots = RapidHashSet::<Bytes32>::default();
         update_sync_observability(&metrics, &pending, &in_flight_roots);
@@ -268,23 +348,23 @@ pub(crate) fn spawn_status_sync_task(
             tokio::select! {
                 _ = ticker.tick() => {
                     update_sync_observability(&metrics, &pending, &in_flight_roots);
-                    if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
+                    if !pending.pending_roots.is_empty() || pending.pending_range_start_slot.is_some() {
                         if let Some(since) = pending.pending_since {
                             if since.elapsed() < SYNC_REQUEST_TIMEOUT {
                                 // Keep waiting for the in-flight response.
                             } else {
                                 warn!(
-                                    "sync request timed out root={:?} range_start={:?} range_count={:?} peer={} depth={}",
-                                    pending.pending_root,
+                                    "sync request timed out roots={:?} range_start={:?} range_count={:?} peer={} depth={}",
+                                    pending.pending_roots,
                                     pending.pending_range_start_slot,
                                     pending.pending_range_count,
                                     pending.active_peer.as_deref().unwrap_or("none"),
                                     pending.fetched_chain_newest_to_oldest.len()
                                 );
-                                if let Some(root) = pending.pending_root {
+                                for root in &pending.pending_roots {
                                     in_flight_roots.remove(&root);
                                 }
-                                pending.pending_root = None;
+                                pending.pending_roots.clear();
                                 pending.pending_since = None;
                                 pending.fetched_chain_newest_to_oldest.clear();
                                 pending.active_peer = None;
@@ -297,7 +377,20 @@ pub(crate) fn spawn_status_sync_task(
                             }
                         }
                     }
-                    if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
+                    if !pending.pending_roots.is_empty() || pending.pending_range_start_slot.is_some() {
+                        continue;
+                    }
+                    if flush_pending_parent_fetches(
+                        &p2p_tx,
+                        &peers,
+                        &mut pending_parent_roots,
+                        &mut pending,
+                        &mut in_flight_roots,
+                        &metrics,
+                        BLOCKS_BY_ROOT_FANOUT_PEERS,
+                    )
+                    .await
+                    {
                         continue;
                     }
                     if last_status_probe.elapsed() < STATUS_PROBE_INTERVAL {
@@ -334,7 +427,7 @@ pub(crate) fn spawn_status_sync_task(
                     };
                     match kind {
                         LeanSupportedProtocol::StatusV1 => {
-                            if pending.pending_root.is_some() || pending.pending_range_start_slot.is_some() {
+                            if !pending.pending_roots.is_empty() || pending.pending_range_start_slot.is_some() {
                                 continue;
                             }
                             let remote_status = match LeanResponseMessage::decode_ssz(kind, &payload) {
@@ -408,7 +501,7 @@ pub(crate) fn spawn_status_sync_task(
                                 &p2p_tx,
                                 &peers,
                                 &peer_id,
-                                remote_status.head_root,
+                                &[remote_status.head_root],
                                 BLOCKS_BY_ROOT_FANOUT_PEERS,
                             )
                             .await;
@@ -475,9 +568,9 @@ pub(crate) fn spawn_status_sync_task(
                             }
                         }
                         LeanSupportedProtocol::BlocksByRootV1 => {
-                            let Some(target_root) = pending.pending_root else {
+                            if pending.pending_roots.is_empty() {
                                 continue;
-                            };
+                            }
                             let signed = match LeanResponseMessage::decode_ssz(kind, &payload) {
                                 Ok(LeanResponseMessage::BlocksByRoot(signed)) => signed,
                                 Ok(other) => {
@@ -502,29 +595,30 @@ pub(crate) fn spawn_status_sync_task(
                                     continue;
                                 }
                             };
-                            if crate::types::bytes::Bytes32::from(signed.message.block.hash_tree_root())
-                                != target_root
-                            {
+                            let signed_root =
+                                Bytes32::from(signed.message.block.hash_tree_root());
+                            if !pending.pending_roots.contains(&signed_root) {
                                 debug!(
-                                    "sync response missing target root={:?} got={:?} peer={}",
-                                    target_root,
-                                    crate::types::bytes::Bytes32::from(
-                                        signed.message.block.hash_tree_root()
-                                    ),
+                                    "sync response root not in pending batch pending_roots={:?} got={:?} peer={}",
+                                    pending.pending_roots,
+                                    signed_root,
                                     peer_id
                                 );
                                 // Don't reset sync on a single incomplete response; wait for
                                 // timeout-driven retry.
                                 continue;
                             }
-                            in_flight_roots.remove(&target_root);
+                            in_flight_roots.remove(&signed_root);
+                            pending.pending_roots.retain(|root| *root != signed_root);
+                            if pending.pending_roots.is_empty() {
+                                pending.pending_since = None;
+                            }
+                            let remaining_pending = pending.pending_roots.len();
                             pending.active_peer = Some(peer_id.clone());
                             update_sync_observability(&metrics, &pending, &in_flight_roots);
 
                             let parent_root = signed.message.block.parent_root;
                             let signed_slot = signed.message.block.slot;
-                            let signed_root =
-                                crate::types::bytes::Bytes32::from(signed.message.block.hash_tree_root());
                             pending.fetched_chain_newest_to_oldest.push(signed);
                             sync_pending_depth.store(
                                 pending.fetched_chain_newest_to_oldest.len() as u64,
@@ -543,7 +637,7 @@ pub(crate) fn spawn_status_sync_task(
 
                             let parent_known_or_anchor = {
                                 let store_guard = store.read().expect("store lock");
-                                parent_root == crate::types::bytes::Bytes32::zero()
+                                parent_root == Bytes32::zero()
                                     || store_guard.get_block(&parent_root).is_some()
                                     || parent_matches_sync_anchor(
                                         &state,
@@ -557,9 +651,18 @@ pub(crate) fn spawn_status_sync_task(
                                 signed_slot.0.0,
                                 parent_root,
                                 pending.fetched_chain_newest_to_oldest.len(),
-                                target_root,
+                                signed_root,
                                 peer_id,
                                 parent_known_or_anchor
+                            );
+                            debug!(
+                                peer = %peer_id,
+                                received_root = %short_root(&signed_root),
+                                parent_root = %short_root(&parent_root),
+                                remaining_pending_roots = remaining_pending,
+                                queued_parent_roots = pending_parent_roots.len(),
+                                chain_depth = pending.fetched_chain_newest_to_oldest.len(),
+                                "sync backfill batch progress"
                             );
                             if parent_known_or_anchor {
                                 let oldest = pending
@@ -567,7 +670,7 @@ pub(crate) fn spawn_status_sync_task(
                                     .last()
                                     .map(|block| {
                                         (
-                                            crate::types::bytes::Bytes32::from(
+                                            Bytes32::from(
                                                 block.message.block.hash_tree_root(),
                                             ),
                                             block.message.block.slot.0.0,
@@ -579,7 +682,7 @@ pub(crate) fn spawn_status_sync_task(
                                     .first()
                                     .map(|block| {
                                         (
-                                            crate::types::bytes::Bytes32::from(
+                                            Bytes32::from(
                                                 block.message.block.hash_tree_root(),
                                             ),
                                             block.message.block.slot.0.0,
@@ -637,53 +740,34 @@ pub(crate) fn spawn_status_sync_task(
                                 }
                                 continue;
                             }
-
-                            pending.pending_root = Some(parent_root);
-                            pending.pending_since = Some(Instant::now());
+                            pending_parent_roots
+                                .entry(parent_root)
+                                .or_insert_with(|| peer_id.clone());
                             update_sync_observability(&metrics, &pending, &in_flight_roots);
                             debug!(
-                                "sync chaining parent request child_root={:?} child_slot={} parent_root={:?} depth={} peer={}",
+                                "sync queued missing parent root child_root={:?} child_slot={} parent_root={:?} depth={} peer={}",
                                 signed_root,
                                 signed_slot.0.0,
                                 parent_root,
                                 pending.fetched_chain_newest_to_oldest.len(),
                                 peer_id
                             );
-                            if !in_flight_roots.insert(parent_root) {
-                                debug!(
-                                    "sync dedup skipped scheduling already in-flight parent root={:?} peer={}",
-                                    parent_root, peer_id
-                                );
-                                continue;
-                            }
-                            debug!(
-                                "sync backfill requesting parent root={:?} from peer={}",
-                                parent_root,
-                                peer_id,
-                            );
-                            let requested = request_root_with_fanout(
-                                &p2p_tx,
-                                &peers,
-                                &peer_id,
-                                parent_root,
-                                BLOCKS_BY_ROOT_FANOUT_PEERS,
-                            )
-                            .await;
-                            if requested == 0 {
-                                warn!(
-                                    "sync failed to dispatch parent blocks_by_root request root={:?}",
-                                    parent_root
-                                );
-                                in_flight_roots.remove(&parent_root);
-                                pending.pending_root = None;
-                                pending.pending_since = None;
-                                pending.active_peer = None;
-                                pending.fetched_chain_newest_to_oldest.clear();
-                                sync_pending_depth.store(0, Ordering::Relaxed);
-                                update_sync_observability(&metrics, &pending, &in_flight_roots);
-                                last_status_probe = Instant::now()
-                                    .checked_sub(STATUS_PROBE_INTERVAL)
-                                    .unwrap_or_else(Instant::now);
+                            if pending.pending_roots.is_empty() {
+                                let flushed = flush_pending_parent_fetches(
+                                    &p2p_tx,
+                                    &peers,
+                                    &mut pending_parent_roots,
+                                    &mut pending,
+                                    &mut in_flight_roots,
+                                    &metrics,
+                                    BLOCKS_BY_ROOT_FANOUT_PEERS,
+                                )
+                                .await;
+                                if !flushed && pending_parent_roots.is_empty() {
+                                    last_status_probe = Instant::now()
+                                        .checked_sub(STATUS_PROBE_INTERVAL)
+                                        .unwrap_or_else(Instant::now);
+                                }
                             }
                         }
                     }
@@ -691,4 +775,29 @@ pub(crate) fn spawn_status_sync_task(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rapidhash::RapidHashMap;
+
+    use peam_consensus_types::types::bytes::Bytes32;
+
+    use super::select_root_batch;
+
+    #[test]
+    fn select_root_batch_limits_batch_size_and_returns_peer() {
+        let mut pending = RapidHashMap::default();
+        pending.insert(Bytes32::from([1; 32]), "peer-a".to_string());
+        pending.insert(Bytes32::from([2; 32]), "peer-b".to_string());
+        pending.insert(Bytes32::from([3; 32]), "peer-c".to_string());
+
+        let (roots, preferred_peer) = select_root_batch(&pending, 2);
+
+        assert_eq!(roots.len(), 2);
+        assert!(preferred_peer.is_some());
+        for root in roots {
+            assert!(pending.contains_key(&root));
+        }
+    }
 }
