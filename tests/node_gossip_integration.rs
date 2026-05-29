@@ -8,7 +8,9 @@ use peam::containers::checkpoint::Checkpoint;
 use peam::containers::gossip::{GossipAttestation, GossipBlock};
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
-use peam::crypto::pq::{DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, sign_message};
+use peam::crypto::pq::{
+    DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, sign_message,
+};
 use peam::metrics::MetricsRegistry;
 use peam::networking::gossipsub::lean::topics::{LeanGossipTopic, LeanGossipTopicKind};
 use peam::node::handle_gossip_event;
@@ -64,13 +66,9 @@ fn build_signed_block(state: &State, slot: u64) -> (SignedBlockWithAttestation, 
     let (_, secret_key) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
             .expect("validator key");
-    let proposer_message = proposer_attestation.data.hash_tree_root();
-    let proposer_signature = sign_message(
-        &secret_key,
-        proposer_attestation.data.slot.0.0 as u32,
-        &proposer_message,
-    )
-    .expect("proposer signature");
+    let proposer_message = block.hash_tree_root();
+    let proposer_signature = sign_message(&secret_key, block.slot.0.0 as u32, &proposer_message)
+        .expect("proposer signature");
 
     let message = BlockWithAttestation {
         block,

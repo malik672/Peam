@@ -7,19 +7,21 @@
 //! used above the raw byte layer; both implement SSZ encode/decode dispatched
 //! by protocol variant.
 
-use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::req_resp::{
+use crate::ssz::{SszDecode, SszEncode};
+use peam_consensus_types::containers::block::{
+    SignedBlockWithAttestation, decode_signed_block_network_checked, encode_signed_block_network,
+};
+use peam_consensus_types::containers::req_resp::{
     BlocksByRangeRequest, BlocksByRangeResponse, BlocksByRootRequest, BlocksByRootResponse, Status,
 };
-use crate::ssz::{SszDecode, SszEncode};
-use crate::types::collections::SszList;
+use peam_consensus_types::types::collections::SszList;
 
 #[inline]
 fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootRequest, String> {
-    if let Ok(req) = BlocksByRootRequest::decode_ssz(data) {
+    if let Ok(req) = BlocksByRootRequest::decode_ssz_checked(data) {
         return Ok(req);
     }
-    let roots = SszList::decode_ssz(data)?;
+    let roots = SszList::decode_ssz_checked(data)?;
     Ok(BlocksByRootRequest { roots })
 }
 
@@ -27,10 +29,11 @@ fn decode_blocks_by_root_request_compat(data: &[u8]) -> Result<BlocksByRootReque
 fn decode_blocks_by_root_response_compat(
     data: &[u8],
 ) -> Result<SignedBlockWithAttestation, String> {
-    if let Ok(single) = SignedBlockWithAttestation::decode_ssz(data) {
+    if let Ok(single) = decode_signed_block_network_checked(data) {
         return Ok(single);
     }
-    if let Ok(resp) = BlocksByRootResponse::decode_ssz(data) {
+    let single_err = decode_signed_block_network_checked(data).unwrap_err();
+    if let Ok(resp) = BlocksByRootResponse::decode_ssz_checked(data) {
         return resp
             .blocks
             .into_inner()
@@ -38,17 +41,21 @@ fn decode_blocks_by_root_response_compat(
             .next()
             .ok_or_else(|| "empty BlocksByRoot response payload".to_string());
     }
-    Err("unsupported BlocksByRoot response payload".to_string())
+    let list_err = BlocksByRootResponse::decode_ssz_checked(data).unwrap_err();
+    Err(format!(
+        "unsupported BlocksByRoot response payload: single_err={single_err}; list_err={list_err}"
+    ))
 }
 
 #[inline]
 fn decode_blocks_by_range_response_compat(
     data: &[u8],
 ) -> Result<SignedBlockWithAttestation, String> {
-    if let Ok(single) = SignedBlockWithAttestation::decode_ssz(data) {
+    if let Ok(single) = decode_signed_block_network_checked(data) {
         return Ok(single);
     }
-    if let Ok(resp) = BlocksByRangeResponse::decode_ssz(data) {
+    let single_err = decode_signed_block_network_checked(data).unwrap_err();
+    if let Ok(resp) = BlocksByRangeResponse::decode_ssz_checked(data) {
         return resp
             .blocks
             .into_inner()
@@ -56,7 +63,10 @@ fn decode_blocks_by_range_response_compat(
             .next()
             .ok_or_else(|| "empty BlocksByRange response payload".to_string());
     }
-    Err("unsupported BlocksByRange response payload".to_string())
+    let list_err = BlocksByRangeResponse::decode_ssz_checked(data).unwrap_err();
+    Err(format!(
+        "unsupported BlocksByRange response payload: single_err={single_err}; list_err={list_err}"
+    ))
 }
 
 /// All req/resp protocols supported by the lean-Ethereum node.
@@ -205,8 +215,8 @@ impl LeanResponseMessage {
     pub fn encode_ssz(&self) -> Vec<u8> {
         match self {
             LeanResponseMessage::Status(status) => status.encode_ssz(),
-            LeanResponseMessage::BlocksByRange(block) => block.encode_ssz(),
-            LeanResponseMessage::BlocksByRoot(block) => block.encode_ssz(),
+            LeanResponseMessage::BlocksByRange(block) => encode_signed_block_network(block),
+            LeanResponseMessage::BlocksByRoot(block) => encode_signed_block_network(block),
         }
     }
 

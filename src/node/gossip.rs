@@ -2,26 +2,36 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
+use libp2p::PeerId;
 use libp2p::gossipsub::TopicHash;
+use peam_consensus_types::containers::attestation::{
+    Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
+};
+use peam_consensus_types::containers::block::{
+    SignedBlockWithAttestation, proposer_attestation_present,
+};
+use peam_consensus_types::containers::req_resp::BlocksByRootRequest;
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::collections::SszList;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
+use rapidhash::RapidHashMap;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-use crate::containers::attestation::{Attestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT};
-use crate::containers::block::SignedBlockWithAttestation;
-use crate::containers::state::State;
-use crate::fork_choice::ForkChoiceStore;
 use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
-use crate::networking::GossipContext;
+use crate::networking::gossipsub::context::GossipContext;
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::{
     ValidationResult, is_retryable_unknown_roots_ignore, validate_basic_message,
     validate_with_context,
 };
+use crate::networking::{LeanRequestMessage, LeanSupportedProtocol, P2pCommand, PeerManager};
 use crate::ssz::HashTreeRoot;
-use crate::storage::Store;
-use crate::types::bitlist::BitList;
-use crate::types::bytes::Bytes32;
+use crate::state_pq::PqBlockProcessor;
+use peam_state::state::State;
+use peam_storage::Store;
 use tracing::{info, warn};
 
 use super::tasks::PendingBlockAttestation;
@@ -29,6 +39,7 @@ use super::tasks::PendingBlockAttestation;
 const DEFERRED_GOSSIP_MAX_ENTRIES: usize = 256;
 const DEFERRED_GOSSIP_TTL: Duration = Duration::from_secs(6);
 const DEFERRED_GOSSIP_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+const DEFERRED_HEAD_REQUEST_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct DeferredGossipMessage {
@@ -36,6 +47,15 @@ pub struct DeferredGossipMessage {
     pub payload: Vec<u8>,
     pub first_seen: Instant,
     pub last_retry: Instant,
+}
+
+#[derive(Clone)]
+pub struct DeferredHeadRootMessage {
+    pub topic: String,
+    pub payload: Vec<u8>,
+    pub preferred_peer_id: Option<String>,
+    pub first_seen: Instant,
+    pub last_request: Instant,
 }
 
 #[inline]
@@ -63,6 +83,84 @@ pub fn queue_deferred_unknown_root_gossip(
     });
 }
 
+#[inline]
+pub fn queue_deferred_missing_head_gossip(
+    buffer: &Arc<RwLock<RapidHashMap<Bytes32, Vec<DeferredHeadRootMessage>>>>,
+    topic: String,
+    payload: Vec<u8>,
+    head_root: Bytes32,
+    preferred_peer_id: Option<String>,
+) {
+    let now = Instant::now();
+    let last_request = now
+        .checked_sub(DEFERRED_HEAD_REQUEST_INTERVAL)
+        .unwrap_or(now);
+    let mut guard = buffer.write().expect("deferred head gossip lock");
+    let entries = guard.entry(head_root).or_default();
+    if entries
+        .iter()
+        .any(|entry| entry.topic == topic && entry.payload == payload)
+    {
+        return;
+    }
+    entries.push(DeferredHeadRootMessage {
+        topic,
+        payload,
+        preferred_peer_id,
+        first_seen: now,
+        last_request,
+    });
+}
+
+#[inline]
+async fn request_root_from_peer(
+    p2p_tx: &tokio::sync::mpsc::Sender<P2pCommand>,
+    peer_id_str: &str,
+    root: Bytes32,
+) -> bool {
+    let Ok(peer) = peer_id_str.parse::<PeerId>() else {
+        return false;
+    };
+    let roots = match SszList::new(vec![root]) {
+        Ok(roots) => roots,
+        Err(_) => return false,
+    };
+    let request = LeanRequestMessage::BlocksByRoot(BlocksByRootRequest { roots });
+    let payload = request.encode_ssz();
+    p2p_tx
+        .send(P2pCommand::SendRequest {
+            peer,
+            protocol: LeanSupportedProtocol::BlocksByRootV1.protocol_id(),
+            payload,
+        })
+        .await
+        .is_ok()
+}
+
+#[inline]
+async fn request_missing_head_root(
+    p2p_tx: &tokio::sync::mpsc::Sender<P2pCommand>,
+    peers: &PeerManager,
+    preferred_peer_id: Option<&str>,
+    root: Bytes32,
+) -> bool {
+    if let Some(peer_id_str) = preferred_peer_id {
+        if request_root_from_peer(p2p_tx, peer_id_str, root).await {
+            return true;
+        }
+    }
+    let peer_list = peers.list().await;
+    for peer_id_str in peer_list {
+        if Some(peer_id_str.as_str()) == preferred_peer_id {
+            continue;
+        }
+        if request_root_from_peer(p2p_tx, &peer_id_str, root).await {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn spawn_deferred_gossip_retry_task<S: Store + Send + Sync + 'static>(
     state: Arc<RwLock<State>>,
     store: Arc<RwLock<S>>,
@@ -71,6 +169,9 @@ pub fn spawn_deferred_gossip_retry_task<S: Store + Send + Sync + 'static>(
     pending_individual_attestations: Arc<RwLock<Vec<SignedAttestation>>>,
     pending_block_attestations: Arc<RwLock<Vec<PendingBlockAttestation>>>,
     deferred_gossip: Arc<RwLock<Vec<DeferredGossipMessage>>>,
+    deferred_missing_heads: Arc<RwLock<RapidHashMap<Bytes32, Vec<DeferredHeadRootMessage>>>>,
+    p2p_tx: tokio::sync::mpsc::Sender<P2pCommand>,
+    peers: PeerManager,
     gossip_context: Arc<dyn GossipContext>,
     is_aggregator: bool,
     metrics: Arc<MetricsRegistry>,
@@ -124,7 +225,68 @@ pub fn spawn_deferred_gossip_retry_task<S: Store + Send + Sync + 'static>(
                 }
                 *guard = remaining;
             }
+            let mut ready_by_root = Vec::new();
+            let mut pending_requests = Vec::new();
+            {
+                let mut guard = deferred_missing_heads
+                    .write()
+                    .expect("deferred head gossip lock");
+                let mut remaining = RapidHashMap::default();
+                for (head_root, mut entries) in guard.drain() {
+                    let root_known = gossip_context.knows_block_root(&head_root)
+                        || store
+                            .read()
+                            .expect("store lock")
+                            .get_block(&head_root)
+                            .is_some();
+                    if root_known {
+                        ready_by_root
+                            .extend(entries.drain(..).map(|entry| (entry.topic, entry.payload)));
+                        continue;
+                    }
+
+                    let mut still_waiting = Vec::with_capacity(entries.len());
+                    for mut entry in entries.drain(..) {
+                        if now.duration_since(entry.first_seen) > DEFERRED_GOSSIP_TTL {
+                            continue;
+                        }
+                        if now.duration_since(entry.last_request) >= DEFERRED_HEAD_REQUEST_INTERVAL
+                        {
+                            pending_requests.push((head_root, entry.preferred_peer_id.clone()));
+                            entry.last_request = now;
+                        }
+                        still_waiting.push(entry);
+                    }
+                    if !still_waiting.is_empty() {
+                        remaining.insert(head_root, still_waiting);
+                    }
+                }
+                *guard = remaining;
+            }
+            for (head_root, preferred_peer_id) in pending_requests.drain(..) {
+                let _ = request_missing_head_root(
+                    &p2p_tx,
+                    &peers,
+                    preferred_peer_id.as_deref(),
+                    head_root,
+                )
+                .await;
+            }
             for (topic, payload) in ready.drain(..) {
+                handle_gossip_event(
+                    &topic,
+                    &payload,
+                    &state,
+                    &store,
+                    &fork_choice,
+                    &pending_attestations,
+                    &pending_individual_attestations,
+                    &pending_block_attestations,
+                    is_aggregator,
+                    &metrics,
+                );
+            }
+            for (topic, payload) in ready_by_root.drain(..) {
                 handle_gossip_event(
                     &topic,
                     &payload,
@@ -233,6 +395,9 @@ fn enqueue_proposer_attestation_from_signed_block(
     signed: &SignedBlockWithAttestation,
 ) {
     let proposer_attestation = signed.message.proposer_attestation.clone();
+    if !proposer_attestation_present(&proposer_attestation) {
+        return;
+    }
     log_pending_attestation_sample(
         "from_imported_block_proposer_attestation",
         &proposer_attestation,
@@ -279,17 +444,19 @@ pub fn handle_gossip_event<S: Store + Send + Sync + 'static>(
     };
     match msg {
         LeanGossipsubMessage::Block(block) => {
-            metrics.gossip_block_size_bytes.observe(payload.len() as u64);
+            metrics
+                .gossip_block_size_bytes
+                .observe(payload.len() as u64);
             let block_start = Instant::now();
             let signed = block.block.clone();
             let root = Bytes32::from(signed.message.block.hash_tree_root());
             let mut state_guard = state.write().expect("state lock");
             let mut store_guard = store.write().expect("store lock");
-            match store_guard.put_signed_block_with_metrics(
+            match store_guard.put_signed_block_with_metrics::<PqBlockProcessor, _>(
                 root,
                 signed.clone(),
                 &mut state_guard,
-                metrics,
+                metrics.as_ref(),
             ) {
                 Ok(()) => {
                     log_imported_block_attestation_payload_sample(

@@ -1,0 +1,16 @@
+{
+  "updates_head_on_new_block": {
+    "validators": 1,
+    "anchorSlot": 1,
+    "blocks": [
+      {
+        "label": "next_block",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": false
+      }
+    ],
+    "votes": [],
+    "expectedHead": "next_block"
+  }
+}

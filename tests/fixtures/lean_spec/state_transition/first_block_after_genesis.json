@@ -1,0 +1,13 @@
+{
+  "first_block_after_genesis": {
+    "validators": 1,
+    "blocks": [
+      {
+        "slot": 1,
+        "proposer": 0
+      }
+    ],
+    "expectedSlot": 1,
+    "expectedHistoryLen": 1
+  }
+}

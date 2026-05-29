@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use leansig::serialization::Serializable;
-use peam::crypto::pq::{DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role};
+use peam::crypto::pq::{
+    DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, public_key_from_bytes,
+};
 
 const DEFAULT_VALIDATORS: usize = 3;
 const DEFAULT_NODE_MAP: &str = "peam_0:0,peer1_0:1,peer2_0:2";
@@ -49,6 +51,21 @@ fn synthetic_node_privkey_hex(node_index: usize) -> String {
 
 fn ensure_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| format!("failed to create {}: {err}", path.display()))
+}
+
+fn write_file(path: &Path, bytes: impl AsRef<[u8]>) {
+    fs::write(path, bytes).unwrap_or_else(|err| {
+        eprintln!("failed writing {}: {err}", path.display());
+        std::process::exit(1);
+    });
+}
+
+fn write_json_file<T: serde::Serialize>(path: &Path, value: &T) {
+    let bytes = serde_json::to_vec_pretty(value).unwrap_or_else(|err| {
+        eprintln!("failed serializing {}: {err}", path.display());
+        std::process::exit(1);
+    });
+    write_file(path, bytes);
 }
 
 fn parse_node_map(raw: &str) -> Result<BTreeMap<String, Vec<usize>>, String> {
@@ -233,50 +250,90 @@ fn main() {
 
         let attestation_pubkey_hex = hex_encode(attestation_pubkey.as_ref());
         let proposal_pubkey_hex = hex_encode(proposal_pubkey.as_ref());
+        let attestation_public_key_json = public_key_from_bytes(&attestation_pubkey)
+            .unwrap_or_else(|err| {
+                eprintln!("failed to decode attestation public key for validator {idx}: {err}");
+                std::process::exit(1);
+            });
+        let proposal_public_key_json =
+            public_key_from_bytes(&proposal_pubkey).unwrap_or_else(|err| {
+                eprintln!("failed to decode proposal public key for validator {idx}: {err}");
+                std::process::exit(1);
+            });
 
         let attestation_sk_bytes = attestation_secret_key.to_bytes();
         let attestation_sk_filename = format!("validator_{idx}_attestation_sk.ssz");
         let attestation_sk_path = hash_sig_dir.join(&attestation_sk_filename);
-        fs::write(&attestation_sk_path, &attestation_sk_bytes).unwrap_or_else(|err| {
-            eprintln!("failed writing {}: {err}", attestation_sk_path.display());
-            std::process::exit(1);
-        });
+        write_file(&attestation_sk_path, &attestation_sk_bytes);
 
         let attestation_pk_bytes = attestation_pubkey.as_array();
         let attestation_pk_filename = format!("validator_{idx}_attestation_pk.ssz");
         let attestation_pk_path = hash_sig_dir.join(&attestation_pk_filename);
-        fs::write(&attestation_pk_path, attestation_pk_bytes).unwrap_or_else(|err| {
-            eprintln!("failed writing {}: {err}", attestation_pk_path.display());
-            std::process::exit(1);
-        });
+        write_file(&attestation_pk_path, attestation_pk_bytes);
 
         let proposal_sk_bytes = proposal_secret_key.to_bytes();
         let proposal_sk_filename = format!("validator_{idx}_proposal_sk.ssz");
         let proposal_sk_path = hash_sig_dir.join(&proposal_sk_filename);
-        fs::write(&proposal_sk_path, &proposal_sk_bytes).unwrap_or_else(|err| {
-            eprintln!("failed writing {}: {err}", proposal_sk_path.display());
-            std::process::exit(1);
-        });
+        write_file(&proposal_sk_path, &proposal_sk_bytes);
 
         let proposal_pk_bytes = proposal_pubkey.as_array();
         let proposal_pk_filename = format!("validator_{idx}_proposal_pk.ssz");
         let proposal_pk_path = hash_sig_dir.join(&proposal_pk_filename);
-        fs::write(&proposal_pk_path, proposal_pk_bytes).unwrap_or_else(|err| {
-            eprintln!("failed writing {}: {err}", proposal_pk_path.display());
-            std::process::exit(1);
-        });
+        write_file(&proposal_pk_path, proposal_pk_bytes);
+
+        // Legacy compatibility aliases still expected by lean-quickstart/qlean.
+        // These point at the attestation keypair, while the split manifest carries
+        // the actual dual-key devnet4 registry information.
+        write_file(
+            &hash_sig_dir.join(format!("validator_{idx}_pk.ssz")),
+            attestation_pk_bytes,
+        );
+        write_file(
+            &hash_sig_dir.join(format!("validator_{idx}_sk.ssz")),
+            &attestation_sk_bytes,
+        );
+        write_json_file(
+            &hash_sig_dir.join(format!("validator_{idx}_pk.json")),
+            &attestation_public_key_json,
+        );
+        write_json_file(
+            &hash_sig_dir.join(format!("validator_{idx}_sk.json")),
+            &attestation_secret_key,
+        );
+        write_json_file(
+            &hash_sig_dir.join(format!("validator_{idx}_attestation_pk.json")),
+            &attestation_public_key_json,
+        );
+        write_json_file(
+            &hash_sig_dir.join(format!("validator_{idx}_attestation_sk.json")),
+            &attestation_secret_key,
+        );
+        write_json_file(
+            &hash_sig_dir.join(format!("validator_{idx}_proposal_pk.json")),
+            &proposal_public_key_json,
+        );
+        write_json_file(
+            &hash_sig_dir.join(format!("validator_{idx}_proposal_sk.json")),
+            &proposal_secret_key,
+        );
 
         validator_material.push(ValidatorMaterial {
-            attestation_pubkey_hex_no_prefix: attestation_pubkey_hex.trim_start_matches("0x").to_string(),
+            attestation_pubkey_hex_no_prefix: attestation_pubkey_hex
+                .trim_start_matches("0x")
+                .to_string(),
             proposal_pubkey_hex_no_prefix: proposal_pubkey_hex.trim_start_matches("0x").to_string(),
             attestation_privkey_file: attestation_sk_filename.clone(),
             proposal_privkey_file: proposal_sk_filename.clone(),
         });
 
         manifest_lines.push(format!("- index: {idx}"));
-        manifest_lines.push(format!("  attestation_pubkey_hex: {attestation_pubkey_hex}"));
+        manifest_lines.push(format!(
+            "  attestation_pubkey_hex: {attestation_pubkey_hex}"
+        ));
         manifest_lines.push(format!("  proposal_pubkey_hex: {proposal_pubkey_hex}"));
-        manifest_lines.push(format!("  attestation_privkey_file: {attestation_sk_filename}"));
+        manifest_lines.push(format!(
+            "  attestation_privkey_file: {attestation_sk_filename}"
+        ));
         manifest_lines.push(format!("  proposal_privkey_file: {proposal_sk_filename}"));
     }
 

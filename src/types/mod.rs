@@ -11,8 +11,22 @@
 /// - [`collections`] — `SszList<T, LIMIT>` (bounded variable-length) and
 ///   `SszVector<T, LENGTH>` (fixed-length) generic containers.
 /// - [`container`] — `Container` marker trait for SSZ composite types.
-pub mod bitlist;
-pub mod bytes;
-pub mod collections;
-pub mod container;
-pub mod uint;
+pub mod bitlist {
+    pub use peam_consensus_types::types::bitlist::*;
+}
+
+pub mod bytes {
+    pub use peam_consensus_types::types::bytes::*;
+}
+
+pub mod collections {
+    pub use peam_consensus_types::types::collections::*;
+}
+
+pub mod container {
+    pub use peam_consensus_types::types::container::*;
+}
+
+pub mod uint {
+    pub use peam_consensus_types::types::uint::*;
+}

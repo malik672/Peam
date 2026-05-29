@@ -1,0 +1,34 @@
+{
+  "finalized_advance_prunes_old_history": {
+    "validators": 2,
+    "anchorSlot": 1,
+    "blocks": [
+      {
+        "label": "block_2a",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": false
+      },
+      {
+        "label": "block_2b",
+        "parent": "anchor",
+        "slot": 2,
+        "includeAttestation": true
+      },
+      {
+        "label": "block_3",
+        "parent": "block_2a",
+        "slot": 3,
+        "includeAttestation": false,
+        "justifiedFrom": "block_2a",
+        "finalizedFrom": "block_2a"
+      }
+    ],
+    "votes": [],
+    "expectedHead": "block_3",
+    "expectedLatestJustified": "block_2a",
+    "expectedLatestFinalized": "block_2a",
+    "presentCheckpoints": ["block_2a", "block_3"],
+    "missingCheckpoints": ["anchor", "block_2b"]
+  }
+}

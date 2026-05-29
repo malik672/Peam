@@ -1,5 +1,5 @@
-use crate::containers::checkpoint::Checkpoint;
-use crate::types::bytes::Bytes32;
+use peam_consensus_types::containers::checkpoint::Checkpoint;
+use peam_consensus_types::types::bytes::Bytes32;
 
 #[inline]
 pub fn short_root(root: &Bytes32) -> String {
@@ -35,10 +35,10 @@ mod tests {
     use super::{
         short_checkpoint, short_opt_root, short_opt_root_or_dash, short_root, short_slot_root,
     };
-    use crate::containers::checkpoint::Checkpoint;
-    use crate::slot::Slot;
-    use crate::types::bytes::Bytes32;
-    use crate::types::uint::Uint64;
+    use peam_consensus_types::containers::checkpoint::Checkpoint;
+    use peam_consensus_types::slot::Slot;
+    use peam_consensus_types::types::bytes::Bytes32;
+    use peam_consensus_types::types::uint::Uint64;
 
     fn root(byte: u8) -> Bytes32 {
         Bytes32::from([byte; 32])
@@ -47,7 +47,10 @@ mod tests {
     #[test]
     fn formats_roots_compactly() {
         assert_eq!(short_root(&root(0xab)), "abababab");
-        assert_eq!(short_opt_root(Some(root(0xcd))).as_deref(), Some("cdcdcdcd"));
+        assert_eq!(
+            short_opt_root(Some(root(0xcd))).as_deref(),
+            Some("cdcdcdcd")
+        );
         assert_eq!(short_opt_root(None), None);
         assert_eq!(short_opt_root_or_dash(None), "-");
     }

@@ -9,9 +9,11 @@ use peam::containers::block::{
 };
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::req_resp::{BlocksByRootRequest, MAX_BLOCKS_PER_ROOT_REQUEST, Status};
-use peam::containers::state::{State, Validators};
+use peam::containers::state::{PqBlockProcessor, State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
-use peam::crypto::pq::{DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, sign_message};
+use peam::crypto::pq::{
+    DevnetValidatorKeyRole, key_gen_for_devnet_validator_with_role, sign_message,
+};
 use peam::networking::gossipsub::context::StateGossipContext;
 use peam::networking::{
     LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent, NetworkEventBus,
@@ -105,13 +107,9 @@ fn signed_block_for_state(state: &State, slot: u64) -> SignedBlockWithAttestatio
     let (_, secret_key) =
         key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Proposal)
             .expect("validator key");
-    let proposer_message = proposer_attestation.data.hash_tree_root();
-    let proposer_signature = sign_message(
-        &secret_key,
-        proposer_attestation.data.slot.0.0 as u32,
-        &proposer_message,
-    )
-    .expect("proposer signature");
+    let proposer_message = block.hash_tree_root();
+    let proposer_signature = sign_message(&secret_key, block.slot.0.0 as u32, &proposer_message)
+        .expect("proposer signature");
 
     SignedBlockWithAttestation {
         message: BlockWithAttestation {
@@ -415,7 +413,7 @@ async fn ream_blocks_by_root_catchup_smoke() {
             let signed = signed_block_for_state(&state, slot);
             let root = Bytes32::from(signed.message.block.hash_tree_root());
             store
-                .put_signed_block(root, signed, &mut state)
+                .put_signed_block::<PqBlockProcessor>(root, signed, &mut state)
                 .expect("seed source chain");
             requested_roots.push(root);
         }
@@ -549,7 +547,7 @@ async fn ream_blocks_by_root_catchup_smoke() {
         let mut store = store_1.write().expect("store_1 lock");
         let root = Bytes32::from(signed.message.block.hash_tree_root());
         store
-            .put_signed_block(root, signed.clone(), &mut state)
+            .put_signed_block::<PqBlockProcessor>(root, signed.clone(), &mut state)
             .expect("apply synced block");
     }
 

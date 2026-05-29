@@ -9,31 +9,36 @@ pub use head::proposal_head_from_pending;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
+use peam_consensus_types::containers::attestation::{
+    Attestation, SignedAttestation, set_attestation_committee_count,
+};
+use peam_consensus_types::containers::checkpoint::Checkpoint;
+use peam_consensus_types::containers::config::Config;
+use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::uint::Uint64;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
+use rapidhash::RapidHashMap;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::app::{
-    NodeSettings, build_genesis_from_config_yaml_with_override, build_genesis_with_validator_count,
-    load_node_settings, resolve_metrics_identity, resolve_validator_startup_overrides,
+    NodeSettings, build_genesis_from_config_yaml_with_override, load_node_settings,
+    resolve_metrics_identity, resolve_validator_startup_overrides,
 };
 use crate::checkpoint_sync::{
     build_anchor_block, build_anchor_signed_block, fetch_checkpoint_state, verify_checkpoint_state,
 };
-use crate::containers::attestation::Attestation;
-use crate::containers::attestation::SignedAttestation;
-use crate::containers::checkpoint::Checkpoint;
-use crate::containers::config::Config;
-use crate::containers::state::State;
-use crate::fork_choice::ForkChoiceStore;
 use crate::metrics::{MetricsRegistry, spawn_http_server};
 use crate::networking::{
     Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
 };
 use crate::ssz::HashTreeRoot;
-use crate::storage::{FileStore, Store};
-use crate::types::bytes::Bytes32;
+use peam_state::state::{State, Validators};
+use peam_storage::{FileStore, Store};
 
 use self::sync::spawn_status_sync_task;
 use tasks::{
@@ -51,25 +56,12 @@ const PEAM_ASCII_BANNER: &str = r#"
 |_|   |_____/_/   \_\_|  |_|
 "#;
 
-fn normalize_genesis_anchor_roots(state: &mut State, anchor_root: Bytes32) {
-    if state.slot.0.0 != 0 {
-        return;
-    }
-    if state.latest_justified.slot.0.0 == 0 && state.latest_justified.root == Bytes32::zero() {
-        state.latest_justified.root = anchor_root;
-    }
-    if state.latest_finalized.slot.0.0 == 0 && state.latest_finalized.root == Bytes32::zero() {
-        state.latest_finalized.root = anchor_root;
-    }
-}
-
 fn seed_anchor_store_and_fork_choice(
     store: &mut FileStore,
     state: &mut State,
 ) -> Result<ForkChoiceStore, String> {
     let anchor_block = build_anchor_block(state);
     let anchor_root = Bytes32::from(anchor_block.hash_tree_root());
-    normalize_genesis_anchor_roots(state, anchor_root);
     let signed_anchor = build_anchor_signed_block(state, &anchor_block)?;
     store.put_anchor_signed_block(anchor_root, &signed_anchor, state)?;
     store.set_head(anchor_root);
@@ -80,7 +72,118 @@ fn seed_anchor_store_and_fork_choice(
     store.set_justified(anchor_root);
     let mut fc = ForkChoiceStore::new(signed_anchor, state.clone())?;
     fc.override_checkpoint_roots(anchor_root);
+    // Keep the live in-memory state aligned with the seeded anchor root after
+    // store/fork-choice initialization. We intentionally do this *after*
+    // persisting/initializing from the canonical post-state so the anchor block
+    // invariants are checked against the unmodified genesis/checkpoint state.
+    //
+    // Without this, gossip validation and status snapshots keep seeing the
+    // zero-state-root genesis header and zero checkpoints, which makes the
+    // shared slot-0 anchor look "unknown" even though the store and fork choice
+    // were seeded with the canonical anchor block.
+    if state.latest_block_header.state_root == Bytes32::zero() {
+        state.latest_block_header.state_root = anchor_block.state_root;
+    }
+    if state.latest_justified.slot.0.0 == 0 && state.latest_justified.root == Bytes32::zero() {
+        state.latest_justified.root = anchor_root;
+    }
+    if state.latest_finalized.slot.0.0 == 0 && state.latest_finalized.root == Bytes32::zero() {
+        state.latest_finalized.root = anchor_root;
+    }
     Ok(fc)
+}
+
+fn restore_fork_choice_from_store(
+    store: &FileStore,
+) -> Result<Option<(State, ForkChoiceStore)>, String> {
+    let Some(head_root) = store.head() else {
+        return Ok(None);
+    };
+    let signed_head = store.get_signed_block(&head_root).ok_or_else(|| {
+        format!(
+            "missing signed head block for persisted head {:?}",
+            head_root
+        )
+    })?;
+    let restored_state = store
+        .get_state(&head_root)
+        .ok_or_else(|| format!("missing state for persisted head {:?}", head_root))?;
+    let fork_choice = ForkChoiceStore::new(signed_head, restored_state.clone())?;
+    Ok(Some((restored_state, fork_choice)))
+}
+
+fn build_genesis_from_devnet_key_cache(
+    config: Config,
+    devnet_validator_keys: &DevnetValidatorKeyCache,
+) -> Result<State, String> {
+    if devnet_validator_keys.is_empty() {
+        return Err("validator_count must be > 0".to_string());
+    }
+    let mut validators = Vec::with_capacity(devnet_validator_keys.len());
+    for (index, maybe_key) in devnet_validator_keys.iter().enumerate() {
+        let Some(key_material) = maybe_key.as_ref() else {
+            return Err(format!(
+                "missing devnet validator key material for validator {index}"
+            ));
+        };
+        validators.push(Validator {
+            attestation_pubkey: key_material.attestation_pubkey,
+            proposal_pubkey: key_material.proposal_pubkey,
+            index: ValidatorIndex(Uint64(index as u64)),
+            balance: Uint64(0),
+        });
+    }
+    let validators = Validators::new(validators)
+        .map_err(|err| format!("failed to build devnet validator set from key cache: {err}"))?;
+    Ok(State::generate_genesis(config.genesis_time, validators))
+}
+
+fn load_or_build_devnet_validator_keys(
+    hash_sig_keys_dir: &Path,
+    validator_count: usize,
+) -> (DevnetValidatorKeyCache, String) {
+    tracing::info!(
+        validator_count,
+        has_hash_sig_dir = hash_sig_keys_dir.is_dir(),
+        "peam startup timing: preparing validator key cache"
+    );
+    if hash_sig_keys_dir.is_dir() {
+        let key_load_started = Instant::now();
+        match build_devnet_pq_validator_keys_from_hash_sig_dir(hash_sig_keys_dir, validator_count) {
+            Ok(keys) => {
+                tracing::info!(
+                    elapsed_ms = key_load_started.elapsed().as_millis(),
+                    "peam startup timing: loaded validator keys from hash-sig dir"
+                );
+                (
+                    keys,
+                    format!("hash_sig_keys:{}", hash_sig_keys_dir.display()),
+                )
+            }
+            Err(err) => {
+                warn!(
+                    "failed to load validator keys from {}: {}; falling back to deterministic devnet keys",
+                    hash_sig_keys_dir.display(),
+                    err
+                );
+                let fallback_started = Instant::now();
+                let keys = build_devnet_pq_validator_keys(validator_count);
+                tracing::info!(
+                    elapsed_ms = fallback_started.elapsed().as_millis(),
+                    "peam startup timing: built deterministic fallback validator keys"
+                );
+                (keys, "deterministic_devnet".to_string())
+            }
+        }
+    } else {
+        let key_build_started = Instant::now();
+        let keys = build_devnet_pq_validator_keys(validator_count);
+        tracing::info!(
+            elapsed_ms = key_build_started.elapsed().as_millis(),
+            "peam startup timing: built deterministic validator keys"
+        );
+        (keys, "deterministic_devnet".to_string())
+    }
 }
 
 /// Filesystem paths used to initialize a [`Node`].
@@ -202,6 +305,7 @@ impl Node {
     ///
     /// Returns `Err` if config loading, genesis construction, or store opening fails.
     pub fn load(node_config: NodeConfig) -> Result<Self, String> {
+        let load_started = Instant::now();
         let (mut config, mut settings) = load_node_settings(&node_config.config_path)?;
         if let Some(url) = node_config.checkpoint_sync_url {
             settings.checkpoint_sync_url = Some(url);
@@ -239,6 +343,7 @@ impl Node {
         if let Some(is_aggregator) = node_config.is_aggregator {
             settings.is_aggregator = is_aggregator;
         }
+        let startup_overrides_started = Instant::now();
         let (resolved_local_validator_index, hash_sig_keys_dir_override) =
             resolve_validator_startup_overrides(
                 &node_config.config_path,
@@ -247,6 +352,10 @@ impl Node {
                 node_config.validator_keys_path.as_deref(),
                 node_config.validators_path.as_deref(),
             )?;
+        tracing::info!(
+            elapsed_ms = startup_overrides_started.elapsed().as_millis(),
+            "peam startup timing: resolved startup overrides"
+        );
         if let Some(node_id) = node_config.node_id.as_ref() {
             settings.metrics_node_name = Some(node_id.clone());
             if let Some(index) = resolved_local_validator_index {
@@ -260,11 +369,9 @@ impl Node {
             }
         }
         if let Some(genesis_time_override) = node_config.genesis_time_override {
-            config.genesis_time = crate::types::uint::Uint64(genesis_time_override);
+            config.genesis_time = Uint64(genesis_time_override);
         }
-        crate::containers::attestation::set_attestation_committee_count(
-            settings.attestation_committee_count,
-        );
+        set_attestation_committee_count(settings.attestation_committee_count);
         if settings.is_aggregator {
             crate::crypto::pq::setup_aggregate_prover();
         }
@@ -295,48 +402,43 @@ impl Node {
             .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
             .unwrap_or_else(|| fallback_config_dir.to_path_buf());
         let genesis_config_yaml = config_dir.join("config.yaml");
-        let expected_genesis_state = if genesis_config_yaml.is_file() {
-            tracing::info!(
-                path = %genesis_config_yaml.display(),
-                "peam startup: loading genesis from config.yaml"
-            );
-            build_genesis_from_config_yaml_with_override(
-                &genesis_config_yaml,
-                node_config.genesis_time_override,
-            )?
-        } else {
-            build_genesis_with_validator_count(config.clone(), settings.validator_count)?
-        };
         let hash_sig_keys_dir = hash_sig_keys_dir_override;
-        let (devnet_validator_keys, validator_key_source) = if hash_sig_keys_dir.is_dir() {
-            match build_devnet_pq_validator_keys_from_hash_sig_dir(
-                &hash_sig_keys_dir,
-                expected_genesis_state.validators.len(),
-            ) {
-                Ok(keys) => (
-                    keys,
-                    format!("hash_sig_keys:{}", hash_sig_keys_dir.display()),
-                ),
-                Err(err) => {
-                    warn!(
-                        "failed to load validator keys from {}: {}; falling back to deterministic devnet keys",
-                        hash_sig_keys_dir.display(),
-                        err
-                    );
-                    (
-                        build_devnet_pq_validator_keys(
-                            expected_genesis_state.validators.len(),
-                        ),
-                        "deterministic_devnet".to_string(),
-                    )
-                }
-            }
-        } else {
-            (
-                build_devnet_pq_validator_keys(expected_genesis_state.validators.len()),
-                "deterministic_devnet".to_string(),
-            )
-        };
+        tracing::info!(
+            from_config_yaml = genesis_config_yaml.is_file(),
+            validator_count = settings.validator_count,
+            "peam startup timing: building expected genesis state"
+        );
+        let (expected_genesis_state, devnet_validator_keys, validator_key_source) =
+            if genesis_config_yaml.is_file() {
+                let genesis_started = Instant::now();
+                tracing::info!(
+                    path = %genesis_config_yaml.display(),
+                    "peam startup: loading genesis from config.yaml"
+                );
+                let state = build_genesis_from_config_yaml_with_override(
+                    &genesis_config_yaml,
+                    node_config.genesis_time_override,
+                )?;
+                tracing::info!(
+                    elapsed_ms = genesis_started.elapsed().as_millis(),
+                    "peam startup timing: built genesis state from config.yaml"
+                );
+                let (keys, source) =
+                    load_or_build_devnet_validator_keys(&hash_sig_keys_dir, state.validators.len());
+                (state, keys, source)
+            } else {
+                let (keys, source) = load_or_build_devnet_validator_keys(
+                    &hash_sig_keys_dir,
+                    settings.validator_count,
+                );
+                let genesis_started = Instant::now();
+                let state = build_genesis_from_devnet_key_cache(config.clone(), &keys)?;
+                tracing::info!(
+                    elapsed_ms = genesis_started.elapsed().as_millis(),
+                    "peam startup timing: built devnet genesis state from validator key cache"
+                );
+                (state, keys, source)
+            };
         tracing::info!(
             source = %validator_key_source,
             "peam startup: validator keys loaded"
@@ -347,8 +449,13 @@ impl Node {
             total = devnet_validator_keys.len(),
             "peam startup: validator key cache"
         );
+        let filter_started = Instant::now();
         let devnet_validator_keys =
             filter_keys_against_genesis(&expected_genesis_state, devnet_validator_keys);
+        tracing::info!(
+            elapsed_ms = filter_started.elapsed().as_millis(),
+            "peam startup timing: filtered validator keys against genesis"
+        );
         if let Some(first) = expected_genesis_state.validators.first() {
             tracing::info!(
                 first_validator_pubkey = ?first.attestation_pubkey,
@@ -356,10 +463,7 @@ impl Node {
             );
         }
         let local_validator_index = settings.local_validator_index as usize;
-        let Some(expected) = expected_genesis_state
-            .validators
-            .get(local_validator_index)
-        else {
+        let Some(expected) = expected_genesis_state.validators.get(local_validator_index) else {
             return Err(format!(
                 "local_validator_index {} out of range for {} genesis validators",
                 settings.local_validator_index,
@@ -406,7 +510,12 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
                 }
             })
             .unwrap_or_else(|| node_config.data_dir.join("store"));
+        let store_open_started = Instant::now();
         let store = Arc::new(RwLock::new(FileStore::open(&store_dir)?));
+        tracing::info!(
+            elapsed_ms = store_open_started.elapsed().as_millis(),
+            "peam startup timing: opened block store"
+        );
         let mut initial_state = expected_genesis_state;
         let mut initial_fork_choice: Option<ForkChoiceStore> = None;
         let store_is_empty = {
@@ -458,10 +567,29 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
             );
             initial_state = checkpoint_state;
         } else if store_is_empty {
+            let anchor_seed_started = Instant::now();
             let mut guard = store.write().expect("store lock");
             match seed_anchor_store_and_fork_choice(&mut guard, &mut initial_state) {
                 Ok(fc) => initial_fork_choice = Some(fc),
                 Err(err) => return Err(format!("genesis anchor init failed: {err}")),
+            }
+            tracing::info!(
+                elapsed_ms = anchor_seed_started.elapsed().as_millis(),
+                "peam startup timing: seeded genesis anchor store and fork choice"
+            );
+        } else {
+            let restore_started = Instant::now();
+            let restored = {
+                let guard = store.read().expect("store lock");
+                restore_fork_choice_from_store(&guard)?
+            };
+            if let Some((restored_state, restored_fork_choice)) = restored {
+                initial_state = restored_state;
+                initial_fork_choice = Some(restored_fork_choice);
+                tracing::info!(
+                    elapsed_ms = restore_started.elapsed().as_millis(),
+                    "peam startup timing: restored state and fork choice from existing store"
+                );
             }
         }
         let state = Arc::new(RwLock::new(initial_state));
@@ -471,6 +599,10 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
         let pending_block_attestations = Arc::new(RwLock::new(Vec::new()));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let metrics = Arc::new(MetricsRegistry::new());
+        tracing::info!(
+            elapsed_ms = load_started.elapsed().as_millis(),
+            "peam startup timing: Node::load complete"
+        );
         Ok(Self {
             config,
             state,
@@ -645,6 +777,9 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
             let metrics = self.metrics.clone();
             let deferred_gossip = Arc::new(RwLock::new(Vec::new()));
             let deferred_gossip_rx = deferred_gossip.clone();
+            let deferred_missing_heads = Arc::new(RwLock::new(RapidHashMap::default()));
+            let deferred_missing_heads_rx = deferred_missing_heads.clone();
+            let p2p_tx = networking.p2p_sender();
             tokio::spawn(async move {
                 loop {
                     let event = match rx.recv().await {
@@ -683,6 +818,20 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
                                 payload,
                             );
                         }
+                        crate::networking::NetworkEvent::GossipDeferredMissingHead {
+                            topic,
+                            payload,
+                            head_root,
+                            peer_id,
+                        } => {
+                            gossip::queue_deferred_missing_head_gossip(
+                                &deferred_missing_heads_rx,
+                                topic,
+                                payload,
+                                head_root,
+                                Some(peer_id),
+                            );
+                        }
                         _ => {}
                     }
                 }
@@ -710,6 +859,9 @@ expected attestation {:?} / proposal {:?}, got attestation {:?} / proposal {:?}"
                 self.pending_individual_attestations.clone(),
                 self.pending_block_attestations.clone(),
                 deferred_gossip,
+                deferred_missing_heads,
+                p2p_tx,
+                networking.peers.clone(),
                 net_config.gossip_context.clone(),
                 self.settings.is_aggregator,
                 self.metrics.clone(),

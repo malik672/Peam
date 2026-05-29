@@ -1,0 +1,13 @@
+{
+  "block_with_invalid_parent_root": {
+    "validators": 1,
+    "blocks": [
+      {
+        "slot": 1,
+        "proposer": 0,
+        "overrideParentRoot": "0xdededededededededededededededededededededededededededededededede"
+      }
+    ],
+    "expectedErrorContains": "parent root"
+  }
+}

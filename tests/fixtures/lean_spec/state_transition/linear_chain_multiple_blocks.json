@@ -1,0 +1,29 @@
+{
+  "linear_chain_multiple_blocks": {
+    "validators": 1,
+    "blocks": [
+      {
+        "slot": 1,
+        "proposer": 0
+      },
+      {
+        "slot": 2,
+        "proposer": 0
+      },
+      {
+        "slot": 3,
+        "proposer": 0
+      },
+      {
+        "slot": 4,
+        "proposer": 0
+      },
+      {
+        "slot": 5,
+        "proposer": 0
+      }
+    ],
+    "expectedSlot": 5,
+    "expectedHistoryLen": 5
+  }
+}

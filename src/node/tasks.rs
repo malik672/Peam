@@ -5,38 +5,39 @@ use std::time::{Duration, Instant};
 
 use leansig::serialization::Serializable;
 use leansig::signature::SignatureSchemeSecretKey;
-use rapidhash::RapidHashSet;
+use peam_consensus_types::containers::attestation::{
+    AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
+    SignedAggregatedAttestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
+};
+use peam_consensus_types::containers::block::{
+    ATTESTATIONS_LIMIT, Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
+    MAX_ATTESTATIONS_DATA, SignedBlockWithAttestation,
+};
+use peam_consensus_types::containers::checkpoint::Checkpoint;
+use peam_consensus_types::containers::validator::ValidatorIndex;
+use peam_consensus_types::slot::{
+    ACCEPTANCE_INTERVAL_INDEX, AGGREGATION_INTERVAL_INDEX, ATTESTATION_INTERVAL_INDEX,
+    INTERVALS_PER_SLOT, SAFE_TARGET_INTERVAL_INDEX, SLOT_DURATION_SECS, Slot,
+    interval_index_from_unix_millis, is_justifiable_after, slot_index_from_unix_millis,
+    unix_now_millis,
+};
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes52, Bytes3112};
+use peam_consensus_types::types::collections::SszList;
+use peam_consensus_types::types::uint::Uint64;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
-use crate::containers::attestation::{
-    AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES, SignedAttestation,
-    VALIDATOR_REGISTRY_LIMIT,
-};
-use crate::containers::block::{
-    ATTESTATIONS_LIMIT, Block, BlockBody, BlockSignatures, BlockWithAttestation,
-    MAX_ATTESTATIONS_DATA, SignedBlockWithAttestation,
-};
-use crate::containers::checkpoint::Checkpoint;
 use crate::containers::gossip::{GossipAttestation, GossipBlock};
-use crate::containers::state::State;
-use crate::containers::validator::ValidatorIndex;
-use crate::fork_choice::ForkChoiceStore;
 use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
 use crate::networking::P2pCommand;
-use crate::slot::{
-    ACCEPTANCE_INTERVAL_INDEX, AGGREGATION_INTERVAL_INDEX, ATTESTATION_INTERVAL_INDEX,
-    INTERVALS_PER_SLOT, SAFE_TARGET_INTERVAL_INDEX, SLOT_DURATION_SECS, Slot,
-    interval_index_from_unix_millis, slot_index_from_unix_millis, unix_now_millis,
-};
 use crate::ssz::{HashTreeRoot, SszEncode};
-use crate::storage::{FileStore, Store};
-use crate::types::bitlist::BitList;
-use crate::types::bytes::{ByteList, Bytes32, Bytes52};
-use crate::types::collections::SszList;
-use crate::types::uint::Uint64;
+use peam_state::state::State;
+use peam_storage::{FileStore, Store};
 
 use super::head::aggregate_attestations;
 
@@ -63,6 +64,24 @@ pub(super) struct DevnetValidatorKeyMaterial {
 pub(super) type DevnetValidatorKeyCache = Arc<Vec<Option<DevnetValidatorKeyMaterial>>>;
 
 #[inline]
+fn validate_loaded_devnet_keypair(
+    public_key: &Bytes52,
+    secret_key: &crate::crypto::pq::LeanSigSecretKey,
+    role: &str,
+    index: usize,
+) -> Result<(), String> {
+    let epoch = secret_key.get_activation_interval().start as u32;
+    let message = [0xA5u8; leansig::MESSAGE_LENGTH];
+    let signature =
+        crate::crypto::pq::sign_message(secret_key, epoch, &message).map_err(|err| {
+            format!("failed to self-sign with {role} key for validator {index}: {err}")
+        })?;
+    crate::crypto::pq::verify_signature(public_key, epoch, &message, &signature).map_err(|err| {
+        format!("loaded {role} public/secret key mismatch for validator {index}: {err}")
+    })
+}
+
+#[inline]
 pub(super) fn build_devnet_pq_validator_keys(validator_count: usize) -> DevnetValidatorKeyCache {
     let mut keys = Vec::with_capacity(validator_count);
     for i in 0..validator_count {
@@ -76,14 +95,15 @@ pub(super) fn build_devnet_pq_validator_keys(validator_count: usize) -> DevnetVa
                 crate::crypto::pq::DevnetValidatorKeyRole::Proposal,
             ),
         ) {
-            (Ok((attestation_pubkey, attestation_secret_key)), Ok((proposal_pubkey, proposal_secret_key))) => {
-                Some(DevnetValidatorKeyMaterial {
-                    attestation_pubkey,
-                    attestation_secret_key: Arc::new(attestation_secret_key),
-                    proposal_pubkey,
-                    proposal_secret_key: Arc::new(proposal_secret_key),
-                })
-            }
+            (
+                Ok((attestation_pubkey, attestation_secret_key)),
+                Ok((proposal_pubkey, proposal_secret_key)),
+            ) => Some(DevnetValidatorKeyMaterial {
+                attestation_pubkey,
+                attestation_secret_key: Arc::new(attestation_secret_key),
+                proposal_pubkey,
+                proposal_secret_key: Arc::new(proposal_secret_key),
+            }),
             (Err(err), _) => {
                 warn!("failed to derive devnet validator key {i}: {err}");
                 None
@@ -111,20 +131,64 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
             hash_sig_keys_dir.join(format!("validator_{i}_attestation_sk.ssz"));
         let proposal_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_pk.ssz"));
         let proposal_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_proposal_sk.ssz"));
+        let legacy_pk_path = hash_sig_keys_dir.join(format!("validator_{i}_pk.ssz"));
+        let legacy_sk_path = hash_sig_keys_dir.join(format!("validator_{i}_sk.ssz"));
 
-        let attestation_pk_bytes = std::fs::read(&attestation_pk_path)
-            .map_err(|err| format!("failed to read {}: {err}", attestation_pk_path.display()))?;
-        let attestation_sk_bytes = std::fs::read(&attestation_sk_path)
-            .map_err(|err| format!("failed to read {}: {err}", attestation_sk_path.display()))?;
-        let proposal_pk_bytes = std::fs::read(&proposal_pk_path)
-            .map_err(|err| format!("failed to read {}: {err}", proposal_pk_path.display()))?;
-        let proposal_sk_bytes = std::fs::read(&proposal_sk_path)
-            .map_err(|err| format!("failed to read {}: {err}", proposal_sk_path.display()))?;
+        let split_key_files_present = attestation_pk_path.is_file()
+            && attestation_sk_path.is_file()
+            && proposal_pk_path.is_file()
+            && proposal_sk_path.is_file();
+        let legacy_key_files_present = legacy_pk_path.is_file() && legacy_sk_path.is_file();
+
+        let (
+            attestation_pk_bytes,
+            attestation_sk_bytes,
+            proposal_pk_bytes,
+            proposal_sk_bytes,
+            using_legacy_single_keypair,
+        ) = if split_key_files_present {
+            (
+                std::fs::read(&attestation_pk_path).map_err(|err| {
+                    format!("failed to read {}: {err}", attestation_pk_path.display())
+                })?,
+                std::fs::read(&attestation_sk_path).map_err(|err| {
+                    format!("failed to read {}: {err}", attestation_sk_path.display())
+                })?,
+                std::fs::read(&proposal_pk_path).map_err(|err| {
+                    format!("failed to read {}: {err}", proposal_pk_path.display())
+                })?,
+                std::fs::read(&proposal_sk_path).map_err(|err| {
+                    format!("failed to read {}: {err}", proposal_sk_path.display())
+                })?,
+                false,
+            )
+        } else if legacy_key_files_present {
+            let public_key_bytes = std::fs::read(&legacy_pk_path)
+                .map_err(|err| format!("failed to read {}: {err}", legacy_pk_path.display()))?;
+            let secret_key_bytes = std::fs::read(&legacy_sk_path)
+                .map_err(|err| format!("failed to read {}: {err}", legacy_sk_path.display()))?;
+            (
+                public_key_bytes.clone(),
+                secret_key_bytes.clone(),
+                public_key_bytes,
+                secret_key_bytes,
+                true,
+            )
+        } else {
+            return Err(format!(
+                "missing split validator key files for validator {i} in {}",
+                hash_sig_keys_dir.display()
+            ));
+        };
 
         if attestation_pk_bytes.len() != 52 {
             return Err(format!(
                 "invalid public key length for {}: expected {}, got {}",
-                attestation_pk_path.display(),
+                if using_legacy_single_keypair {
+                    legacy_pk_path.display().to_string()
+                } else {
+                    attestation_pk_path.display().to_string()
+                },
                 52,
                 attestation_pk_bytes.len()
             ));
@@ -132,25 +196,51 @@ pub(super) fn build_devnet_pq_validator_keys_from_hash_sig_dir(
         if proposal_pk_bytes.len() != 52 {
             return Err(format!(
                 "invalid public key length for {}: expected {}, got {}",
-                proposal_pk_path.display(),
+                if using_legacy_single_keypair {
+                    legacy_pk_path.display().to_string()
+                } else {
+                    proposal_pk_path.display().to_string()
+                },
                 52,
                 proposal_pk_bytes.len()
             ));
         }
 
-        let attestation_secret_key =
-            crate::crypto::pq::LeanSigSecretKey::from_bytes(&attestation_sk_bytes).map_err(
-                |err| format!("failed to decode {}: {err:?}", attestation_sk_path.display()),
-            )?;
+        let attestation_secret_key = crate::crypto::pq::LeanSigSecretKey::from_bytes(
+            &attestation_sk_bytes,
+        )
+        .map_err(|err| {
+            format!(
+                "failed to decode {}: {err:?}",
+                attestation_sk_path.display()
+            )
+        })?;
         let proposal_secret_key =
-            crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(
-                |err| format!("failed to decode {}: {err:?}", proposal_sk_path.display()),
-            )?;
+            crate::crypto::pq::LeanSigSecretKey::from_bytes(&proposal_sk_bytes).map_err(|err| {
+                format!("failed to decode {}: {err:?}", proposal_sk_path.display())
+            })?;
+        let attestation_pubkey = Bytes52::from_slice(&attestation_pk_bytes);
+        let proposal_pubkey = Bytes52::from_slice(&proposal_pk_bytes);
+        validate_loaded_devnet_keypair(
+            &attestation_pubkey,
+            &attestation_secret_key,
+            "attestation",
+            i,
+        )?;
+        validate_loaded_devnet_keypair(&proposal_pubkey, &proposal_secret_key, "proposal", i)?;
+
+        if using_legacy_single_keypair {
+            info!(
+                validator_index = i,
+                path = %legacy_pk_path.display(),
+                "loaded legacy single-key validator material; reusing the same keypair for attestation and proposal"
+            );
+        }
 
         keys.push(Some(DevnetValidatorKeyMaterial {
-            attestation_pubkey: Bytes52::from_slice(&attestation_pk_bytes),
+            attestation_pubkey,
             attestation_secret_key: Arc::new(attestation_secret_key),
-            proposal_pubkey: Bytes52::from_slice(&proposal_pk_bytes),
+            proposal_pubkey,
             proposal_secret_key: Arc::new(proposal_secret_key),
         }));
     }
@@ -173,7 +263,9 @@ pub(super) fn spawn_strict_slot_clock(
             let Some(now_millis) = unix_now_millis() else {
                 continue;
             };
-            metrics.sync_status_first_tick_seen.store(true, Ordering::Relaxed);
+            metrics
+                .sync_status_first_tick_seen
+                .store(true, Ordering::Relaxed);
             let slot = slot_index_from_unix_millis(genesis_time_secs, now_millis);
             slot_clock_task.store(slot, Ordering::Relaxed);
         }
@@ -259,13 +351,10 @@ pub(super) fn filter_keys_against_genesis(
             filtered.push(None);
             continue;
         };
-        let matches = state
-            .validators
-            .get(i)
-            .map_or(false, |v| {
-                v.attestation_pubkey == key.attestation_pubkey
-                    && v.proposal_pubkey == key.proposal_pubkey
-            });
+        let matches = state.validators.get(i).map_or(false, |v| {
+            v.attestation_pubkey == key.attestation_pubkey
+                && v.proposal_pubkey == key.proposal_pubkey
+        });
         if matches {
             filtered.push(Some(key.clone()));
             kept += 1;
@@ -336,9 +425,13 @@ pub(super) fn spawn_signed_attestation_task(
                 continue;
             }
             let slot = slot_index_from_unix_millis(genesis_time_secs, now_millis);
-            let Some(att_data) =
-                load_attestation_data(&state, &fork_choice, &pending_attestations, slot)
-            else {
+            let Some(att_data) = load_attestation_data(
+                &state,
+                &fork_choice,
+                &pending_attestations,
+                &pending_individual_attestations,
+                slot,
+            ) else {
                 continue;
             };
             let slot = att_data.slot.0.0;
@@ -386,9 +479,33 @@ pub(super) fn spawn_signed_attestation_task(
                 message: att_data,
                 signature,
             };
+            let fork_choice_snapshot = {
+                let guard = fork_choice.read().expect("fork choice lock");
+                guard.as_ref().map(|fc| {
+                    (
+                        short_slot_root(fc.head_slot(), &fc.head()),
+                        short_slot_root(fc.safe_target_slot(), &fc.safe_target()),
+                        short_checkpoint(&fc.latest_justified()),
+                        short_checkpoint(&fc.latest_finalized()),
+                    )
+                })
+            };
+            let (local_head, safe_target, local_justified, local_finalized) = fork_choice_snapshot
+                .unwrap_or_else(|| {
+                    (
+                        short_checkpoint(&signed.message.head),
+                        short_checkpoint(&signed.message.target),
+                        short_checkpoint(&signed.message.source),
+                        "-".to_string(),
+                    )
+                });
             info!(
                 slot,
                 validator_id = local_validator_index,
+                local_head = %local_head,
+                safe_target = %safe_target,
+                local_justified = %local_justified,
+                local_finalized = %local_finalized,
                 head = %short_checkpoint(&signed.message.head),
                 target = %short_checkpoint(&signed.message.target),
                 source = %short_checkpoint(&signed.message.source),
@@ -420,17 +537,21 @@ fn load_attestation_data(
     state: &Arc<RwLock<State>>,
     fork_choice: &Arc<RwLock<Option<ForkChoiceStore>>>,
     pending_attestations: &Arc<RwLock<Vec<Attestation>>>,
+    pending_individual_attestations: &Arc<RwLock<Vec<SignedAttestation>>>,
     slot: u64,
 ) -> Option<AttestationData> {
     let pending_snapshot = pending_attestations
         .read()
         .expect("pending attestations lock")
         .clone();
-    let aggregated_pending = aggregate_attestations(pending_snapshot);
+    let mut pending_votes = aggregate_attestations(pending_snapshot);
+    pending_votes.extend(latest_pending_individual_attestations(
+        pending_individual_attestations,
+    ));
 
     let mut fc_guard = fork_choice.write().expect("fork choice lock");
     if let Some(fc) = fc_guard.as_mut() {
-        let head_root = fc.get_proposal_head_with_pending(aggregated_pending.iter());
+        let head_root = fc.get_proposal_head_with_pending(pending_votes.iter());
         let source = fc.latest_justified();
         let finalized_slot = fc.latest_finalized().slot;
         let mut head = fc.checkpoint_for_root(head_root).unwrap_or(Checkpoint {
@@ -443,10 +564,7 @@ fn load_attestation_data(
             head = target;
         }
         if target.slot <= source.slot
-            || !matches!(
-                crate::slot::is_justifiable_after(target.slot, finalized_slot),
-                Ok(true)
-            )
+            || !matches!(is_justifiable_after(target.slot, finalized_slot), Ok(true))
         {
             return None;
         }
@@ -472,10 +590,7 @@ fn load_attestation_data(
         head = target;
     }
     if target.slot <= source.slot
-        || !matches!(
-            crate::slot::is_justifiable_after(target.slot, finalized_slot),
-            Ok(true)
-        )
+        || !matches!(is_justifiable_after(target.slot, finalized_slot), Ok(true))
     {
         return None;
     }
@@ -485,6 +600,47 @@ fn load_attestation_data(
         target,
         source,
     })
+}
+
+#[inline]
+fn latest_pending_individual_attestations(
+    pending_individual_attestations: &Arc<RwLock<Vec<SignedAttestation>>>,
+) -> Vec<Attestation> {
+    let pending_snapshot = pending_individual_attestations
+        .read()
+        .expect("pending individual attestations lock")
+        .clone();
+    let mut latest_by_validator: RapidHashMap<usize, SignedAttestation> = RapidHashMap::default();
+    for signed in pending_snapshot {
+        let validator_id = signed.validator_id.0 as usize;
+        if validator_id >= VALIDATOR_REGISTRY_LIMIT {
+            continue;
+        }
+        match latest_by_validator.get_mut(&validator_id) {
+            Some(existing) if existing.message.slot.0.0 > signed.message.slot.0.0 => {
+                continue;
+            }
+            Some(existing) => {
+                *existing = signed;
+            }
+            None => {
+                latest_by_validator.insert(validator_id, signed);
+            }
+        }
+    }
+
+    latest_by_validator
+        .into_values()
+        .filter_map(|signed| {
+            let validator_id = signed.validator_id.0 as usize;
+            let mut aggregation_bits = BitList::new(Vec::new()).ok()?;
+            let _ = insert_aggregation_bit(&mut aggregation_bits, validator_id);
+            Some(Attestation {
+                aggregation_bits,
+                data: signed.message,
+            })
+        })
+        .collect()
 }
 
 #[inline]
@@ -552,7 +708,7 @@ pub(super) fn spawn_attestation_aggregation_task(
                         proof: Some(proof.clone()),
                     });
                 let payload = crate::containers::gossip::GossipAggregatedAttestation {
-                    attestation: crate::containers::attestation::SignedAggregatedAttestation {
+                    attestation: SignedAggregatedAttestation {
                         data: attestation.data.clone(),
                         proof,
                     },
@@ -644,10 +800,7 @@ fn insert_aggregation_bit(dst: &mut BitList<VALIDATOR_REGISTRY_LIMIT>, idx: usiz
 }
 
 #[inline]
-fn for_each_set_bit(
-    bits: &BitList<VALIDATOR_REGISTRY_LIMIT>,
-    mut f: impl FnMut(usize),
-) {
+fn for_each_set_bit(bits: &BitList<VALIDATOR_REGISTRY_LIMIT>, mut f: impl FnMut(usize)) {
     let bit_len = bits.len;
     for (byte_idx, byte) in bits.data.iter().copied().enumerate() {
         let mut remaining = byte;
@@ -675,7 +828,7 @@ fn aggregate_signed_attestations(
     #[derive(Default)]
     struct Group {
         data: Option<AttestationData>,
-        entries: Vec<(usize, Bytes52, crate::types::bytes::Bytes3112)>,
+        entries: Vec<(usize, Bytes52, Bytes3112)>,
     }
 
     let mut grouped: rapidhash::RapidHashMap<[u8; 32], Group> = rapidhash::RapidHashMap::default();
@@ -827,9 +980,7 @@ fn build_block_attestation_payload(
     if stale_dropped > 0 {
         warn!(
             slot,
-            finalized_slot,
-            stale_dropped,
-            "proposal dropped stale pending attestations"
+            finalized_slot, stale_dropped, "proposal dropped stale pending attestations"
         );
     }
     for group in groups.iter().take(ATTESTATIONS_LIMIT) {
@@ -864,7 +1015,11 @@ fn drain_block_attestation_groups(
     finalized_slot: u64,
     group_limit: usize,
     pending_block_attestations: &Arc<RwLock<Vec<PendingBlockAttestation>>>,
-) -> (Vec<BlockAttestationGroup>, usize, Vec<PendingBlockAttestation>) {
+) -> (
+    Vec<BlockAttestationGroup>,
+    usize,
+    Vec<PendingBlockAttestation>,
+) {
     let drained = {
         let mut pending = pending_block_attestations
             .write()
@@ -1009,10 +1164,12 @@ fn build_block_attestation_group(
         let children = child_public_keys
             .iter()
             .zip(child_proofs.iter())
-            .map(|(public_keys, proof)| crate::crypto::pq::AggregateChildProof {
-                public_keys,
-                proof_data: proof.proof_data.as_slice(),
-            })
+            .map(
+                |(public_keys, proof)| crate::crypto::pq::AggregateChildProof {
+                    public_keys,
+                    proof_data: proof.proof_data.as_slice(),
+                },
+            )
             .collect::<Vec<_>>();
         match crate::crypto::pq::aggregate_proofs(
             &children,
@@ -1024,7 +1181,9 @@ fn build_block_attestation_group(
             Ok(proof_bytes) => proof_bytes,
             Err(err) => {
                 metrics.pq_aggregated_signatures_invalid_total.inc();
-                warn!("failed to recursively aggregate attestation proofs for block production: {err}");
+                warn!(
+                    "failed to recursively aggregate attestation proofs for block production: {err}"
+                );
                 return None;
             }
         }
@@ -1076,9 +1235,7 @@ fn build_block_attestation_payload_fixed_point(
     if stale_dropped > 0 {
         warn!(
             slot,
-            finalized_slot,
-            stale_dropped,
-            "proposal dropped stale pending attestations"
+            finalized_slot, stale_dropped, "proposal dropped stale pending attestations"
         );
     }
     let build_result = (|| {
@@ -1087,7 +1244,7 @@ fn build_block_attestation_payload_fixed_point(
         if block_slot > candidate_state.slot {
             candidate_state.process_slots(block_slot)?;
         }
-        candidate_state.process_block_header(crate::containers::block::BlockHeader {
+        candidate_state.process_block_header(BlockHeader {
             slot: block_slot,
             proposer_index: ValidatorIndex(Uint64(local_validator_index as u64)),
             parent_root,
@@ -1127,7 +1284,8 @@ fn build_block_attestation_payload_fixed_point(
 
             let remaining_capacity = group_limit.saturating_sub(attestations.len());
             if matching_group_indices.len() > remaining_capacity {
-                attestation_data_limit_requeued += matching_group_indices.len() - remaining_capacity;
+                attestation_data_limit_requeued +=
+                    matching_group_indices.len() - remaining_capacity;
                 matching_group_indices.truncate(remaining_capacity);
             }
 
@@ -1136,9 +1294,12 @@ fn build_block_attestation_payload_fixed_point(
             let mut added_in_round = 0usize;
             for idx in matching_group_indices {
                 processed[idx] = true;
-                let Some((attestation, proof)) =
-                    build_block_attestation_group(&groups[idx], slot, devnet_validator_keys, metrics)
-                else {
+                let Some((attestation, proof)) = build_block_attestation_group(
+                    &groups[idx],
+                    slot,
+                    devnet_validator_keys,
+                    metrics,
+                ) else {
                     continue;
                 };
                 round_attestations.push(attestation);
@@ -1165,7 +1326,12 @@ fn build_block_attestation_payload_fixed_point(
             current_justified_root = next_justified_root;
         }
 
-        Ok((attestations, proofs, processed, attestation_data_limit_requeued))
+        Ok((
+            attestations,
+            proofs,
+            processed,
+            attestation_data_limit_requeued,
+        ))
     })();
 
     let (attestations, proofs, processed, attestation_data_limit_requeued) = match build_result {
@@ -1203,13 +1369,18 @@ fn build_block_attestation_payload_fixed_point(
                 proof: None,
             }
         }));
-        requeue_entries.extend(group.proofed.into_iter().map(|proof| PendingBlockAttestation {
-            attestation: Attestation {
-                aggregation_bits: proof.participants.clone(),
-                data: group.data.clone(),
-            },
-            proof: Some(proof),
-        }));
+        requeue_entries.extend(
+            group
+                .proofed
+                .into_iter()
+                .map(|proof| PendingBlockAttestation {
+                    attestation: Attestation {
+                        aggregation_bits: proof.participants.clone(),
+                        data: group.data.clone(),
+                    },
+                    proof: Some(proof),
+                }),
+        );
     }
     requeue_pending_block_attestations(pending_block_attestations, requeue_entries);
 
@@ -1240,7 +1411,7 @@ fn produce_block_with_signatures(
     let block_build_start = Instant::now();
     let mut build_failed = false;
     let outcome = (|| {
-        let block_slot = crate::slot::Slot(Uint64(slot));
+        let block_slot = Slot(Uint64(slot));
         let parent_root = {
             let mut temp = pre_state.clone();
             if block_slot > temp.slot {
@@ -1253,22 +1424,23 @@ fn produce_block_with_signatures(
             Bytes32::from(temp.latest_block_header.hash_tree_root())
         };
         let payload_aggregation_start = Instant::now();
-        let (block_attestations, attestation_proofs) = match build_block_attestation_payload_fixed_point(
-            pre_state,
-            slot,
-            local_validator_index,
-            parent_root,
-            pending_block_attestations,
-            devnet_validator_keys,
-            metrics,
-        ) {
-            Ok(payload) => payload,
-            Err(err) => {
-                build_failed = true;
-                warn!("failed to build block attestation payload: {err}");
-                return None;
-            }
-        };
+        let (block_attestations, attestation_proofs) =
+            match build_block_attestation_payload_fixed_point(
+                pre_state,
+                slot,
+                local_validator_index,
+                parent_root,
+                pending_block_attestations,
+                devnet_validator_keys,
+                metrics,
+            ) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    build_failed = true;
+                    warn!("failed to build block attestation payload: {err}");
+                    return None;
+                }
+            };
         metrics
             .block_building_payload_aggregation_time
             .observe_duration(payload_aggregation_start);
@@ -1333,7 +1505,7 @@ fn produce_block_with_signatures(
             }
         };
         let proposer_attestation = Attestation {
-            aggregation_bits: match crate::types::bitlist::BitList::new(proposer_bits) {
+            aggregation_bits: match BitList::new(proposer_bits) {
                 Ok(v) => v,
                 Err(err) => {
                     build_failed = true;
@@ -1344,9 +1516,12 @@ fn produce_block_with_signatures(
             data: proposer_data,
         };
 
-        let proposer_message = proposer_attestation.data.hash_tree_root();
+        let proposer_message = block.hash_tree_root();
         let epoch = slot;
-        if !proposal_secret_key.get_activation_interval().contains(&epoch) {
+        if !proposal_secret_key
+            .get_activation_interval()
+            .contains(&epoch)
+        {
             warn!("skipping block proposal: key not active at epoch {}", epoch);
             return None;
         }
@@ -1372,7 +1547,7 @@ fn produce_block_with_signatures(
             }
             Err(err) => {
                 build_failed = true;
-                warn!("failed to sign proposer attestation: {err}");
+                warn!("failed to sign block proposal: {err}");
                 return None;
             }
         };
@@ -1393,7 +1568,9 @@ fn produce_block_with_signatures(
         ))
     })();
 
-    metrics.block_building_time.observe_duration(block_build_start);
+    metrics
+        .block_building_time
+        .observe_duration(block_build_start);
     if outcome.is_some() {
         metrics.block_building_success_total.inc();
     } else if build_failed {
@@ -1556,7 +1733,7 @@ pub(super) fn spawn_block_production_task(
                         &signed,
                         &mut state_guard,
                         post_state,
-                        &metrics,
+                        metrics.as_ref(),
                     ) {
                         Ok(()) => {
                             let mut fc = fork_choice.write().expect("fork choice lock");
@@ -1653,25 +1830,25 @@ mod tests {
         build_devnet_pq_validator_keys_from_hash_sig_dir, load_attestation_data,
         load_proposal_pre_state, produce_block_with_signatures,
     };
-    use crate::containers::attestation::{
-        AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
+    use crate::metrics::MetricsRegistry;
+    use peam_consensus_types::containers::attestation::{
+        AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES, SignedAttestation,
     };
-    use crate::containers::block::{
+    use peam_consensus_types::containers::block::{
         Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
         SignedBlockWithAttestation,
     };
-    use crate::containers::checkpoint::Checkpoint;
-    use crate::containers::state::{State, Validators};
-    use crate::containers::validator::ValidatorIndex;
-    use crate::fork_choice::ForkChoiceStore;
-    use crate::metrics::MetricsRegistry;
-    use crate::slot::Slot;
-    use crate::storage::{FileStore, Store};
-    use crate::types::bitlist::BitList;
-    use crate::types::bytes::{ByteList, Bytes32, Bytes52, Bytes3112};
-    use crate::types::collections::SszList;
-    use crate::types::uint::Uint64;
+    use peam_consensus_types::containers::checkpoint::Checkpoint;
+    use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
+    use peam_consensus_types::slot::Slot;
+    use peam_consensus_types::types::bitlist::BitList;
+    use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes52, Bytes3112};
+    use peam_consensus_types::types::collections::SszList;
+    use peam_consensus_types::types::uint::Uint64;
+    use peam_fork_choice::fork_choice::ForkChoiceStore;
     use peam_ssz::ssz::HashTreeRoot;
+    use peam_state::state::{State, Validators};
+    use peam_storage::{FileStore, Store};
     use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
 
@@ -1814,19 +1991,19 @@ mod tests {
 
     fn proposal_pre_state_with_progressive_justification() -> (State, Checkpoint, Checkpoint) {
         let validators = Validators::new(vec![
-            crate::containers::validator::Validator {
+            Validator {
                 attestation_pubkey: Bytes52::from([0x11u8; 52]),
                 proposal_pubkey: Bytes52::from([0x11u8; 52]),
                 index: ValidatorIndex(Uint64(0)),
                 balance: Uint64(0),
             },
-            crate::containers::validator::Validator {
+            Validator {
                 attestation_pubkey: Bytes52::from([0x22u8; 52]),
                 proposal_pubkey: Bytes52::from([0x22u8; 52]),
                 index: ValidatorIndex(Uint64(1)),
                 balance: Uint64(0),
             },
-            crate::containers::validator::Validator {
+            Validator {
                 attestation_pubkey: Bytes52::from([0x33u8; 52]),
                 proposal_pubkey: Bytes52::from([0x33u8; 52]),
                 index: ValidatorIndex(Uint64(2)),
@@ -1840,7 +2017,9 @@ mod tests {
         };
         let body_root = Bytes32::from(empty_body.hash_tree_root());
 
-        state.process_slots(Slot(Uint64(1))).expect("process slot 1");
+        state
+            .process_slots(Slot(Uint64(1)))
+            .expect("process slot 1");
         let header_1 = BlockHeader {
             slot: Slot(Uint64(1)),
             proposer_index: ValidatorIndex(Uint64(1)),
@@ -1857,7 +2036,9 @@ mod tests {
             slot: Slot(Uint64(1)),
         };
 
-        state.process_slots(Slot(Uint64(2))).expect("process slot 2");
+        state
+            .process_slots(Slot(Uint64(2)))
+            .expect("process slot 2");
         let header_2 = BlockHeader {
             slot: Slot(Uint64(2)),
             proposer_index: ValidatorIndex(Uint64(2)),
@@ -1887,24 +2068,27 @@ mod tests {
         let dir = temp_store_dir("strict_hash_sig_keys");
         std::fs::create_dir_all(&dir).expect("create dir");
 
-        std::fs::write(
-            dir.join("validator_0_attestation_pk.ssz"),
-            [7u8; 52],
-        )
-        .expect("write attestation pk");
-        std::fs::write(
-            dir.join("validator_0_attestation_sk.ssz"),
-            [9u8; 32],
-        )
-        .expect("write attestation sk");
+        std::fs::write(dir.join("validator_0_attestation_pk.ssz"), [7u8; 52])
+            .expect("write attestation pk");
+        std::fs::write(dir.join("validator_0_attestation_sk.ssz"), [9u8; 32])
+            .expect("write attestation sk");
 
         let err = match build_devnet_pq_validator_keys_from_hash_sig_dir(&dir, 1) {
             Ok(_) => panic!("missing proposal files must be rejected"),
             Err(err) => err,
         };
-        assert!(err.contains("validator_0_proposal_pk.ssz"), "{err}");
+        assert!(err.contains("missing split validator key files"), "{err}");
+        assert!(err.contains("validator 0"), "{err}");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn one_validator_hash_sig_fixture()
+    -> std::sync::Arc<Vec<Option<super::DevnetValidatorKeyMaterial>>> {
+        let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/http_smoke/hash-sig-keys");
+        build_devnet_pq_validator_keys_from_hash_sig_dir(&fixture_dir, 1)
+            .expect("load hash-sig fixture keys")
     }
 
     #[test]
@@ -1984,17 +2168,16 @@ mod tests {
             },
         ]));
 
-        let (attestations, proofs) = build_block_attestation_payload(
-            9,
-            5,
-            &pending,
-            &Arc::new(Vec::new()),
-            &MetricsRegistry::new(),
-        );
+        let key_cache = one_validator_hash_sig_fixture();
+        let (attestations, proofs) =
+            build_block_attestation_payload(9, 5, &pending, &key_cache, &MetricsRegistry::new());
 
         assert_eq!(attestations.len(), 1);
         assert_eq!(proofs.len(), 1);
-        assert_eq!(attestations[0].data.target.slot, current_attestation.data.target.slot);
+        assert_eq!(
+            attestations[0].data.target.slot,
+            current_attestation.data.target.slot
+        );
         assert!(
             pending.read().expect("pending lock").is_empty(),
             "payload builder should still drain the pending queue"
@@ -2027,10 +2210,16 @@ mod tests {
         assert_eq!(attestations.len(), 1);
         assert_eq!(proofs.len(), 1);
         assert_eq!(attestations[0].data, attestation_0.data);
-        assert_eq!(super::set_bits(&attestations[0].aggregation_bits), vec![0, 1]);
+        assert_eq!(
+            super::set_bits(&attestations[0].aggregation_bits),
+            vec![0, 1]
+        );
         assert_eq!(attestations[0].aggregation_bits, proofs[0].participants);
 
-        let public_keys = [key_cache[0].as_ref().expect("key0").attestation_pubkey, key_cache[1].as_ref().expect("key1").attestation_pubkey];
+        let public_keys = [
+            key_cache[0].as_ref().expect("key0").attestation_pubkey,
+            key_cache[1].as_ref().expect("key1").attestation_pubkey,
+        ];
         crate::crypto::pq::verify_aggregate_signature(
             &public_keys,
             &attestations[0].data.hash_tree_root(),
@@ -2114,7 +2303,11 @@ mod tests {
         assert_eq!(selected.len(), 2);
         assert_eq!(selected[0].data, attestation_0.data);
         assert_eq!(selected[1].data, attestation_1.data);
-        assert!(selected.iter().all(|att| att.data != unreachable_attestation.data));
+        assert!(
+            selected
+                .iter()
+                .all(|att| att.data != unreachable_attestation.data)
+        );
         assert_eq!(post_state.latest_justified.slot, Slot(Uint64(2)));
         let remaining = pending.read().expect("pending lock");
         assert_eq!(remaining.len(), 1);
@@ -2138,7 +2331,10 @@ mod tests {
 
         let att_data = load_attestation_data(
             &Arc::new(RwLock::new(live_state)),
-            &Arc::new(RwLock::new(Some(fork_choice_with_checkpoint_view(14, 9, 5)))),
+            &Arc::new(RwLock::new(Some(fork_choice_with_checkpoint_view(
+                14, 9, 5,
+            )))),
+            &Arc::new(RwLock::new(Vec::new())),
             &Arc::new(RwLock::new(Vec::new())),
             14,
         )
@@ -2148,5 +2344,67 @@ mod tests {
         assert_eq!(att_data.head.slot, Slot(Uint64(14)));
         assert_eq!(att_data.target.slot, Slot(Uint64(14)));
         assert_eq!(att_data.slot, Slot(Uint64(14)));
+    }
+
+    #[test]
+    fn attestation_data_uses_pending_individual_votes_for_head_selection() {
+        let mut anchor_state = dummy_state(0);
+        let anchor_state_root = root_from_u64(10_000);
+        anchor_state.latest_block_header.state_root = anchor_state_root;
+        let anchor = empty_signed_block(0, Bytes32::zero(), anchor_state_root);
+        let anchor_root = Bytes32::from(anchor.message.block.hash_tree_root());
+
+        let mut fork_choice = ForkChoiceStore::new(anchor, anchor_state.clone()).expect("fc");
+
+        let block_a_state_root = root_from_u64(10_001);
+        let block_a = empty_signed_block(1, anchor_root, block_a_state_root);
+        let mut state_a = dummy_state(1);
+        state_a.latest_block_header.slot = Slot(Uint64(1));
+        state_a.latest_block_header.state_root = block_a_state_root;
+        state_a.latest_justified = anchor_state.latest_justified;
+        state_a.latest_finalized = anchor_state.latest_finalized;
+        fork_choice
+            .on_block(block_a.clone(), state_a)
+            .expect("import block a");
+
+        let block_b_state_root = root_from_u64(10_002);
+        let block_b = empty_signed_block(1, anchor_root, block_b_state_root);
+        let mut state_b = dummy_state(1);
+        state_b.latest_block_header.slot = Slot(Uint64(1));
+        state_b.latest_block_header.state_root = block_b_state_root;
+        state_b.latest_justified = anchor_state.latest_justified;
+        state_b.latest_finalized = anchor_state.latest_finalized;
+        fork_choice
+            .on_block(block_b.clone(), state_b)
+            .expect("import block b");
+
+        let pending_individual = Arc::new(RwLock::new(vec![SignedAttestation {
+            validator_id: Uint64(0),
+            message: AttestationData {
+                slot: Slot(Uint64(1)),
+                head: Checkpoint {
+                    slot: Slot(Uint64(1)),
+                    root: Bytes32::from(block_b.message.block.hash_tree_root()),
+                },
+                target: anchor_state.latest_justified,
+                source: anchor_state.latest_justified,
+            },
+            signature: Bytes3112::zero(),
+        }]));
+
+        let att_data = load_attestation_data(
+            &Arc::new(RwLock::new(anchor_state)),
+            &Arc::new(RwLock::new(Some(fork_choice))),
+            &Arc::new(RwLock::new(Vec::new())),
+            &pending_individual,
+            1,
+        )
+        .expect("attestation data");
+
+        assert_eq!(att_data.head.slot, Slot(Uint64(1)));
+        assert_eq!(
+            att_data.head.root,
+            Bytes32::from(block_b.message.block.hash_tree_root())
+        );
     }
 }

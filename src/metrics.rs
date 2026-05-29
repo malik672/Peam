@@ -8,13 +8,15 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::containers::state::State;
-use crate::fork_choice::ForkChoiceStore;
 use crate::networking::peer_manager::PeerManager;
-use crate::slot::slot_index_from_unix_secs;
 use crate::ssz::SszEncode;
-use crate::storage::{FileStore, Store};
 use crate::unsafe_vec::{write_at, write_bytes_at};
+use peam_consensus_types::slot::slot_index_from_unix_secs;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_fork_choice::fork_choice::ForkChoiceStore;
+use peam_state::state::State;
+use peam_state::state_metrics::TransitionMetricsSink;
+use peam_storage::{FileStore, StorageMetricsSink, Store};
 
 enum HttpRoute {
     Metrics,
@@ -56,6 +58,53 @@ impl AtomicCounter {
 impl Default for AtomicCounter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl TransitionMetricsSink for MetricsRegistry {
+    #[inline]
+    fn observe_slots_processing_time(&self, start: Instant) {
+        self.state_transition_slots_processing_time
+            .observe_duration(start);
+    }
+
+    #[inline]
+    fn add_slots_processed(&self, n: u64) {
+        self.slots_processed_total.add(n);
+    }
+
+    #[inline]
+    fn observe_attestations_processing_time(&self, start: Instant) {
+        self.state_transition_attestations_processing_time
+            .observe_duration(start);
+    }
+
+    #[inline]
+    fn add_attestations_processed(&self, n: u64) {
+        self.attestations_processed_total.add(n);
+    }
+
+    #[inline]
+    fn observe_block_processing_time(&self, start: Instant) {
+        self.state_transition_block_processing_time
+            .observe_duration(start);
+    }
+
+    #[inline]
+    fn inc_finalizations_success(&self) {
+        self.finalizations_success_total.inc();
+    }
+
+    #[inline]
+    fn observe_state_transition_time(&self, start: Instant) {
+        self.state_transition_time.observe_duration(start);
+    }
+}
+
+impl StorageMetricsSink for MetricsRegistry {
+    #[inline]
+    fn observe_block_import_end_to_end_time(&self, start: Instant) {
+        self.block_import_end_to_end_time.observe_duration(start);
     }
 }
 
@@ -458,7 +507,7 @@ pub fn spawn_http_server(
             (false, false) => "disabled",
         };
         info!("{listener_label} listening on {}", bind_addr);
-        let mut finalized_state_cache: Option<(crate::types::bytes::Bytes32, Vec<u8>)> = None;
+        let mut finalized_state_cache: Option<(Bytes32, Vec<u8>)> = None;
 
         loop {
             let (mut stream, _peer) = match listener.accept().await {
@@ -707,7 +756,7 @@ fn http_response_bytes(status: &str, content_type: &str, body: Vec<u8>) -> Vec<u
 fn latest_finalized_state_ssz(
     state: &State,
     store: &FileStore,
-    cache: &mut Option<(crate::types::bytes::Bytes32, Vec<u8>)>,
+    cache: &mut Option<(Bytes32, Vec<u8>)>,
 ) -> Option<Vec<u8>> {
     let store_finalized = store.finalized();
     if let Some(root) = store_finalized {
@@ -729,7 +778,7 @@ fn latest_finalized_state_ssz(
 }
 
 #[inline]
-fn checkpoint_json(slot: u64, root: crate::types::bytes::Bytes32) -> Vec<u8> {
+fn checkpoint_json(slot: u64, root: Bytes32) -> Vec<u8> {
     const PREFIX: &[u8] = b"{\"slot\":";
     const MID: &[u8] = b",\"root\":\"0x";
     const SUFFIX: &[u8] = b"\"}\n";
@@ -1169,10 +1218,7 @@ fn render_metrics(
     ));
 
     // -- Sync --
-    let sync_status = if !registry
-        .sync_status_first_tick_seen
-        .load(Ordering::Relaxed)
-    {
+    let sync_status = if !registry.sync_status_first_tick_seen.load(Ordering::Relaxed) {
         "idle"
     } else if syncing || head_slot < wall_clock_slot {
         "syncing"

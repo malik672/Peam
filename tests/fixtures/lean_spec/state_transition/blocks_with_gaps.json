@@ -1,0 +1,21 @@
+{
+  "blocks_with_gaps": {
+    "validators": 1,
+    "blocks": [
+      {
+        "slot": 1,
+        "proposer": 0
+      },
+      {
+        "slot": 4,
+        "proposer": 0
+      },
+      {
+        "slot": 8,
+        "proposer": 0
+      }
+    ],
+    "expectedSlot": 8,
+    "expectedHistoryLen": 8
+  }
+}

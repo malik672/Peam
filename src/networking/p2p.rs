@@ -50,12 +50,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::events::{EventBus, NetworkEvent};
-use crate::containers::req_resp::{BlocksByRangeResponse, MAX_BLOCKS_PER_REQUEST};
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
 use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
 use crate::ssz::SszEncode;
-use crate::types::collections::SszList;
+use peam_consensus_types::containers::req_resp::{BlocksByRangeResponse, MAX_BLOCKS_PER_REQUEST};
+use peam_consensus_types::types::collections::SszList;
 
 /// Ream-compatible snappy transform for gossip payloads.
 #[derive(Clone)]
@@ -1275,9 +1275,15 @@ impl P2pService {
                         ValidationResult::Accept => {}
                         ValidationResult::Ignore(reason) => {
                             if crate::networking::gossipsub::validate::is_retryable_unknown_roots_ignore(&reason) {
+                                let mut deferred_missing_head = None;
                                 match &decoded {
                                     LeanGossipsubMessage::AggregatedAttestation(attestation) => {
                                         let data = &attestation.attestation.data;
+                                        deferred_missing_head =
+                                            crate::networking::gossipsub::validate::missing_head_root_if_only_head_unknown(
+                                                data,
+                                                self.gossip_context.as_ref(),
+                                            );
                                         tracing::info!(
                                             peer = %propagation_source,
                                             slot = ?data.slot,
@@ -1295,6 +1301,11 @@ impl P2pService {
                                         attestation,
                                     } => {
                                         let data = &attestation.attestation.message;
+                                        deferred_missing_head =
+                                            crate::networking::gossipsub::validate::missing_head_root_if_only_head_unknown(
+                                                data,
+                                                self.gossip_context.as_ref(),
+                                            );
                                         tracing::info!(
                                             peer = %propagation_source,
                                             subnet_id,
@@ -1309,6 +1320,21 @@ impl P2pService {
                                         );
                                     }
                                     LeanGossipsubMessage::Block(_) => {}
+                                }
+                                if let Some(head_root) = deferred_missing_head {
+                                    tracing::info!(
+                                        topic = %topic,
+                                        peer = %propagation_source,
+                                        head_root = ?head_root,
+                                        "gossip_deferred reason=attestation head block unknown locally"
+                                    );
+                                    self.events.emit(NetworkEvent::GossipDeferredMissingHead {
+                                        topic: topic.clone(),
+                                        payload: message.data.clone(),
+                                        head_root,
+                                        peer_id: propagation_source.to_string(),
+                                    });
+                                    return;
                                 }
                                 self.events.emit(NetworkEvent::GossipDeferredUnknownRoots {
                                     topic: topic.clone(),

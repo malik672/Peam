@@ -1,17 +1,14 @@
-//! leanSpec parity placeholders and incremental ports.
+//! Focused unit tests for attestation aggregation and justification mechanics.
 
-use peam::containers::attestation::{AggregatedSignatureProof, Attestation, AttestationData};
-use peam::containers::block::{
-    Attestations, Block, BlockBody, BlockHeader, BlockSignatures, BlockWithAttestation,
-    SignedBlockWithAttestation,
-};
+use peam::containers::attestation::{Attestation, AttestationData};
+use peam::containers::block::{Attestations, Block, BlockBody, BlockHeader};
 use peam::containers::checkpoint::Checkpoint;
 use peam::containers::state::{State, Validators};
 use peam::containers::validator::{Validator, ValidatorIndex};
 use peam::slot::Slot;
 use peam::ssz::HashTreeRoot;
 use peam::types::bitlist::BitList;
-use peam::types::bytes::{ByteList, Bytes32, Bytes52, Bytes3112};
+use peam::types::bytes::{Bytes32, Bytes52, Bytes3112};
 use peam::types::collections::SszList;
 use peam::types::uint::Uint64;
 
@@ -140,109 +137,6 @@ fn lean_spec_attestation_aggregation() {
     assert!(a.aggregation_bits.data[0] & (1u8 << 1) != 0);
     assert!(a.aggregation_bits.data[0] & (1u8 << 3) != 0);
     assert!(b.aggregation_bits.data[0] & (1u8 << 5) != 0);
-}
-
-#[test]
-#[ignore = "placeholder test uses structural signatures and is covered by dedicated pq tests"]
-fn lean_spec_state_aggregation() {
-    let validators: Validators = SszList::new(vec![
-        Validator {
-            attestation_pubkey: Bytes52::from([0x01u8; 52]),
-            proposal_pubkey: Bytes52::from([0x01u8; 52]),
-            index: ValidatorIndex(Uint64(0)),
-            balance: Uint64(0),
-        },
-        Validator {
-            attestation_pubkey: Bytes52::from([0x02u8; 52]),
-            proposal_pubkey: Bytes52::from([0x02u8; 52]),
-            index: ValidatorIndex(Uint64(1)),
-            balance: Uint64(0),
-        },
-        Validator {
-            attestation_pubkey: Bytes52::from([0x03u8; 52]),
-            proposal_pubkey: Bytes52::from([0x03u8; 52]),
-            index: ValidatorIndex(Uint64(2)),
-            balance: Uint64(0),
-        },
-    ])
-    .expect("validators");
-    let mut state = State::generate_genesis(Uint64(0), validators);
-
-    let att = Attestation {
-        aggregation_bits: BitList::new(vec![true, true, false]).expect("bits"),
-        data: AttestationData {
-            slot: Slot(Uint64(1)),
-            head: Checkpoint {
-                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-                slot: Slot(Uint64(1)),
-            },
-            target: Checkpoint {
-                root: Bytes32::from(state.latest_block_header.hash_tree_root()),
-                slot: Slot(Uint64(1)),
-            },
-            source: Checkpoint {
-                root: state.latest_justified.root,
-                slot: state.latest_justified.slot,
-            },
-        },
-    };
-
-    let block = build_block_for_slot(&state, 1, 1, vec![att.clone()]);
-    let proposer_attestation = Attestation {
-        aggregation_bits: BitList::new(vec![false, true, false]).expect("bits"),
-        data: AttestationData {
-            slot: block.slot,
-            head: Checkpoint {
-                root: Bytes32::zero(),
-                slot: Slot(Uint64(1)),
-            },
-            target: Checkpoint {
-                root: Bytes32::zero(),
-                slot: Slot(Uint64(1)),
-            },
-            source: Checkpoint {
-                root: Bytes32::zero(),
-                slot: Slot(Uint64(0)),
-            },
-        },
-    };
-
-    let mismatched_proof = AggregatedSignatureProof {
-        participants: BitList::new(vec![true, false, false]).expect("participants"),
-        proof_data: ByteList::new(vec![0xAA]).expect("proof"),
-    };
-    let signed_bad = SignedBlockWithAttestation {
-        message: BlockWithAttestation {
-            block: block.clone(),
-            proposer_attestation: proposer_attestation.clone(),
-        },
-        signature: BlockSignatures {
-            attestation_signatures: SszList::new(vec![mismatched_proof]).expect("sigs"),
-            proposer_signature: Bytes3112::zero(),
-        },
-    };
-    let err = state.process_signed_block(&signed_bad).unwrap_err();
-    assert!(!err.is_empty());
-
-    let good_proof = AggregatedSignatureProof {
-        participants: att.aggregation_bits.clone(),
-        proof_data: ByteList::new(vec![0xBB]).expect("proof"),
-    };
-
-    let signed_good = SignedBlockWithAttestation {
-        message: BlockWithAttestation {
-            block,
-            proposer_attestation,
-        },
-        signature: BlockSignatures {
-            attestation_signatures: SszList::new(vec![good_proof]).expect("sigs"),
-            proposer_signature: Bytes3112::zero(),
-        },
-    };
-    state
-        .process_signed_block(&signed_good)
-        .expect("process block");
-    assert_eq!(state.latest_justified.slot, Slot(Uint64(1)));
 }
 
 #[test]

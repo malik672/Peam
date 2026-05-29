@@ -1,17 +1,18 @@
 use std::io::Read;
 use std::time::Duration;
 
-use crate::containers::attestation::{Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT};
-use crate::containers::block::{
+use crate::ssz::HashTreeRoot;
+use peam_consensus_types::containers::attestation::{
+    Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT,
+};
+use peam_consensus_types::containers::block::{
     AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures, BlockWithAttestation,
     SignedBlockWithAttestation,
 };
-use crate::containers::checkpoint::Checkpoint;
-use crate::containers::state::State;
-use crate::ssz::HashTreeRoot;
-use crate::types::bitlist::BitList;
-use crate::types::bytes::Bytes32;
-use crate::types::bytes::Bytes3112;
+use peam_consensus_types::containers::checkpoint::Checkpoint;
+use peam_consensus_types::types::bitlist::BitList;
+use peam_consensus_types::types::bytes::{Bytes32, Bytes3112};
+use peam_state::state::State;
 
 const FINALIZED_STATE_PATH: &str = "/lean/v0/states/finalized";
 const CHECKPOINT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -81,9 +82,7 @@ pub fn verify_checkpoint_state(state: &State, expected_genesis: &State) -> Resul
         if validator.attestation_pubkey != expected.attestation_pubkey
             || validator.proposal_pubkey != expected.proposal_pubkey
         {
-            return Err(format!(
-                "checkpoint validator key mismatch at index {idx}"
-            ));
+            return Err(format!("checkpoint validator key mismatch at index {idx}"));
         }
         if validator.index.0.0 != idx as u64 {
             return Err(format!(

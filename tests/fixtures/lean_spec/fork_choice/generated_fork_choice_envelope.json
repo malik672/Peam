@@ -1,0 +1,74 @@
+{
+  "tests/consensus/devnet/fc/test_generated_compatibility.py::test_linear_blocks[fork_Devnet-fork_choice_test]": {
+    "_info": {
+      "fixtureFormat": "fork_choice_test",
+      "description": "Generated-envelope compatibility fixture for linear fork choice blocks"
+    },
+    "network": "Devnet",
+    "anchorState": {
+      "config": {
+        "genesisTime": 0
+      },
+      "slot": 0,
+      "validators": [
+        {},
+        {}
+      ]
+    },
+    "anchorBlock": {
+      "slot": 1
+    },
+    "steps": [
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 2,
+          "proposerIndex": 0,
+          "blockRootLabel": "block_2"
+        },
+        "checks": {
+          "headSlot": 2,
+          "headRootLabel": "block_2",
+          "latestJustifiedSlot": 0,
+          "latestJustifiedRootLabel": "anchor",
+          "latestFinalizedSlot": 0,
+          "latestFinalizedRootLabel": "anchor"
+        }
+      },
+      {
+        "stepType": "block",
+        "block": {
+          "slot": 3,
+          "proposerIndex": 1,
+          "blockRootLabel": "block_3"
+        },
+        "checks": {
+          "headSlot": 3,
+          "headRootLabel": "block_3",
+          "latestJustifiedSlot": 0,
+          "latestJustifiedRootLabel": "anchor",
+          "latestFinalizedSlot": 0,
+          "latestFinalizedRootLabel": "anchor"
+        }
+      },
+      {
+        "stepType": "attestation",
+        "attestation": {
+          "validatorId": 0,
+          "slot": 3,
+          "targetSlot": 3,
+          "targetRootLabel": "block_3",
+          "headRootLabel": "block_3"
+        },
+        "checks": {
+          "headSlot": 3,
+          "headRootLabel": "block_3",
+          "latestJustifiedSlot": 0,
+          "latestJustifiedRootLabel": "anchor",
+          "latestFinalizedSlot": 0,
+          "latestFinalizedRootLabel": "anchor"
+        }
+      }
+    ]
+  }
+}

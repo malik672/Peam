@@ -44,8 +44,8 @@ PEER1_CMD="${PEER1_CMD:-}"
 PEER2_CMD="${PEER2_CMD:-}"
 PEER3_CMD="${PEER3_CMD:-}"
 
-# Topic domain defaults to the canonical devnet3 namespace.
-TOPIC_DOMAIN="${TOPIC_DOMAIN:-devnet0}"
+# Topic domain defaults to the canonical numeric devnet4 namespace.
+TOPIC_DOMAIN="${TOPIC_DOMAIN:-12345678}"
 
 BLOCK_TOPIC="/leanconsensus/$TOPIC_DOMAIN/block/ssz_snappy"
 AGGREGATION_TOPIC="/leanconsensus/$TOPIC_DOMAIN/aggregation/ssz_snappy"

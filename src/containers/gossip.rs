@@ -1,11 +1,16 @@
-use crate::containers::attestation::{SignedAggregatedAttestation, SignedAttestation};
-use crate::containers::block::{BlockHeader, SignedBlockWithAttestation};
-use crate::containers::validator::ValidatorIndex;
 use crate::ssz::hash::hash_nodes;
 use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
-use crate::types::bytes::Bytes32;
-use crate::types::uint::Uint64;
 use crate::unsafe_vec::write_bytes_at;
+use peam_consensus_types::containers::attestation::{
+    SignedAggregatedAttestation, SignedAttestation,
+};
+use peam_consensus_types::containers::block::{
+    BlockHeader, SignedBlockWithAttestation, decode_signed_block_network,
+    decode_signed_block_network_checked, encode_signed_block_network,
+};
+use peam_consensus_types::containers::validator::ValidatorIndex;
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::uint::Uint64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GossipBlock {
@@ -35,14 +40,14 @@ pub struct VoluntaryExit {
 
 impl SszEncode for GossipBlock {
     fn encode_ssz(&self) -> Vec<u8> {
-        self.block.encode_ssz()
+        encode_signed_block_network(&self.block)
     }
 }
 
 impl SszDecode for GossipBlock {
     fn decode_ssz(bytes: &[u8]) -> Result<Self, String> {
         Ok(Self {
-            block: SignedBlockWithAttestation::decode_ssz(bytes)?,
+            block: decode_signed_block_network(bytes)?,
         })
     }
 }
@@ -50,7 +55,7 @@ impl SszDecode for GossipBlock {
 impl GossipBlock {
     pub fn decode_ssz_checked(bytes: &[u8]) -> Result<Self, String> {
         Ok(Self {
-            block: SignedBlockWithAttestation::decode_ssz_checked(bytes)?,
+            block: decode_signed_block_network_checked(bytes)?,
         })
     }
 }

@@ -11,12 +11,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::containers::state::State;
-use crate::slot::{Slot, slot_index_from_unix_millis, unix_now_millis};
 use crate::ssz::HashTreeRoot;
-use crate::storage::{FileStore, Store};
-use crate::types::bytes::Bytes32;
-use crate::types::uint::Uint64;
+use peam_consensus_types::slot::{Slot, slot_index_from_unix_millis, unix_now_millis};
+use peam_consensus_types::types::bytes::Bytes32;
+use peam_consensus_types::types::uint::Uint64;
+use peam_state::state::State;
+use peam_storage::{FileStore, Store};
 
 const RECENT_ROOT_CACHE_LEN: usize = 200;
 
@@ -121,6 +121,9 @@ impl GossipContext for StateGossipContext {
 
     fn knows_block_root(&self, root: &Bytes32) -> bool {
         if *root == Bytes32::zero() {
+            return true;
+        }
+        if self.store_knows_root(root) {
             return true;
         }
         let Ok(guard) = self.state.read() else {
@@ -239,18 +242,24 @@ impl RecentRootCache {
 }
 
 impl StateGossipContext {
-    #[cold]
-    fn knows_block_root_cold(&self, root: &Bytes32, snapshot: ContextSnapshot) -> bool {
-        let db_hit = self
-            .store
+    #[inline]
+    fn store_knows_root(&self, root: &Bytes32) -> bool {
+        self.store
             .as_ref()
             .and_then(|store| {
-                store
-                    .read()
-                    .ok()
-                    .map(|guard| guard.get_block(root).is_some())
+                store.read().ok().map(|guard| {
+                    guard.head() == Some(*root)
+                        || guard.justified() == Some(*root)
+                        || guard.finalized() == Some(*root)
+                        || guard.get_block(root).is_some()
+                })
             })
-            .unwrap_or(false);
+            .unwrap_or(false)
+    }
+
+    #[cold]
+    fn knows_block_root_cold(&self, root: &Bytes32, snapshot: ContextSnapshot) -> bool {
+        let db_hit = self.store_knows_root(root);
         tracing::trace!(
             queried_root = ?root,
             db_hit,

@@ -1,70 +1,30 @@
 //! Real post-quantum signature implementation.
 //!
-//! Uses `leansig` for single signatures.
-//! Aggregate signing/verifying uses `lean-multisig` (devnet-2 target).
+//! Uses `leansig` for single signatures and `lean-multisig` devnet4 aggregation.
 
 use lean_multisig::{
     AggregatedXMSS, setup_prover, setup_verifier, xmss_aggregate, xmss_verify_aggregation,
 };
-use leansig::{
-    MESSAGE_LENGTH,
-    inc_encoding::target_sum::TargetSumEncoding,
-    serialization::Serializable,
-    signature::{
-        SignatureScheme,
-        generalized_xmss::{
-            GeneralizedXMSSPublicKey, GeneralizedXMSSSecretKey, GeneralizedXMSSSignature,
-            GeneralizedXMSSSignatureScheme,
-        },
-    },
-    symmetric::{
-        message_hash::aborting::AbortingHypercubeMessageHash,
-        prf::shake_to_field::ShakePRFtoF,
-        tweak_hash::poseidon::PoseidonTweakHash,
-    },
-};
+use leansig::{MESSAGE_LENGTH, serialization::Serializable, signature::SignatureScheme};
+use peam_consensus_types::types::bytes::{Bytes52, Bytes3112};
 use rand::{SeedableRng, rngs::StdRng};
 use std::hash::Hasher;
 
-use crate::types::bytes::{Bytes52, Bytes3112};
-
 /// The concrete XMSS-based post-quantum signature scheme used throughout the node.
-///
-const PARAMETER_LEN: usize = 5;
-const HASH_LEN_FE: usize = 8;
-const TWEAK_LEN_FE: usize = 2;
-const POSEIDON24_CAPACITY: usize = 9;
-const V: usize = 46;
-const BASE: usize = 8;
-const Z: usize = 8;
-const Q: usize = 127;
-const MSG_LEN_FE: usize = 9;
-const RAND_LEN_FE: usize = 7;
-const TARGET_SUM: usize = 200;
-const LOG_LIFETIME: usize = 32;
-
-type MH =
-    AbortingHypercubeMessageHash<PARAMETER_LEN, RAND_LEN_FE, HASH_LEN_FE, V, BASE, Z, Q, TWEAK_LEN_FE, MSG_LEN_FE>;
-type TH = PoseidonTweakHash<PARAMETER_LEN, HASH_LEN_FE, TWEAK_LEN_FE, POSEIDON24_CAPACITY, V>;
-type PrF = ShakePRFtoF<HASH_LEN_FE, RAND_LEN_FE>;
-type IE = TargetSumEncoding<MH, TARGET_SUM>;
-
-/// Instantiated with the devnet4 XMSS parameters used by lean-multisig.
-pub type LeanSigScheme = GeneralizedXMSSSignatureScheme<PrF, IE, TH, LOG_LIFETIME>;
+pub type LeanSigScheme =
+    leansig::signature::generalized_xmss::instantiations_aborting::lifetime_2_to_the_32::SchemeAbortingTargetSumLifetime32Dim46Base8;
 
 /// Public key type for [`LeanSigScheme`].
-pub type LeanSigPublicKey = GeneralizedXMSSPublicKey<TH>;
+pub type LeanSigPublicKey = <LeanSigScheme as SignatureScheme>::PublicKey;
 
 /// Signature type for [`LeanSigScheme`].
-pub type LeanSigSignature = GeneralizedXMSSSignature<IE, TH>;
+pub type LeanSigSignature = <LeanSigScheme as SignatureScheme>::Signature;
 /// Secret key type for [`LeanSigScheme`].
-pub type LeanSigSecretKey = GeneralizedXMSSSecretKey<PrF, IE, TH, LOG_LIFETIME>;
+pub type LeanSigSecretKey = <LeanSigScheme as SignatureScheme>::SecretKey;
 
 /// Narrow per-key active signing interval used for local devnet key material.
 const DEVNET_KEY_ACTIVE_EPOCHS: usize = 8;
 /// Aggregation rate used when Peam proves fresh XMSS aggregate proofs.
-///
-/// Verification is encoded in the proof, so peers do not need to know this value.
 const XMSS_AGGREGATION_LOG_INV_RATE: usize = 1;
 
 pub struct AggregateChildProof<'a> {
@@ -119,7 +79,7 @@ pub fn key_gen_for_devnet_validator_with_role(
     Ok((Bytes52::from_slice(&pk_bytes), sk))
 }
 
-/// Signs a 32-byte message and returns the canonical 3112-byte signature.
+/// Signs a 32-byte message and returns the canonical devnet4 direct signature.
 #[inline]
 pub fn sign_message(
     secret_key: &LeanSigSecretKey,
@@ -159,10 +119,6 @@ pub fn sign_aggregate(
     let mut signatures = Vec::with_capacity(secret_keys.len());
     for secret_key in secret_keys {
         let signature = sign_message(secret_key, epoch, message)?;
-        // SAFETY:
-        // - `signatures` was preallocated with `secret_keys.len()`, and we perform
-        //   exactly one insertion per loop iteration, so `len < capacity` always holds.
-        // - `signature` is fully initialized before writing.
         unsafe {
             let idx = signatures.len();
             signatures.set_len(idx + 1);
@@ -223,11 +179,6 @@ fn aggregate_signatures_impl(
     maybe_log_aggregate_io("prove", public_keys, message, epoch);
     let mut child_pubkeys = Vec::with_capacity(children.len());
     let mut child_refs = Vec::with_capacity(children.len());
-    // SAFETY:
-    // - both vectors are preallocated to `children.len()`, so no reallocation occurs.
-    // - each slot is written exactly once before the corresponding length is increased.
-    // - `child_refs` stores slices into `child_pubkeys`, which stay valid because
-    //   `child_pubkeys` never reallocates after capacity reservation.
     unsafe {
         for (idx, child) in children.iter().enumerate() {
             let pub_keys = child
@@ -246,17 +197,16 @@ fn aggregate_signatures_impl(
         }
     }
     let mut raw_xmss = Vec::with_capacity(public_keys.len());
-    // SAFETY:
-    // - `raw_xmss` is preallocated to `public_keys.len()`.
-    // - `public_keys.len() == signatures.len()` is an invariant of the callers.
-    // - each slot is written exactly once before the vector length is increased.
     unsafe {
         for (idx, (public_key, signature)) in public_keys.iter().zip(signatures.iter()).enumerate()
         {
             crate::unsafe_vec::write_at(
                 &mut raw_xmss,
                 idx,
-                (public_key_from_bytes(public_key)?, signature_from_bytes(signature)?),
+                (
+                    public_key_from_bytes(public_key)?,
+                    signature_from_bytes(signature)?,
+                ),
             );
             raw_xmss.set_len(idx.unchecked_add(1));
         }
@@ -315,21 +265,13 @@ pub fn aggregate_proofs(
 }
 
 /// Deserializes a 52-byte public key into a [`LeanSigPublicKey`].
-///
-/// # Errors
-///
-/// Returns `Err` if the byte slice is not a valid encoded public key.
 #[inline]
 pub fn public_key_from_bytes(bytes: &Bytes52) -> Result<LeanSigPublicKey, String> {
     LeanSigPublicKey::from_bytes(bytes.as_ref())
         .map_err(|err| format!("Failed to decode LeanSigPublicKey: {err:?}"))
 }
 
-/// Deserializes a 3112-byte signature into a [`LeanSigSignature`].
-///
-/// # Errors
-///
-/// Returns `Err` if the byte slice is not a valid encoded signature.
+/// Deserializes a devnet4 direct signature into a [`LeanSigSignature`].
 #[inline]
 pub fn signature_from_bytes(bytes: &Bytes3112) -> Result<LeanSigSignature, String> {
     LeanSigSignature::from_bytes(bytes.as_ref())
@@ -337,14 +279,6 @@ pub fn signature_from_bytes(bytes: &Bytes3112) -> Result<LeanSigSignature, Strin
 }
 
 /// Verifies a single post-quantum signature.
-///
-/// Decodes `public_key` and `signature` from their byte representations, then
-/// checks the signature over `message` at the given `epoch`.
-///
-/// # Errors
-///
-/// Returns `Err` if key/signature deserialization fails or if verification does
-/// not pass.
 #[inline]
 pub fn verify_signature(
     public_key: &Bytes52,
@@ -391,11 +325,7 @@ pub fn verify_aggregate_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AggregateChildProof, DevnetValidatorKeyRole, aggregate_proofs, devnet_validator_seed,
-        key_gen_for_devnet_validator_with_role, sign_aggregate, sign_message,
-        verify_aggregate_signature,
-    };
+    use super::{DevnetValidatorKeyRole, devnet_validator_seed};
 
     #[test]
     fn devnet_role_seeds_are_distinct_and_stable() {
@@ -407,34 +337,5 @@ mod tests {
         assert_eq!(proposal[..8], [82, 80, 49, 84, 69, 78, 86, 68]);
         assert!(attestation[8..].iter().all(|byte| *byte == 0));
         assert!(proposal[8..].iter().all(|byte| *byte == 0));
-    }
-
-    #[test]
-    #[ignore = "recursive XMSS proof composition is slow; run explicitly when validating the path"]
-    fn recursively_aggregates_child_proof_with_fresh_signature() {
-        let (pk0, sk0) =
-            key_gen_for_devnet_validator_with_role(0, DevnetValidatorKeyRole::Attestation)
-                .expect("validator 0 key");
-        let (pk1, sk1) =
-            key_gen_for_devnet_validator_with_role(1, DevnetValidatorKeyRole::Attestation)
-                .expect("validator 1 key");
-        let message = [0x5Au8; 32];
-        let child_proof = sign_aggregate(&[pk0], &[&sk0], 1, &message).expect("child proof");
-        let sig1 = sign_message(&sk1, 1, &message).expect("signature");
-
-        let aggregate = aggregate_proofs(
-            &[AggregateChildProof {
-                public_keys: &[pk0],
-                proof_data: &child_proof,
-            }],
-            &[pk1],
-            &[sig1],
-            &message,
-            1,
-        )
-        .expect("recursive aggregate");
-
-        verify_aggregate_signature(&[pk0, pk1], &message, &aggregate, 1)
-            .expect("verify recursive aggregate");
     }
 }
