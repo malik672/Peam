@@ -1,3 +1,6 @@
+use crate::ssz::hash::hash_nodes;
+use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
+use crate::unsafe_vec::write_bytes_at;
 use peam_consensus_types::containers::attestation::{
     SignedAggregatedAttestation, SignedAttestation,
 };
@@ -8,9 +11,6 @@ use peam_consensus_types::containers::block::{
 use peam_consensus_types::containers::validator::ValidatorIndex;
 use peam_consensus_types::types::bytes::Bytes32;
 use peam_consensus_types::types::uint::Uint64;
-use crate::ssz::hash::hash_nodes;
-use crate::ssz::{HashTreeRoot, SszDecode, SszEncode, SszFixedLen};
-use crate::unsafe_vec::write_bytes_at;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GossipBlock {

@@ -36,11 +36,11 @@
 //! `put_signed_block` bypasses this and writes everything in one atomic
 //! `persist_signed_block_bundle` transaction.
 
+use peam_consensus_types::containers::checkpoint::Checkpoint;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
-use peam_consensus_types::containers::checkpoint::Checkpoint;
 use tracing::warn;
 
 use super::canonical_db::CanonicalDb;
@@ -511,7 +511,10 @@ impl FileStore {
     }
 
     #[inline]
-    fn put_signed_block_inner<P: SignedBlockProcessor, M: StorageMetricsSink + TransitionMetricsSink>(
+    fn put_signed_block_inner<
+        P: SignedBlockProcessor,
+        M: StorageMetricsSink + TransitionMetricsSink,
+    >(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,
@@ -572,7 +575,8 @@ impl FileStore {
         state: &mut State,
     ) -> Result<(), String> {
         let pre_import_slot = state.slot;
-        let replayed = self.replay_signed_block_from_parent::<P>(&signed, Option::<&NoopStorageMetrics>::None)?;
+        let replayed = self
+            .replay_signed_block_from_parent::<P>(&signed, Option::<&NoopStorageMetrics>::None)?;
         if replayed.slot < pre_import_slot {
             return Err("imported block would regress local state slot".to_string());
         }
@@ -850,7 +854,10 @@ impl Store for FileStore {
         self.set_meta_dirty();
     }
 
-    fn put_signed_block_with_metrics<P: SignedBlockProcessor, M: StorageMetricsSink + TransitionMetricsSink>(
+    fn put_signed_block_with_metrics<
+        P: SignedBlockProcessor,
+        M: StorageMetricsSink + TransitionMetricsSink,
+    >(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,

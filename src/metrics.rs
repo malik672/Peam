@@ -8,15 +8,15 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use crate::networking::peer_manager::PeerManager;
+use crate::ssz::SszEncode;
+use crate::unsafe_vec::{write_at, write_bytes_at};
 use peam_consensus_types::slot::slot_index_from_unix_secs;
 use peam_consensus_types::types::bytes::Bytes32;
 use peam_fork_choice::fork_choice::ForkChoiceStore;
 use peam_state::state::State;
 use peam_state::state_metrics::TransitionMetricsSink;
-use crate::networking::peer_manager::PeerManager;
-use crate::ssz::SszEncode;
 use peam_storage::{FileStore, StorageMetricsSink, Store};
-use crate::unsafe_vec::{write_at, write_bytes_at};
 
 enum HttpRoute {
     Metrics,
@@ -107,7 +107,6 @@ impl StorageMetricsSink for MetricsRegistry {
         self.block_import_end_to_end_time.observe_duration(start);
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // AtomicHistogram

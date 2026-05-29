@@ -10,9 +10,9 @@ use peam_consensus_types::types::bytes::Bytes52;
 use peam_consensus_types::types::uint::Uint64;
 use serde::Deserialize;
 
-use peam_state::state::{State, Validators};
 use crate::ssz::SszFixedLen;
 use crate::unsafe_vec::write_at;
+use peam_state::state::{State, Validators};
 
 /// Default validator-set size used when config does not specify `validator_count`.
 pub const DEFAULT_VALIDATOR_COUNT: usize = 5;

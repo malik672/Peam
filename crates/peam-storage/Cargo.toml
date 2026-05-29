@@ -2,6 +2,7 @@
 name = "peam-storage"
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
 
 [dependencies]
 peam-consensus-types = { path = "../peam-consensus-types" }

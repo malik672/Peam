@@ -20,9 +20,6 @@
 
 use rapidhash::RapidHashMap;
 
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
 use peam_consensus_types::containers::attestation::Attestation;
 use peam_consensus_types::containers::block::{
     Attestations, Block, BlockBody, BlockHeader, SignedBlockWithAttestation,
@@ -38,6 +35,9 @@ use peam_consensus_types::types::collections::SszList;
 use peam_consensus_types::types::uint::Uint64;
 use peam_ssz::ssz::hash::merkleize;
 use peam_ssz::ssz::{HashTreeRoot, SszDecode, SszEncode};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 use tracing::{info, warn};
 
 use crate::logfmt::{short_opt_root_or_dash, short_root, short_slot_root};

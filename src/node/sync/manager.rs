@@ -18,13 +18,13 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
-use peam_state::state::State;
 use crate::logfmt::short_root;
 use crate::metrics::MetricsRegistry;
 use crate::networking::{
     LeanRequestMessage, LeanResponseMessage, LeanSupportedProtocol, NetworkEvent, P2pCommand,
 };
 use crate::ssz::HashTreeRoot;
+use peam_state::state::State;
 use peam_storage::{FileStore, Store};
 
 use super::backfill::{
@@ -280,10 +280,7 @@ fn attestation_trace_enabled() -> bool {
 }
 
 #[inline]
-fn log_sync_proposer_attestation_sample(
-    reason: &'static str,
-    signed: &SignedBlockWithAttestation,
-) {
+fn log_sync_proposer_attestation_sample(reason: &'static str, signed: &SignedBlockWithAttestation) {
     if !attestation_trace_enabled() {
         return;
     }

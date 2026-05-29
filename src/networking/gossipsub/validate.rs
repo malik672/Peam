@@ -11,14 +11,16 @@
 //! Each function returns a [`ValidationResult`] whose variant determines how
 //! the p2p layer scores and propagates the message.
 
+use crate::logfmt::short_checkpoint;
+use crate::networking::gossipsub::context::GossipContext;
+use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use peam_consensus_types::containers::attestation::{
     AttestationData, SignedAggregatedAttestation, SignedAttestation, VALIDATOR_REGISTRY_LIMIT,
     attestation_committee_count,
 };
-use crate::logfmt::short_checkpoint;
-use crate::networking::gossipsub::context::GossipContext;
-use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
-use peam_consensus_types::containers::block::{SignedBlockWithAttestation, proposer_attestation_present};
+use peam_consensus_types::containers::block::{
+    SignedBlockWithAttestation, proposer_attestation_present,
+};
 use peam_consensus_types::types::bitlist::BitList;
 use peam_consensus_types::types::bytes::Bytes32;
 
@@ -296,6 +298,7 @@ fn validate_subnet_attestation_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::networking::gossipsub::context::GossipContext;
     use peam_consensus_types::containers::attestation::{AggregatedSignatureProof, Attestation};
     use peam_consensus_types::containers::block::{
         AttestationSignatures, Attestations, Block, BlockBody, BlockSignatures,
@@ -307,7 +310,6 @@ mod tests {
     use peam_consensus_types::types::bitlist::BitList;
     use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes3112};
     use peam_consensus_types::types::uint::Uint64;
-    use crate::networking::gossipsub::context::GossipContext;
 
     struct MockContext {
         current: Option<Slot>,

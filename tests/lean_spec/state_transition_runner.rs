@@ -382,8 +382,7 @@ fn run_generated_state_transition_fixture(
     {
         return Err(format!(
             "{test_id}: generated fixture expected config genesis time {} but got {}",
-            expected_genesis_time,
-            state.config.genesis_time.0
+            expected_genesis_time, state.config.genesis_time.0
         ));
     }
     if let Some(expected_index) = post.latest_block_header_proposer_index
@@ -391,8 +390,7 @@ fn run_generated_state_transition_fixture(
     {
         return Err(format!(
             "{test_id}: generated fixture expected latest header proposer index {} but got {}",
-            expected_index,
-            state.latest_block_header.proposer_index.0.0
+            expected_index, state.latest_block_header.proposer_index.0.0
         ));
     }
     if let Some(expected_root) = post.latest_block_header_parent_root.as_deref() {
@@ -400,8 +398,7 @@ fn run_generated_state_transition_fixture(
         if state.latest_block_header.parent_root != expected_root {
             return Err(format!(
                 "{test_id}: generated fixture expected latest header parent root {:?} but got {:?}",
-                expected_root,
-                state.latest_block_header.parent_root
+                expected_root, state.latest_block_header.parent_root
             ));
         }
     }
@@ -410,8 +407,7 @@ fn run_generated_state_transition_fixture(
         if state.latest_block_header.state_root != expected_root {
             return Err(format!(
                 "{test_id}: generated fixture expected latest header state root {:?} but got {:?}",
-                expected_root,
-                state.latest_block_header.state_root
+                expected_root, state.latest_block_header.state_root
             ));
         }
     }
@@ -420,8 +416,7 @@ fn run_generated_state_transition_fixture(
         if state.latest_justified.root != expected_root {
             return Err(format!(
                 "{test_id}: generated fixture expected latest justified root {:?} but got {:?}",
-                expected_root,
-                state.latest_justified.root
+                expected_root, state.latest_justified.root
             ));
         }
     }
@@ -430,8 +425,7 @@ fn run_generated_state_transition_fixture(
         if state.latest_finalized.root != expected_root {
             return Err(format!(
                 "{test_id}: generated fixture expected latest finalized root {:?} but got {:?}",
-                expected_root,
-                state.latest_finalized.root
+                expected_root, state.latest_finalized.root
             ));
         }
     }

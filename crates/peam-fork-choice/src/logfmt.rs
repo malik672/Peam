@@ -19,4 +19,3 @@ pub fn short_checkpoint(checkpoint: &Checkpoint) -> String {
 pub fn short_slot_root(slot: u64, root: &Bytes32) -> String {
     format!("{slot}:{}", short_root(root))
 }
-

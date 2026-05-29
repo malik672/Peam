@@ -184,7 +184,10 @@ pub trait Store {
     fn set_head(&mut self, root: Bytes32);
     /// Like [`put_signed_block`] but uses the metrics-instrumented state
     /// transition. Default implementation falls back to the non-metrics path.
-    fn put_signed_block_with_metrics<P: SignedBlockProcessor, M: StorageMetricsSink + TransitionMetricsSink>(
+    fn put_signed_block_with_metrics<
+        P: SignedBlockProcessor,
+        M: StorageMetricsSink + TransitionMetricsSink,
+    >(
         &mut self,
         root: Bytes32,
         signed: SignedBlockWithAttestation,
@@ -346,11 +349,11 @@ impl Store for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::{MemoryStore, Store};
-    use peam_state::state::{State, Validators};
-    use peam_ssz::ssz::HashTreeRoot;
     use peam_consensus_types::slot::Slot;
     use peam_consensus_types::types::bytes::Bytes32;
     use peam_consensus_types::types::uint::Uint64;
+    use peam_ssz::ssz::HashTreeRoot;
+    use peam_state::state::{State, Validators};
 
     fn root_from_u64(v: u64) -> Bytes32 {
         let mut out = [0u8; 32];

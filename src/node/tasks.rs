@@ -32,11 +32,11 @@ use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 use crate::containers::gossip::{GossipAttestation, GossipBlock};
-use peam_state::state::State;
 use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
 use crate::networking::P2pCommand;
 use crate::ssz::{HashTreeRoot, SszEncode};
+use peam_state::state::State;
 use peam_storage::{FileStore, Store};
 
 use super::head::aggregate_attestations;
@@ -564,10 +564,7 @@ fn load_attestation_data(
             head = target;
         }
         if target.slot <= source.slot
-            || !matches!(
-                is_justifiable_after(target.slot, finalized_slot),
-                Ok(true)
-            )
+            || !matches!(is_justifiable_after(target.slot, finalized_slot), Ok(true))
         {
             return None;
         }
@@ -593,10 +590,7 @@ fn load_attestation_data(
         head = target;
     }
     if target.slot <= source.slot
-        || !matches!(
-            is_justifiable_after(target.slot, finalized_slot),
-            Ok(true)
-        )
+        || !matches!(is_justifiable_after(target.slot, finalized_slot), Ok(true))
     {
         return None;
     }
@@ -1836,6 +1830,7 @@ mod tests {
         build_devnet_pq_validator_keys_from_hash_sig_dir, load_attestation_data,
         load_proposal_pre_state, produce_block_with_signatures,
     };
+    use crate::metrics::MetricsRegistry;
     use peam_consensus_types::containers::attestation::{
         AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES, SignedAttestation,
     };
@@ -1850,11 +1845,10 @@ mod tests {
     use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes52, Bytes3112};
     use peam_consensus_types::types::collections::SszList;
     use peam_consensus_types::types::uint::Uint64;
-    use peam_state::state::{State, Validators};
     use peam_fork_choice::fork_choice::ForkChoiceStore;
-    use crate::metrics::MetricsRegistry;
-    use peam_storage::{FileStore, Store};
     use peam_ssz::ssz::HashTreeRoot;
+    use peam_state::state::{State, Validators};
+    use peam_storage::{FileStore, Store};
     use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
 
@@ -2089,7 +2083,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn one_validator_hash_sig_fixture() -> std::sync::Arc<Vec<Option<super::DevnetValidatorKeyMaterial>>> {
+    fn one_validator_hash_sig_fixture()
+    -> std::sync::Arc<Vec<Option<super::DevnetValidatorKeyMaterial>>> {
         let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/http_smoke/hash-sig-keys");
         build_devnet_pq_validator_keys_from_hash_sig_dir(&fixture_dir, 1)
@@ -2174,13 +2169,8 @@ mod tests {
         ]));
 
         let key_cache = one_validator_hash_sig_fixture();
-        let (attestations, proofs) = build_block_attestation_payload(
-            9,
-            5,
-            &pending,
-            &key_cache,
-            &MetricsRegistry::new(),
-        );
+        let (attestations, proofs) =
+            build_block_attestation_payload(9, 5, &pending, &key_cache, &MetricsRegistry::new());
 
         assert_eq!(attestations.len(), 1);
         assert_eq!(proofs.len(), 1);

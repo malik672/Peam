@@ -11,11 +11,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use crate::ssz::HashTreeRoot;
 use peam_consensus_types::slot::{Slot, slot_index_from_unix_millis, unix_now_millis};
 use peam_consensus_types::types::bytes::Bytes32;
 use peam_consensus_types::types::uint::Uint64;
 use peam_state::state::State;
-use crate::ssz::HashTreeRoot;
 use peam_storage::{FileStore, Store};
 
 const RECENT_ROOT_CACHE_LEN: usize = 200;

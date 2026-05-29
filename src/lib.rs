@@ -38,9 +38,9 @@ pub mod metrics;
 pub mod networking;
 pub mod node;
 pub mod ssz;
-pub mod storage;
 /// PQ-specific state-transition helpers that remain crate-local glue.
 pub(crate) mod state_pq;
+pub mod storage;
 pub mod types;
 pub mod unsafe_vec;
 

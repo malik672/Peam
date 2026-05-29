@@ -9,9 +9,9 @@ use peam_consensus_types::types::uint::Uint64;
 use peam_fork_choice::fork_choice::ForkChoiceStore;
 use tracing::{debug, info, warn};
 
-use peam_state::state::State;
-use crate::state_pq::PqBlockProcessor;
 use crate::ssz::HashTreeRoot;
+use crate::state_pq::PqBlockProcessor;
+use peam_state::state::State;
 use peam_storage::{FileStore, Store};
 
 #[inline]
@@ -137,13 +137,11 @@ pub(super) fn import_backfill_chain(
             );
             return None;
         }
-        if let Err(err) =
-            store_guard.put_backfill_signed_block::<PqBlockProcessor>(
-                root,
-                signed.clone(),
-                &mut replay_state,
-            )
-        {
+        if let Err(err) = store_guard.put_backfill_signed_block::<PqBlockProcessor>(
+            root,
+            signed.clone(),
+            &mut replay_state,
+        ) {
             warn!(
                 "sync import failed root={root:?} err={err} replay_slot={} block_slot={} expected_parent={expected_parent:?} block_parent={:?}",
                 replay_state.slot.0.0, block.slot.0.0, block.parent_root
@@ -238,13 +236,11 @@ pub(super) fn import_streamed_range_chain(
             );
             continue;
         }
-        if let Err(err) =
-            store_guard.put_backfill_signed_block::<PqBlockProcessor>(
-                root,
-                signed.clone(),
-                &mut state_guard,
-            )
-        {
+        if let Err(err) = store_guard.put_backfill_signed_block::<PqBlockProcessor>(
+            root,
+            signed.clone(),
+            &mut state_guard,
+        ) {
             warn!(
                 "sync range import failed root={root:?} slot={} err={err}",
                 signed.message.block.slot.0.0

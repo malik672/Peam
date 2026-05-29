@@ -1,4 +1,3 @@
-use rapidhash::{RapidHashMap, RapidHashSet};
 use peam_consensus_types::containers::attestation::{
     Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT,
 };
@@ -14,6 +13,7 @@ use peam_consensus_types::types::collections::SszList;
 use peam_consensus_types::types::uint::Uint64;
 use peam_ssz::ssz::HashTreeRoot;
 use peam_state::state::State;
+use rapidhash::{RapidHashMap, RapidHashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

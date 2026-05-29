@@ -524,8 +524,7 @@ async fn run_generated_fork_choice_fixture(
                 expected_error,
                 checks,
             } => {
-                let built =
-                    generated_vote_for_labels(test_id, &attestation, &label_checkpoints)?;
+                let built = generated_vote_for_labels(test_id, &attestation, &label_checkpoints)?;
                 match validate_generated_gossip_attestation(
                     &store,
                     &built,
@@ -551,9 +550,7 @@ async fn run_generated_fork_choice_fixture(
                         {
                             return Err(format!(
                                 "{test_id}: generated fixture attestation step {} failed with wrong error. expected {:?}, got {:?}",
-                                step_index,
-                                expected_error,
-                                err
+                                step_index, expected_error, err
                             ));
                         }
                         continue;
@@ -571,8 +568,7 @@ async fn run_generated_fork_choice_fixture(
                     {
                         return Err(format!(
                             "{test_id}: generated fixture attestation step {} was rejected by the store without matching expected error {:?}",
-                            step_index,
-                            expected_error
+                            step_index, expected_error
                         ));
                     }
                     continue;
@@ -761,12 +757,16 @@ fn generated_root_from_checks(
             step_index, field_name, field_name, raw_root, root_label
         )),
         (Some(raw_root), None) => Ok(Some(bytes32_from_hex(raw_root))),
-        (None, Some(root_label)) => label_roots.get(root_label).copied().ok_or_else(|| {
-            format!(
-                "{test_id}: generated fixture step {} referenced unknown {}RootLabel {}",
-                step_index, field_name, root_label
-            )
-        }).map(Some),
+        (None, Some(root_label)) => label_roots
+            .get(root_label)
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "{test_id}: generated fixture step {} referenced unknown {}RootLabel {}",
+                    step_index, field_name, root_label
+                )
+            })
+            .map(Some),
         (None, None) => Ok(None),
     }
 }
@@ -824,7 +824,9 @@ fn generated_vote_for_labels(
             },
             source: Checkpoint {
                 root: source_root,
-                slot: Slot(Uint64(attestation.source_slot.or(source_known_slot).unwrap_or(0))),
+                slot: Slot(Uint64(
+                    attestation.source_slot.or(source_known_slot).unwrap_or(0),
+                )),
             },
         },
     })

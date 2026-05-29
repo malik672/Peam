@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::time::Duration;
 
+use crate::ssz::HashTreeRoot;
 use peam_consensus_types::containers::attestation::{
     Attestation, AttestationData, VALIDATOR_REGISTRY_LIMIT,
 };
@@ -12,7 +13,6 @@ use peam_consensus_types::containers::checkpoint::Checkpoint;
 use peam_consensus_types::types::bitlist::BitList;
 use peam_consensus_types::types::bytes::{Bytes32, Bytes3112};
 use peam_state::state::State;
-use crate::ssz::HashTreeRoot;
 
 const FINALIZED_STATE_PATH: &str = "/lean/v0/states/finalized";
 const CHECKPOINT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);

@@ -5,6 +5,5 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::len_without_is_empty)]
 
-mod logfmt;
 pub mod fork_choice;
-
+mod logfmt;

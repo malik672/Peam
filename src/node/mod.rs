@@ -32,12 +32,12 @@ use crate::app::{
 use crate::checkpoint_sync::{
     build_anchor_block, build_anchor_signed_block, fetch_checkpoint_state, verify_checkpoint_state,
 };
-use peam_state::state::{State, Validators};
 use crate::metrics::{MetricsRegistry, spawn_http_server};
 use crate::networking::{
     Networking, NetworkingConfig, StateGossipContext, StoreReqRespHandler, verifier_from_validators,
 };
 use crate::ssz::HashTreeRoot;
+use peam_state::state::{State, Validators};
 use peam_storage::{FileStore, Store};
 
 use self::sync::spawn_status_sync_task;
@@ -93,13 +93,18 @@ fn seed_anchor_store_and_fork_choice(
     Ok(fc)
 }
 
-fn restore_fork_choice_from_store(store: &FileStore) -> Result<Option<(State, ForkChoiceStore)>, String> {
+fn restore_fork_choice_from_store(
+    store: &FileStore,
+) -> Result<Option<(State, ForkChoiceStore)>, String> {
     let Some(head_root) = store.head() else {
         return Ok(None);
     };
-    let signed_head = store
-        .get_signed_block(&head_root)
-        .ok_or_else(|| format!("missing signed head block for persisted head {:?}", head_root))?;
+    let signed_head = store.get_signed_block(&head_root).ok_or_else(|| {
+        format!(
+            "missing signed head block for persisted head {:?}",
+            head_root
+        )
+    })?;
     let restored_state = store
         .get_state(&head_root)
         .ok_or_else(|| format!("missing state for persisted head {:?}", head_root))?;
@@ -150,7 +155,10 @@ fn load_or_build_devnet_validator_keys(
                     elapsed_ms = key_load_started.elapsed().as_millis(),
                     "peam startup timing: loaded validator keys from hash-sig dir"
                 );
-                (keys, format!("hash_sig_keys:{}", hash_sig_keys_dir.display()))
+                (
+                    keys,
+                    format!("hash_sig_keys:{}", hash_sig_keys_dir.display()),
+                )
             }
             Err(err) => {
                 warn!(
@@ -363,9 +371,7 @@ impl Node {
         if let Some(genesis_time_override) = node_config.genesis_time_override {
             config.genesis_time = Uint64(genesis_time_override);
         }
-        set_attestation_committee_count(
-            settings.attestation_committee_count,
-        );
+        set_attestation_committee_count(settings.attestation_committee_count);
         if settings.is_aggregator {
             crate::crypto::pq::setup_aggregate_prover();
         }
@@ -404,33 +410,35 @@ impl Node {
         );
         let (expected_genesis_state, devnet_validator_keys, validator_key_source) =
             if genesis_config_yaml.is_file() {
-            let genesis_started = Instant::now();
-            tracing::info!(
-                path = %genesis_config_yaml.display(),
-                "peam startup: loading genesis from config.yaml"
-            );
-            let state = build_genesis_from_config_yaml_with_override(
-                &genesis_config_yaml,
-                node_config.genesis_time_override,
-            )?;
-            tracing::info!(
-                elapsed_ms = genesis_started.elapsed().as_millis(),
-                "peam startup timing: built genesis state from config.yaml"
-            );
-            let (keys, source) =
-                load_or_build_devnet_validator_keys(&hash_sig_keys_dir, state.validators.len());
-            (state, keys, source)
-        } else {
-            let (keys, source) =
-                load_or_build_devnet_validator_keys(&hash_sig_keys_dir, settings.validator_count);
-            let genesis_started = Instant::now();
-            let state = build_genesis_from_devnet_key_cache(config.clone(), &keys)?;
-            tracing::info!(
-                elapsed_ms = genesis_started.elapsed().as_millis(),
-                "peam startup timing: built devnet genesis state from validator key cache"
-            );
-            (state, keys, source)
-        };
+                let genesis_started = Instant::now();
+                tracing::info!(
+                    path = %genesis_config_yaml.display(),
+                    "peam startup: loading genesis from config.yaml"
+                );
+                let state = build_genesis_from_config_yaml_with_override(
+                    &genesis_config_yaml,
+                    node_config.genesis_time_override,
+                )?;
+                tracing::info!(
+                    elapsed_ms = genesis_started.elapsed().as_millis(),
+                    "peam startup timing: built genesis state from config.yaml"
+                );
+                let (keys, source) =
+                    load_or_build_devnet_validator_keys(&hash_sig_keys_dir, state.validators.len());
+                (state, keys, source)
+            } else {
+                let (keys, source) = load_or_build_devnet_validator_keys(
+                    &hash_sig_keys_dir,
+                    settings.validator_count,
+                );
+                let genesis_started = Instant::now();
+                let state = build_genesis_from_devnet_key_cache(config.clone(), &keys)?;
+                tracing::info!(
+                    elapsed_ms = genesis_started.elapsed().as_millis(),
+                    "peam startup timing: built devnet genesis state from validator key cache"
+                );
+                (state, keys, source)
+            };
         tracing::info!(
             source = %validator_key_source,
             "peam startup: validator keys loaded"

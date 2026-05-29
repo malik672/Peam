@@ -49,13 +49,13 @@ use snap::{read::FrameDecoder, write::FrameEncoder};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use peam_consensus_types::containers::req_resp::{BlocksByRangeResponse, MAX_BLOCKS_PER_REQUEST};
-use peam_consensus_types::types::collections::SszList;
 use super::events::{EventBus, NetworkEvent};
 use crate::networking::gossipsub::lean::message::LeanGossipsubMessage;
 use crate::networking::gossipsub::validate::ValidationResult;
 use crate::networking::reqresp_messages::{LeanRequestMessage, LeanSupportedProtocol};
 use crate::ssz::SszEncode;
+use peam_consensus_types::containers::req_resp::{BlocksByRangeResponse, MAX_BLOCKS_PER_REQUEST};
+use peam_consensus_types::types::collections::SszList;
 
 /// Ream-compatible snappy transform for gossip payloads.
 #[derive(Clone)]

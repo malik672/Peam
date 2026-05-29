@@ -19,7 +19,6 @@ use rapidhash::RapidHashMap;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-use peam_state::state::State;
 use crate::logfmt::{short_checkpoint, short_root, short_slot_root};
 use crate::metrics::MetricsRegistry;
 use crate::networking::gossipsub::context::GossipContext;
@@ -29,8 +28,9 @@ use crate::networking::gossipsub::validate::{
     validate_with_context,
 };
 use crate::networking::{LeanRequestMessage, LeanSupportedProtocol, P2pCommand, PeerManager};
-use crate::state_pq::PqBlockProcessor;
 use crate::ssz::HashTreeRoot;
+use crate::state_pq::PqBlockProcessor;
+use peam_state::state::State;
 use peam_storage::Store;
 use tracing::{info, warn};
 

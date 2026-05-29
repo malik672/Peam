@@ -10,4 +10,3 @@ mod logfmt;
 pub mod state;
 pub mod state_metrics;
 mod unsafe_vec;
-

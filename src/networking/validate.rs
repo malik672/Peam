@@ -11,6 +11,12 @@
 
 use std::sync::Arc;
 
+use crate::containers::gossip::{
+    GossipAggregatedAttestation, GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
+};
+use crate::crypto;
+use crate::ssz::{HashTreeRoot, SszFixedLen};
+use crate::unsafe_vec::write_at;
 use peam_consensus_types::containers::attestation::{
     AggregatedSignatureProof, Attestation, SignedAggregatedAttestation, SignedAttestation,
     VALIDATOR_REGISTRY_LIMIT,
@@ -19,12 +25,6 @@ use peam_consensus_types::containers::block::{Block, proposer_attestation_presen
 use peam_consensus_types::containers::validator::{Validator, ValidatorIndex};
 use peam_consensus_types::types::bitlist::BitList;
 use peam_consensus_types::types::bytes::{Bytes52, Bytes3112};
-use crate::containers::gossip::{
-    GossipAggregatedAttestation, GossipAttestation, GossipBlock, GossipBlockHeader, VoluntaryExit,
-};
-use crate::crypto;
-use crate::ssz::{HashTreeRoot, SszFixedLen};
-use crate::unsafe_vec::write_at;
 use tracing::warn;
 
 fn payload_prefix_hex(bytes: &[u8], max_bytes: usize) -> String {
@@ -434,6 +434,8 @@ pub fn verifier_from_validators(validators: &[Validator]) -> Arc<dyn GossipSigna
 #[cfg(test)]
 mod tests {
     use super::{GossipSignatureVerifier, SimpleGossipVerifier};
+    use crate::crypto::pq::{self, DevnetValidatorKeyRole};
+    use crate::ssz::HashTreeRoot;
     use peam_consensus_types::containers::attestation::{
         AggregatedSignatureProof, Attestation, AttestationData, PROOF_MAX_BYTES,
     };
@@ -445,8 +447,6 @@ mod tests {
     use peam_consensus_types::types::bytes::{ByteList, Bytes32, Bytes52};
     use peam_consensus_types::types::collections::SszList;
     use peam_consensus_types::types::uint::Uint64;
-    use crate::crypto::pq::{self, DevnetValidatorKeyRole};
-    use crate::ssz::HashTreeRoot;
 
     fn sample_attestation_data(slot: u64) -> AttestationData {
         let checkpoint = Checkpoint {

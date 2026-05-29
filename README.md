@@ -67,6 +67,19 @@ To build the binary only:
 cargo build --release -p peam --bin peam
 ```
 
+To run the node through `make`:
+
+```bash
+make run \
+  CONFIG=/path/to/config.yaml \
+  DATA_DIR=/path/to/data \
+  NODE_ID=peam_0 \
+  BOOTNODES=/path/to/nodes.yaml \
+  VALIDATORS=/path/to/validators.yaml \
+  VALIDATOR_KEYS=/path/to/hash-sig-keys \
+  NODE_KEY=/path/to/node.key
+```
+
 ## Contributing
 
 Before opening a PR, please run:

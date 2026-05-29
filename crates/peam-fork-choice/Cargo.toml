@@ -2,6 +2,7 @@
 name = "peam-fork-choice"
 version = "0.1.0"
 edition = "2024"
+readme = "README.md"
 
 [dependencies]
 peam-consensus-types = { path = "../peam-consensus-types" }
@@ -9,4 +10,3 @@ peam-state = { path = "../peam-state" }
 peam-ssz = "2.0.1"
 rapidhash = "1.0"
 tracing = "0.1"
-

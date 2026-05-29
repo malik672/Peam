@@ -1,8 +1,8 @@
-use peam_state::state::{SignatureVerifier, State};
-use peam_state::state_metrics::TransitionMetricsSink;
 use crate::crypto::pq;
 use peam_consensus_types::containers::block::SignedBlockWithAttestation;
 use peam_ssz::ssz::HashTreeRoot;
+use peam_state::state::{SignatureVerifier, State};
+use peam_state::state_metrics::TransitionMetricsSink;
 use peam_storage::SignedBlockProcessor;
 
 /// A [`SignatureVerifier`] that performs full post-quantum aggregate-signature

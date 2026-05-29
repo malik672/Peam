@@ -11,12 +11,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{debug, info};
 
+use crate::ssz::HashTreeRoot;
 use peam_consensus_types::containers::req_resp::{
     MAX_BLOCKS_PER_REQUEST, MAX_BLOCKS_PER_ROOT_REQUEST, Status,
 };
 use peam_consensus_types::types::bytes::Bytes32;
 use peam_consensus_types::types::uint::Uint64;
-use crate::ssz::HashTreeRoot;
 use peam_storage::Store;
 
 use super::reqresp_messages::{LeanRequestMessage, LeanResponseMessage};

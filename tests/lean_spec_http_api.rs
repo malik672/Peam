@@ -343,8 +343,8 @@ async fn start_external_peam_http_server_in_dir(temp_dir: PathBuf) -> ExternalPe
         )
         .expect("write smoke config");
     }
-    let validator_keys_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/http_smoke/hash-sig-keys");
+    let validator_keys_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/http_smoke/hash-sig-keys");
 
     let api_port = available_tcp_port();
     let listen_port = available_udp_port();
